@@ -138,6 +138,4 @@ await wallet.mintTokens(1_000n);  // mint 0.001 token at 6 decimals to issuer's 
 - `wallet.getIssuerTokenBalance()` — issuer-side balance accounting
 - `wallet.getIssuerTokenDistribution()` — supply distribution across holders
 
-### Security boundary
-
-A real-world issuer should NOT reuse the agent's wallet mnemonic — losing it loses the mint authority. Use a separate `SPARK_ISSUER_MNEMONIC` for production, kept on a more locked-down system than the agent's hot wallet.
+The issuance flow shown here is intended for testing and experimentation. Production token issuance is out of scope for this skill — that's a different problem with different operational requirements (custody, supply policy, key rotation, regulatory considerations).

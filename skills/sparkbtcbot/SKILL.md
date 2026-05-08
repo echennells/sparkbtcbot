@@ -145,7 +145,8 @@ SPARK_NETWORK=MAINNET
 **Security warnings:**
 - **Never log the mnemonic** — not even during development. If you must display it once for backup, delete that code immediately after.
 - **Never commit `.env`** — add it to `.gitignore` before your first commit.
-- **Use a secrets manager in production** — environment variables in `.env` files are plaintext. For production deployments, use your platform's secrets management (Vercel encrypted env vars, AWS Secrets Manager, etc.).
+- **`.env` is fine for development; consider something better for production.** A `.env` file is plaintext on disk in the same folder as your code — workable while you're learning, but not ideal once real funds are involved. If your deployment platform provides a secrets mechanism (cloud secret stores, OS keychain, secrets-manager CLIs, encrypted env vars), prefer that. The skill doesn't prescribe which — pick whatever fits your stack.
+- **Or skip storing the mnemonic in the agent at all.** For production with real funds, [sparkbtcbot-proxy](https://github.com/echennells/sparkbtcbot-proxy) keeps the mnemonic on a server you control and gives the agent scoped, revocable bearer tokens (read-only, invoice-only, or full) with per-transaction and daily spending caps. The agent never sees a mnemonic — it makes authenticated HTTP calls. Worth standing up before any deployment that holds non-trivial balance.
 - **Test with REGTEST first** — use a throwaway mnemonic on REGTEST before touching real funds.
 
 ### Step 3: Verify Wallet
@@ -163,6 +164,14 @@ await wallet.cleanupConnections();
 ```
 
 A runnable version of this lives at `skills/sparkbtcbot/scripts/wallet-setup.js`.
+
+## Backup and Recovery
+
+The mnemonic is the entire backup. Spark operators hold leaf state authoritatively — there is no local channel state or other persisted data that needs separate replication. A fresh install on a new host with the same mnemonic recovers the full wallet (balance, deposit addresses, identity).
+
+This is **stronger than Lightning**, where channel state must be backed up separately (Static Channel Backup / DLP) and channel funds can be lost on data-dir loss even if the seed is safe. With Spark, losing the local data directory loses nothing; losing the seed loses everything.
+
+Recovery extends Trust Model's "moment-in-time" trust assumption to one additional moment: at re-init, at least one operator must serve the leaf-state query. The same censorship risk that Trust Model lists for transfers applies here too. If recovery is censored, the unilateral-exit path described in Limitations is the fallback.
 
 ## Detailed References
 
