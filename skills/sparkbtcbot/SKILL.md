@@ -146,6 +146,7 @@ SPARK_NETWORK=MAINNET
 - **Never log the mnemonic** — not even during development. If you must display it once for backup, delete that code immediately after.
 - **Never commit `.env`** — add it to `.gitignore` before your first commit.
 - **`.env` is fine for development; consider something better for production.** A `.env` file is plaintext on disk in the same folder as your code — workable while you're learning, but not ideal once real funds are involved. If your deployment platform provides a secrets mechanism (cloud secret stores, OS keychain, secrets-manager CLIs, encrypted env vars), prefer that. The skill doesn't prescribe which — pick whatever fits your stack.
+- **Encrypt the seed at rest** if you must store it locally. The skill ships `lib/encrypted-seed.js` (scrypt + AES-256-GCM, zero extra deps) and a one-time `setup-encrypted-seed.js` script. Replaces `SPARK_MNEMONIC` in `.env` with `SPARK_PASSPHRASE` plus a separate `seed.enc` file (mode 0600). An `.env` leak alone no longer drains the wallet — see `references/encrypted-seed.md` for threat model, setup, and recovery.
 - **Or skip storing the mnemonic in the agent at all.** For production with real funds, [sparkbtcbot-proxy](https://github.com/echennells/sparkbtcbot-proxy) keeps the mnemonic on a server you control and gives the agent scoped, revocable bearer tokens (read-only, invoice-only, or full) with per-transaction and daily spending caps. The agent never sees a mnemonic — it makes authenticated HTTP calls. Worth standing up before any deployment that holds non-trivial balance.
 - **Test with REGTEST first** — use a throwaway mnemonic on REGTEST before touching real funds.
 
@@ -187,6 +188,7 @@ Load only what's needed for the user's task. Each reference is a self-contained 
 | `references/agent-class.md` | Drop-in `SparkAgent` class wrapping the SDK |
 | `references/l402.md` | L402 / LSAT paywalls — paying for HTTP APIs over Lightning |
 | `references/extras.md` | Message signing, event listeners, error handling, token *issuance* (`IssuerSparkWallet`) |
+| `references/encrypted-seed.md` | User wants to encrypt the mnemonic at rest instead of plaintext `.env` (single-host setup using `lib/encrypted-seed.js`) |
 
 Runnable example scripts live in `skills/sparkbtcbot/scripts/` (run via `npm run example:setup`, `example:balance`, `example:payments`, `example:tokens`, `example:agent`, `example:l402`).
 
