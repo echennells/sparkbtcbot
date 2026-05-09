@@ -60,4 +60,6 @@ SPARK_NETWORK=MAINNET
 
 ## Security Note
 
-The mnemonic is encrypted at rest in `~/.spark/seed.enc` (scrypt + AES-256-GCM). The runtime reads `SPARK_PASSPHRASE` from env and decrypts at boot — there is no plaintext-mnemonic-in-`.env` path. Both passphrase and seed file together grant full wallet access (no permission scoping like NWC). Use dedicated wallets with limited funds for agents. See SKILL.md for full security guidance.
+The mnemonic is encrypted at rest in `~/.spark/seed.enc` (scrypt + AES-256-GCM). The runtime reads `SPARK_PASSPHRASE` from env and decrypts at boot — there is no plaintext-mnemonic-in-`.env` path. Both passphrase and seed file together grant full wallet access (no permission scoping like NWC). Use dedicated wallets with limited funds for agents.
+
+Fresh-wallet setup writes the new mnemonic to a backup file (`~/.spark/MNEMONIC_BACKUP_<random>.txt`, mode 0600) instead of printing it to stdout — that's deliberate, since stdout from a Bash-invoked setup gets captured by the agent's transcript. The user is expected to read+offline-copy+`rm` the file themselves; the agent does not read it unless the user explicitly asks. See SKILL.md for full security guidance.
