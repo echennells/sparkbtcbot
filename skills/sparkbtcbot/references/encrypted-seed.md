@@ -1,23 +1,25 @@
 # Encrypted seed at rest
 
-Optional alternative to keeping `SPARK_MNEMONIC` in plaintext in `.env`. Load this when the user wants better protection against env-var or `.env` leaks, or when they're deploying somewhere that the seed file can sit on disk separately from the runtime config.
+This is how the skill stores the BIP39 mnemonic. Load this file when the user is configuring a new wallet, debugging a missing-seed error, planning recovery, or asking what `SPARK_PASSPHRASE` and `~/.spark/seed.enc` are for.
 
 ## What it does
 
-The mnemonic is encrypted with a passphrase you provide and stored in a single file (default: `~/.spark/seed.enc`, mode 0600). Your application reads `SPARK_PASSPHRASE` from env, decrypts the file once at boot, and uses the mnemonic in memory. The mnemonic itself never touches `.env`.
+The mnemonic is encrypted with a passphrase you choose and stored in a single file (default: `~/.spark/seed.enc`, mode 0600). Your application reads `SPARK_PASSPHRASE` from env, decrypts the file once at boot, and uses the mnemonic in memory. The mnemonic itself is never written to `.env` or any other plaintext file the runtime cares about.
 
-## Threat model — what changes vs plaintext .env
+## Threat model
 
-| Leak vector | Plaintext `.env` (default) | Encrypted seed |
-|---|---|---|
-| `.env` accidentally committed to git | Funds drained | Attacker has passphrase only — useless without seed file |
-| Env-var dump in logs | Funds drained | Attacker has passphrase only — useless without seed file |
-| Casual `cat .env` snooping | Funds drained | Same — passphrase only, useless |
-| Server backup that captures env vars only | Funds drained | Useless without seed file |
-| Server backup that captures full disk | Funds drained | Both files, attacker can decrypt — only passphrase strength saves you |
-| Memory dump while wallet running | Funds drained | Funds drained (mnemonic is in process memory after decrypt) |
+What attacks fail vs what still drains the wallet:
 
-Net: the most common leak vectors (env-var leaks, `.env` on git, log captures) become non-fatal. To drain funds an attacker needs **either** the seed file plus the passphrase together, **or** to dump the running process's memory.
+| Leak vector | Outcome |
+|---|---|
+| `.env` accidentally committed to git | Attacker has passphrase only — useless without seed file |
+| Env-var dump in logs | Attacker has passphrase only — useless without seed file |
+| Casual `cat .env` snooping | Passphrase only, useless |
+| Server backup that captures env vars only | Useless without seed file |
+| Server backup that captures full disk | Both files — only passphrase strength saves you |
+| Memory dump while wallet running | Funds drained (mnemonic is in process memory after decrypt) |
+
+To drain funds an attacker needs **either** the seed file plus the passphrase together, **or** to dump the running process's memory.
 
 ## Crypto choices
 
@@ -41,27 +43,28 @@ The version + KDF id + cipher id at the start means the file is self-describing;
 
 ## Setup
 
-One-time, three modes:
+`npm run setup` is the single entry point. The script picks one of three modes based on the environment it sees, in this order:
 
-```bash
-# 1. Generate a fresh wallet (creates a new mnemonic via the SDK)
-SPARK_NETWORK=MAINNET SPARK_PASSPHRASE="..." \
-  node skills/sparkbtcbot/scripts/setup-encrypted-seed.js
+1. **`--import` flag** — prompts for an existing mnemonic on stderr (no shell-history exposure). Use this when bringing a mnemonic from a hardware wallet, paper backup, or another machine.
+   ```bash
+   SPARK_PASSPHRASE="..." npm run setup -- --import
+   ```
 
-# 2. Encrypt an existing mnemonic from SPARK_MNEMONIC env var
-SPARK_MNEMONIC="word1 word2 ..." SPARK_PASSPHRASE="..." \
-  node skills/sparkbtcbot/scripts/setup-encrypted-seed.js
+2. **`SPARK_MNEMONIC` already set in env** — encrypts that mnemonic and exits. Intended as a one-time migration path for users coming from a pre-existing plaintext `.env`. The cleanest way to invoke this: leave your existing `SPARK_MNEMONIC` in `.env`, add `SPARK_PASSPHRASE`, then run `npm run setup`. dotenv loads both, the script encrypts, and afterward you remove `SPARK_MNEMONIC` from `.env`. Avoid passing the mnemonic inline on the command line — it lands in shell history.
 
-# 3. Encrypt an existing mnemonic via stdin paste
-SPARK_PASSPHRASE="..." \
-  node skills/sparkbtcbot/scripts/setup-encrypted-seed.js --import
-```
+3. **Default — generate a fresh wallet.** No flag, no `SPARK_MNEMONIC` env var. The SDK generates a new BIP39 mnemonic, the script encrypts it, and prints the mnemonic once for offline backup.
+   ```bash
+   SPARK_NETWORK=MAINNET SPARK_PASSPHRASE="..." npm run setup
+   ```
+
+The passphrase must be at least 12 characters. If `SPARK_PASSPHRASE` is unset the script prompts on stderr (with confirmation).
 
 After setup completes:
 
 1. The seed file is at `~/.spark/seed.enc` (override with `SPARK_SEED_PATH`)
-2. Replace `SPARK_MNEMONIC=...` in your `.env` with `SPARK_PASSPHRASE=...`
-3. If a fresh mnemonic was generated, the script prints it once — **save it offline immediately**, that's your recovery path
+2. `SPARK_PASSPHRASE` needs to remain available to the runtime — keep it in `.env` (gitignored) or your deployment's secret manager. If you set it inline only for the setup invocation, add it to `.env` now.
+3. If a fresh mnemonic was generated, the script prints it once — **save it offline immediately**, that's your recovery path. After saving, clear your terminal scrollback.
+4. If you migrated from a plaintext `.env` (mode 2), remove `SPARK_MNEMONIC` from `.env`.
 
 The script verifies by initializing a wallet from the encrypted seed and printing the resulting Spark address — useful as a sanity check that the right wallet loaded.
 
@@ -80,31 +83,32 @@ const { wallet } = await SparkWallet.initialize({
 // `mnemonic` falls out of scope; only `wallet` is retained
 ```
 
-The decrypt happens once at boot (~250ms scrypt). After that, performance is identical to plaintext-mnemonic loading. Do not call `loadMnemonicFromEnv()` per request — decrypt once, hold the wallet.
+The decrypt happens once at boot (~250ms scrypt). After that, performance is identical to in-memory mnemonic loading. Do not call `loadMnemonicFromEnv()` per request — decrypt once, hold the wallet.
 
 ## Recovery scenarios
 
 | Scenario | What's needed | Action |
 |---|---|---|
-| Lose `.env` (passphrase) | Mnemonic backup | Re-run setup with `--import`, paste mnemonic, choose new passphrase |
+| Lose passphrase | Mnemonic backup | Re-run setup with `--import`, paste mnemonic, choose new passphrase |
 | Lose `seed.enc` | Mnemonic backup | Re-run setup with `--import`, paste mnemonic |
 | Lose entire machine | Mnemonic backup | Install on new machine, re-run setup with `--import` |
 | Lose mnemonic backup | Have passphrase + `seed.enc` | Decrypt to recover mnemonic, save offline this time |
-| Lose all three | None | Funds gone — same as plaintext-mnemonic case |
+| Lose all three | None | Funds gone |
 
-The mnemonic remains the ultimate backup. Encryption defends in-flight files; it doesn't replace offline backup.
+The mnemonic remains the ultimate backup. Encryption defends the seed file at rest; it doesn't replace offline backup of the seed words.
 
 ## What this does not do
 
-- **Doesn't protect against memory dumps** of the running process — the mnemonic is in memory after `loadMnemonicFromEnv()` returns. To attack this you need shell on the host with the same UID as the agent.
+- **Doesn't protect against memory dumps** of the running process — the mnemonic is in memory after `loadMnemonicFromEnv()` returns. To attack this an attacker needs shell on the host with the same UID as the agent.
 - **Doesn't protect against the host being compromised** while running — same as above.
-- **Doesn't replace the proxy** for production setups where you want scoped, revocable bearer tokens. The proxy keeps the seed on a separate server entirely. Encryption-at-rest is the next-best when running the SDK directly is unavoidable.
-- **Doesn't apply to the proxy** (sparkbtcbot-proxy stores the seed in Vercel encrypted env vars, which is functionally similar; the proxy doesn't need this layer).
+- **Doesn't replace the proxy** for production setups where you want scoped, revocable bearer tokens. Encryption-at-rest is the floor for this skill; [sparkbtcbot-proxy](https://github.com/echennells/sparkbtcbot-proxy) is the ceiling — it keeps the seed on a separate server entirely and gives the agent only HTTP access.
 
-## When to use which
+## When to escalate to the proxy
 
-| Setup | Best when |
-|---|---|
-| Plaintext `SPARK_MNEMONIC` in `.env` | Local dev only, REGTEST throwaway, learning |
-| **Encrypted seed at rest** | Single-host production agent, modest balances, you accept that an attacker who pwns the host gets funds |
-| sparkbtcbot-proxy | Production with non-trivial balances, multi-agent, or you want revocable scoped access |
+Encryption-at-rest is the minimum bar this skill enforces. Move to the proxy when any of these are true:
+
+- Non-trivial balances on the wallet (rule of thumb: more than you'd lose without changing your day)
+- Multiple agents need to share a wallet view
+- You want revocable scoped tokens (read-only / invoice-only / full) instead of all-or-nothing access
+- You want per-transaction or daily spending caps enforced server-side
+- You want an audit log of every wallet operation

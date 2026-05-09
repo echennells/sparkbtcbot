@@ -42,34 +42,38 @@ Or add the path to your Claude Code configuration.
 cd ~/.claude/skills/sparkbtcbot-skill
 npm install
 
-# Copy env template
+# Copy env template, set SPARK_PASSPHRASE (>=12 chars)
 cp .env.example .env
+$EDITOR .env
 
-# Generate a new wallet
-node skills/sparkbtcbot/scripts/wallet-setup.js
+# One-time setup: generate a wallet, encrypt the mnemonic at ~/.spark/seed.enc
+npm run setup
 
-# Add the generated mnemonic to .env, then:
-node skills/sparkbtcbot/scripts/balance-and-deposits.js
-node skills/sparkbtcbot/scripts/payment-flow.js
+# Run the examples
+npm run example:balance
+npm run example:payments
 ```
+
+The mnemonic is **never** stored in plaintext. `npm run setup` writes an encrypted seed file (`~/.spark/seed.enc`, mode 0600); the runtime reads `SPARK_PASSPHRASE` from env and decrypts it once at boot. See `skills/sparkbtcbot/references/encrypted-seed.md` for the threat model and recovery scenarios.
 
 ## Example Scripts
 
-| Script | Purpose |
-|--------|---------|
-| `wallet-setup.js` | Generate new wallet or import from mnemonic |
-| `balance-and-deposits.js` | Check balance (BTC + tokens), get deposit addresses |
-| `payment-flow.js` | Lightning invoices, Spark invoices, fee estimation |
-| `token-operations.js` | BTKN token balances, transfers, batch operations |
-| `l402-paywalls.js` | Access L402 pay-per-request APIs via Lightning |
-| `spark-agent.js` | Complete `SparkAgent` class with all capabilities |
+| Script | npm script | Purpose |
+|--------|------------|---------|
+| `setup-encrypted-seed.js` | `npm run setup` | Generate wallet, encrypt mnemonic at rest |
+| `balance-and-deposits.js` | `npm run example:balance` | Check balance (BTC + tokens), get deposit addresses |
+| `payment-flow.js` | `npm run example:payments` | Lightning invoices, Spark invoices, fee estimation |
+| `token-operations.js` | `npm run example:tokens` | BTKN token balances, transfers, batch operations |
+| `l402-paywalls.js` | `npm run example:l402` | Access L402 pay-per-request APIs via Lightning |
+| `spark-agent.js` | `npm run example:agent` | Complete `SparkAgent` class with all capabilities |
 
 ## Environment Variables
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `SPARK_MNEMONIC` | Yes* | BIP39 mnemonic (12 or 24 words). *`wallet-setup.js` can generate one. |
+| `SPARK_PASSPHRASE` | Yes | Passphrase (≥12 chars) that decrypts the seed file at boot. Set during `npm run setup`. |
 | `SPARK_NETWORK` | No | `MAINNET` (default), `REGTEST`, `TESTNET`, `SIGNET` |
+| `SPARK_SEED_PATH` | No | Override for the encrypted-seed file location. Defaults to `~/.spark/seed.enc`. |
 | `SPARK_ACCOUNT_NUMBER` | No | BIP32 account index. Defaults: 1 (MAINNET), 0 (REGTEST) |
 
 ## Dependencies
@@ -80,14 +84,16 @@ npm install @buildonspark/spark-sdk dotenv light-bolt11-decoder
 
 ## Security
 
-**Mnemonic = full wallet access.** A Spark mnemonic can do everything: check balance, create invoices, and send payments. There is no permission scoping, no spending limits, no read-only mode.
+**Passphrase + seed file = full wallet access.** Either alone is useless; both together control all funds. There is no permission scoping, no spending limits, no read-only mode in the SDK.
 
 Recommendations:
-- Never expose the mnemonic in code, logs, or version control
-- Use environment variables for secrets
+- Never expose the mnemonic or passphrase in code, logs, or version control
+- Treat `SPARK_PASSPHRASE` like any production secret (deployment secret manager, `.env` in `.gitignore`, etc.)
+- Don't bundle `seed.enc` into container images that ship alongside the passphrase
 - Use a dedicated wallet with limited funds for each agent
 - Use separate `accountNumber` values for different funding tiers
-- Back up the mnemonic securely
+- Back up the **mnemonic** offline — the encrypted seed file is not a substitute for an offline seed backup
+- For production with non-trivial balances, run [sparkbtcbot-proxy](https://github.com/echennells/sparkbtcbot-proxy) — keeps the seed on a server you control and gives the agent only HTTP access via revocable scoped tokens
 
 ## Resources
 

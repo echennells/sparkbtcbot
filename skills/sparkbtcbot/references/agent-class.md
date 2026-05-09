@@ -187,7 +187,11 @@ export class SparkAgent {
 }
 
 // Usage
-const { agent } = await SparkAgent.create(process.env.SPARK_MNEMONIC);
+import { loadMnemonicFromEnv } from "./lib/encrypted-seed.js";
+
+const mnemonic = await loadMnemonicFromEnv(); // reads SPARK_PASSPHRASE
+const { agent } = await SparkAgent.create(mnemonic);
+
 const identity = await agent.getIdentity();
 console.log("Address:", identity.address);
 

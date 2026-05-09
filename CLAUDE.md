@@ -21,18 +21,23 @@ Teaches Claude Code how to give AI agents Bitcoin capabilities using the Spark L
 ## Structure
 
 ```
+lib/
+  encrypted-seed.js                   # scrypt + AES-256-GCM seed file helper
 skills/
   sparkbtcbot/
-    SKILL.md              # Always-loaded skill body (security, setup, navigator)
-    references/           # Detail loaded on demand (SDK API, agent class, L402, etc.)
-    scripts/              # Runnable example scripts
-      wallet-setup.js
+    SKILL.md                          # Always-loaded skill body (security, setup, navigator)
+    LESSONS.md                        # Notes from comparable skills (Alby, Nunchuk)
+    references/                       # Detail loaded on demand (SDK API, agent class, L402, etc.)
+      encrypted-seed.md               # Threat model, setup modes, recovery
+    scripts/                          # Runnable example scripts
+      setup-encrypted-seed.js         # `npm run setup` — one-time bootstrap
       balance-and-deposits.js
       payment-flow.js
       token-operations.js
       spark-agent.js
       l402-paywalls.js
-.env.example              # Environment variable template
+tests/                                # vitest suite (unit, integration, funded tiers)
+.env.example                          # Environment variable template
 ```
 
 ## Trigger Phrases
@@ -48,10 +53,11 @@ npm install @buildonspark/spark-sdk dotenv
 ## Environment Variables
 
 ```bash
-SPARK_MNEMONIC=<BIP39 mnemonic>
+SPARK_PASSPHRASE=<at least 12 chars — decrypts ~/.spark/seed.enc at boot>
 SPARK_NETWORK=MAINNET
+# SPARK_SEED_PATH=/custom/path/seed.enc   # optional override
 ```
 
 ## Security Note
 
-A Spark mnemonic grants full wallet access (no permission scoping like NWC). Use dedicated wallets with limited funds for agents. See SKILL.md for full security guidance.
+The mnemonic is encrypted at rest in `~/.spark/seed.enc` (scrypt + AES-256-GCM). The runtime reads `SPARK_PASSPHRASE` from env and decrypts at boot — there is no plaintext-mnemonic-in-`.env` path. Both passphrase and seed file together grant full wallet access (no permission scoping like NWC). Use dedicated wallets with limited funds for agents. See SKILL.md for full security guidance.

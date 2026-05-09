@@ -56,16 +56,16 @@ Net effect: the agent can *propose* arbitrary transactions all day, but the mult
 
 | Concern | Alby Hub | Nunchuk | sparkbtcbot |
 |---|---|---|---|
-| Where does the seed live? | Hub process, separate from agent | Hardware / Nunchuk HSM | **In `.env`, agent reads it directly** |
-| Per-app scoping? | NWC scopes per connection | Per-signer policies | **None — full custody** |
+| Where does the seed live? | Hub process, separate from agent | Hardware / Nunchuk HSM | **Encrypted at rest (`~/.spark/seed.enc`, scrypt + AES-256-GCM); agent reads passphrase from env and decrypts at boot** |
+| Per-app scoping? | NWC scopes per connection | Per-signer policies | **None — full custody once decrypted** |
 | Spending limits? | `--max-amount`, `--budget-renewal` | `--limit-amount … --limit-interval DAILY` | **None — agent can spend everything** |
 | Revocation? | Delete NWC app, regenerate JWT | Revoke API key, change signer | **Sweep funds to new mnemonic (only option)** |
 | Two-step approval? | N/A (NWC token enforces budget) | Yes — sign step is separate | **No — one-shot `wallet.transfer()`** |
 | Read-only mode? | `--permission readonly` token | Inspect-only commands | **Possible (`SparkReadonlyClient` exists in SDK) but not surfaced** |
 | Isolated sub-wallets? | `--isolated` | Multisig per wallet | **`accountNumber` provides separation, but an agent with the mnemonic has all account numbers** |
-| Explicit "DO NOT" rules for Claude? | Yes, multiple | Implicit (CLI never returns secrets) | **Partial — "never log mnemonic" but no `env`/`printenv` rule** |
+| Explicit "DO NOT" rules for Claude? | Yes, multiple | Implicit (CLI never returns secrets) | **Yes — covers mnemonic, passphrase, seed file, `env`/`printenv`** |
 
-Today's `sparkbtcbot` SKILL.md acknowledges the gap and points to [`sparkbtcbot-proxy`](https://github.com/echennells/sparkbtcbot-proxy) for production use — but the proxy is mentioned once and the rest of the skill teaches the full-custody pattern. **This is backwards from what Alby and Nunchuk do.**
+`sparkbtcbot` now enforces encrypted-at-rest as the floor (no plaintext-mnemonic mode) and points to [`sparkbtcbot-proxy`](https://github.com/echennells/sparkbtcbot-proxy) for production. The encryption layer closes the `.env`-leak class of attacks; the remaining gaps (scoping, limits, revocation, two-step approval) still require the proxy. **Alby and Nunchuk solve those at a different layer — neither is reachable purely inside the agent's process.**
 
 ---
 

@@ -1,13 +1,13 @@
 // Interactive one-time setup: encrypts a BIP39 mnemonic at rest.
 //
-// Three modes:
-//   1. SPARK_MNEMONIC env set → use it as the mnemonic to encrypt
-//   2. --import flag → read mnemonic from stdin
-//   3. default (neither) → generate a fresh mnemonic via @buildonspark/spark-sdk
+// Mode selection (first match wins):
+//   1. --import flag → prompt for mnemonic on stderr (no shell-history exposure)
+//   2. SPARK_MNEMONIC env set → encrypt that mnemonic (one-time migration path)
+//   3. default → generate a fresh mnemonic via @buildonspark/spark-sdk
 //
 // Passphrase comes from:
 //   - SPARK_PASSPHRASE env var if set
-//   - otherwise prompted on stderr
+//   - otherwise prompted on stderr (with confirmation)
 //
 // On success, writes ~/.spark/seed.enc with mode 0600 (or SPARK_SEED_PATH).
 // Prints the wallet's Spark address so the user can verify the right wallet
@@ -15,8 +15,6 @@
 // instructions if generated fresh.
 
 import "dotenv/config";
-import { promisify } from "node:util";
-import { createInterface } from "node:readline";
 import { stdin, stdout, stderr, exit, env } from "node:process";
 import { saveEncryptedMnemonic, DEFAULT_SEED_PATH } from "../../../lib/encrypted-seed.js";
 import { existsSync } from "node:fs";

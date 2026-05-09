@@ -36,17 +36,19 @@ The Lightspark regtest faucet (https://app.lightspark.com/regtest-faucet) is a U
 
 ## Enabling the funded tier
 
+The funded tier reads a separate env var, `SPARK_TEST_MNEMONIC`, directly from `tests/helpers/wallet.js`. This is **independent** of the runtime's encrypted-seed flow (`SPARK_PASSPHRASE` + `~/.spark/seed.enc`); test wallets are ephemeral REGTEST wallets holding throwaway sats, so the encryption layer adds no real value and the plaintext env var keeps the test setup simple.
+
 One-time setup:
 
-1. Generate a fresh REGTEST wallet and capture its Spark address:
+1. Generate a fresh REGTEST wallet:
    ```bash
-   SPARK_NETWORK=REGTEST npm run example:setup
+   SPARK_NETWORK=REGTEST SPARK_PASSPHRASE="<at-least-12-chars>" npm run setup
    ```
-   This prints a 12- or 24-word mnemonic and a `sparkrt1p...` Spark address.
+   The script prints the generated 12- or 24-word mnemonic once and the resulting `sparkrt1p...` Spark address. Capture both.
 
 2. Get an L1 deposit address from that wallet:
    ```bash
-   SPARK_NETWORK=REGTEST SPARK_MNEMONIC="<mnemonic>" npm run example:balance
+   SPARK_NETWORK=REGTEST SPARK_PASSPHRASE="<the same>" npm run example:balance
    ```
    The output includes a static deposit address (looks like `bcrt1...` or similar).
 
@@ -54,7 +56,7 @@ One-time setup:
 
 4. Claim the deposit (the SDK or the example flow turns L1 sats into Spark balance).
 
-5. Save the mnemonic to `.env`:
+5. Save the **mnemonic** (not the passphrase) to `.env` as the test variable:
    ```bash
    SPARK_TEST_MNEMONIC="<your 12 or 24 word mnemonic>"
    ```
