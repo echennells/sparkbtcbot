@@ -74,6 +74,14 @@ describe("encrypted-seed", () => {
     expect(a.equals(b)).toBe(false);
   }, 60_000);
 
+  it("refuses to overwrite an existing seed file (EEXIST)", async () => {
+    const path = tmp("no-overwrite.enc");
+    await saveEncryptedMnemonic({ mnemonic: SAMPLE, passphrase: STRONG_PP, path });
+    await expect(
+      saveEncryptedMnemonic({ mnemonic: SAMPLE, passphrase: STRONG_PP, path }),
+    ).rejects.toMatchObject({ code: "EEXIST" });
+  }, 60_000);
+
   it("rejects a corrupted file", async () => {
     const path = tmp("corrupt.enc");
     await saveEncryptedMnemonic({ mnemonic: SAMPLE, passphrase: STRONG_PP, path });

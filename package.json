@@ -7,7 +7,7 @@
     "@buildonspark/issuer-sdk": "^0.1.35",
     "@buildonspark/spark-sdk": "^0.7.17",
     "dotenv": "^16.4.7",
-    "light-bolt11-decoder": "^3.2.0"
+    "light-bolt11-decoder": "3.2.0"
   },
   "scripts": {
     "setup": "node skills/sparkbtcbot/scripts/setup-encrypted-seed.js",

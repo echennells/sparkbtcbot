@@ -1,5 +1,10 @@
 import "dotenv/config";
 import { SparkWallet } from "@buildonspark/spark-sdk";
+// light-bolt11-decoder is a single-maintainer package (fiatjaf). Pinned to an
+// exact version in package.json. Used here only to extract the amount field
+// for cost preview; the raw invoice string is what's passed to the Spark SDK
+// for payment, so a malicious decoder can mislead pricing but cannot redirect
+// funds. Re-audit on version bump.
 import { decode } from "light-bolt11-decoder";
 import { loadMnemonicFromEnv } from "../../../lib/encrypted-seed.js";
 
