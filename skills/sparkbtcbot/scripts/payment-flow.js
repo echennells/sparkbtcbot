@@ -11,8 +11,8 @@ async function main() {
     options: { network },
   });
 
-  const { balance } = await wallet.getBalance();
-  console.log("Current balance:", balance.toString(), "sats\n");
+  const { satsBalance } = await wallet.getBalance();
+  console.log("Current balance:", satsBalance.available.toString(), "sats\n");
 
   // --- Lightning Invoice (Receive) ---
   console.log("=== Create Lightning Invoice ===");

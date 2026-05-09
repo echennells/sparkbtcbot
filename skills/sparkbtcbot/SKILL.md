@@ -191,11 +191,11 @@ const { wallet } = await SparkWallet.initialize({
 
 const address = await wallet.getSparkAddress();
 const identityKey = await wallet.getIdentityPublicKey();
-const { balance } = await wallet.getBalance();
+const { satsBalance } = await wallet.getBalance();
 
 console.log("Spark Address:", address);
 console.log("Identity Key:", identityKey);
-console.log("Available:", balance.toString(), "sats");
+console.log("Available:", satsBalance.available.toString(), "sats");
 
 await wallet.cleanupConnections();
 ```

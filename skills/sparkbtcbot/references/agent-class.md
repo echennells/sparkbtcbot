@@ -28,7 +28,7 @@ export class SparkAgent {
   }
 
   async getBalance() {
-    const { balance, tokenBalances } = await this.#wallet.getBalance();
+    const { satsBalance, tokenBalances } = await this.#wallet.getBalance();
     const tokens = Object.fromEntries(
       Array.from(tokenBalances.entries()).map(([id, info]) => [
         id,
@@ -40,7 +40,7 @@ export class SparkAgent {
         },
       ])
     );
-    return { sats: balance.toString(), tokens };
+    return { sats: satsBalance.available.toString(), tokens };
   }
 
   async getDepositAddress() {

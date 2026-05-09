@@ -13,8 +13,8 @@ async function main() {
 
   // --- Token Balances ---
   console.log("=== Token Balances ===");
-  const { balance, tokenBalances } = await wallet.getBalance();
-  console.log("BTC:", balance.toString(), "sats\n");
+  const { satsBalance, tokenBalances } = await wallet.getBalance();
+  console.log("BTC:", satsBalance.available.toString(), "sats\n");
 
   if (tokenBalances.size > 0) {
     for (const [id, info] of tokenBalances) {

@@ -72,22 +72,33 @@ async function getPassphrase() {
   return a;
 }
 
+// Collapse any whitespace runs (spaces, tabs, newlines) into single spaces and
+// trim ends. BIP39 mnemonics are space-separated words; anything else is
+// stray formatting from copy-paste or shell-pipe weirdness.
+function normalizeMnemonic(s) {
+  if (typeof s !== "string") return "";
+  return s.trim().replace(/\s+/g, " ");
+}
+
+// Valid BIP39 mnemonic word counts.
+const VALID_WORD_COUNTS = new Set([12, 15, 18, 21, 24]);
+
 async function getMnemonicSource() {
   // Order: explicit --import flag, then SPARK_MNEMONIC env, then generate fresh.
   const args = process.argv.slice(2);
   if (args.includes("--import")) {
     const m = await promptStderr("Paste your existing 12 or 24 word mnemonic: ");
-    return { mnemonic: m.trim(), source: "imported" };
+    return { mnemonic: normalizeMnemonic(m), source: "imported" };
   }
   if (env.SPARK_MNEMONIC) {
     info("Encrypting mnemonic from SPARK_MNEMONIC env var.");
-    return { mnemonic: env.SPARK_MNEMONIC.trim(), source: "env" };
+    return { mnemonic: normalizeMnemonic(env.SPARK_MNEMONIC), source: "env" };
   }
   // Generate fresh
   info(`Generating a fresh ${NETWORK} mnemonic...`);
   const { SparkWallet } = await import("@buildonspark/spark-sdk");
   const result = await SparkWallet.initialize({ options: { network: NETWORK } });
-  const mnemonic = result.mnemonic;
+  const mnemonic = normalizeMnemonic(result.mnemonic);
   await result.wallet.cleanupConnections();
   return { mnemonic, source: "generated" };
 }
@@ -100,8 +111,19 @@ async function main() {
   }
 
   const { mnemonic, source } = await getMnemonicSource();
-  if (!mnemonic || mnemonic.split(/\s+/).length < 12) {
-    err("Mnemonic looks invalid (must be 12 or 24 words).");
+  if (!mnemonic) {
+    err("No mnemonic provided.");
+    exit(1);
+  }
+  const wordCount = mnemonic.split(" ").length;
+  if (!VALID_WORD_COUNTS.has(wordCount)) {
+    err(`Mnemonic looks invalid: got ${wordCount} words, BIP39 requires exactly 12, 15, 18, 21, or 24.`);
+    exit(1);
+  }
+  // Each word must be lowercase ASCII letters. BIP39 wordlist is all lowercase
+  // alphabetic — anything else is paste corruption or input-injection.
+  if (!/^[a-z]+(?: [a-z]+)*$/.test(mnemonic)) {
+    err("Mnemonic looks invalid: contains non-alphabetic characters or non-lowercase words.");
     exit(1);
   }
 
@@ -111,12 +133,10 @@ async function main() {
     exit(1);
   }
 
-  info("\nEncrypting...");
-  await saveEncryptedMnemonic({ mnemonic, passphrase, path: SEED_PATH });
-  info(`Wrote ${SEED_PATH} (mode 0600)`);
-
-  // Verify by loading wallet and showing the address
-  info("\nVerifying — initializing wallet from the encrypted seed...");
+  // Verify the mnemonic by initializing a wallet from it BEFORE we write
+  // anything. If the SDK rejects it (bad checksum, invalid words, etc.),
+  // we exit without leaving an orphan seed.enc or backup file behind.
+  info("\nVerifying mnemonic with the Spark SDK...");
   const { SparkWallet } = await import("@buildonspark/spark-sdk");
   const { wallet } = await SparkWallet.initialize({
     mnemonicOrSeed: mnemonic,
@@ -124,6 +144,10 @@ async function main() {
   });
   const address = await wallet.getSparkAddress();
   await wallet.cleanupConnections();
+
+  info("\nEncrypting...");
+  await saveEncryptedMnemonic({ mnemonic, passphrase, path: SEED_PATH });
+  info(`Wrote ${SEED_PATH} (mode 0600)`);
 
   // Surface the bare facts user needs
   stdout.write("\n=== setup complete ===\n");

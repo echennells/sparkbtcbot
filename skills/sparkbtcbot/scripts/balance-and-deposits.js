@@ -12,9 +12,9 @@ async function main() {
   });
 
   // Check BTC balance
-  const { balance, tokenBalances } = await wallet.getBalance();
+  const { satsBalance, tokenBalances } = await wallet.getBalance();
   console.log("=== Balance ===");
-  console.log("BTC:", balance.toString(), "sats");
+  console.log("BTC:", satsBalance.available.toString(), "sats");
 
   // Check token balances
   if (tokenBalances.size > 0) {

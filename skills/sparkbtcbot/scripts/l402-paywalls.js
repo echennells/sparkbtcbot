@@ -203,8 +203,8 @@ async function main() {
     options: { network },
   });
 
-  const { balance } = await wallet.getBalance();
-  console.log("Current balance:", balance.toString(), "sats\n");
+  const { satsBalance } = await wallet.getBalance();
+  console.log("Current balance:", satsBalance.available.toString(), "sats\n");
 
   // --- Preview L402 Cost ---
   const L402_TEST_URL = "https://tassandra.laisee.org/price/USD";
