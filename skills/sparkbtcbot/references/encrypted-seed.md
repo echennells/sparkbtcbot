@@ -43,28 +43,37 @@ The version + KDF id + cipher id at the start means the file is self-describing;
 
 ## Setup
 
-`npm run setup` is the single entry point. The script picks one of three modes based on the environment it sees, in this order:
+`npm run setup` is the single entry point. Three scenarios depending on where the mnemonic comes from:
 
-1. **`--import` flag** — prompts for an existing mnemonic on stderr (no shell-history exposure). Use this when bringing a mnemonic from a hardware wallet, paper backup, or another machine.
-   ```bash
-   SPARK_PASSPHRASE="..." npm run setup -- --import
-   ```
+**Scenario A — Fresh wallet.** No flag, no `SPARK_MNEMONIC` env var. The SDK generates a new BIP39 mnemonic, the script encrypts it, and writes the words to a backup file for offline copy.
+```bash
+SPARK_NETWORK=MAINNET SPARK_PASSPHRASE="..." npm run setup
+```
 
-2. **`SPARK_MNEMONIC` already set in env** — encrypts that mnemonic and exits. Intended as a one-time migration path for users coming from a pre-existing plaintext `.env`. The cleanest way to invoke this: leave your existing `SPARK_MNEMONIC` in `.env`, add `SPARK_PASSPHRASE`, then run `npm run setup`. dotenv loads both, the script encrypts, and afterward you remove `SPARK_MNEMONIC` from `.env`. Avoid passing the mnemonic inline on the command line — it lands in shell history.
+**Scenario B — Migrate from a pre-existing `SPARK_MNEMONIC` in `.env`.** Intended as a one-time migration path for users coming from a pre-existing plaintext `.env`. Leave the existing `SPARK_MNEMONIC` line in `.env`, add `SPARK_PASSPHRASE`, then run `npm run setup`. dotenv loads both, the script encrypts, and afterward you remove the `SPARK_MNEMONIC` line. Don't pass the mnemonic inline on the command line — it lands in shell history.
+```bash
+npm run setup
+```
 
-3. **Default — generate a fresh wallet.** No flag, no `SPARK_MNEMONIC` env var. The SDK generates a new BIP39 mnemonic, the script encrypts it, and prints the mnemonic once for offline backup.
-   ```bash
-   SPARK_NETWORK=MAINNET SPARK_PASSPHRASE="..." npm run setup
-   ```
+**Scenario C — Import an existing mnemonic from paper / hardware backup.** The script prompts on stderr (no shell-history exposure) for the mnemonic. Use this when bringing a mnemonic from a hardware wallet, paper backup, or another machine.
+```bash
+SPARK_PASSPHRASE="..." npm run setup -- --import
+```
 
 The passphrase must be at least 12 characters. If `SPARK_PASSPHRASE` is unset the script prompts on stderr (with confirmation).
+
+> Implementation note: the script checks scenarios in **C → B → A** order (`--import` flag wins over `SPARK_MNEMONIC` env, which wins over fresh-generate). This order doesn't matter for users picking one path deliberately, but it determines what happens if multiple inputs are present.
 
 After setup completes:
 
 1. The seed file is at `~/.spark/seed.enc` (override with `SPARK_SEED_PATH`)
 2. `SPARK_PASSPHRASE` needs to remain available to the runtime — keep it in `.env` (gitignored) or your deployment's secret manager. If you set it inline only for the setup invocation, add it to `.env` now.
-3. If a fresh mnemonic was generated, the script prints it once — **save it offline immediately**, that's your recovery path. After saving, clear your terminal scrollback.
-4. If you migrated from a plaintext `.env` (mode 2), remove `SPARK_MNEMONIC` from `.env`.
+3. **If a fresh mnemonic was generated** (scenario A), the script wrote the 12 words to a persistent file next to `seed.enc` (typically `~/.spark/MNEMONIC_BACKUP_<random>.txt`, mode 0600) and printed only the path. The mnemonic was **not** printed to stdout. The user should:
+   - `cat` that file (default: in their own terminal so the words don't enter the transcript; if they explicitly ask the agent to read it, that's their call)
+   - Copy the words to offline backup (paper / password manager / hardware backup)
+   - `rm` the file — it does not auto-delete, and persists across reboots until removed
+   The file-handoff keeps the mnemonic out of the agent's stdout-via-Bash capture by default. The agent must not read the file unless the user explicitly asks.
+4. If you migrated from a plaintext `.env` (scenario B), remove `SPARK_MNEMONIC` from `.env`.
 
 The script verifies by initializing a wallet from the encrypted seed and printing the resulting Spark address — useful as a sanity check that the right wallet loaded.
 

@@ -44,7 +44,7 @@ One-time setup:
    ```bash
    SPARK_NETWORK=REGTEST SPARK_PASSPHRASE="<at-least-12-chars>" npm run setup
    ```
-   The script prints the generated 12- or 24-word mnemonic once and the resulting `sparkrt1p...` Spark address. Capture both.
+   The script writes the new mnemonic to a file (path printed in stdout, typically `~/.spark/MNEMONIC_BACKUP_*.txt`, mode 0600) and prints the `sparkrt1p...` Spark address. `cat` the mnemonic file and capture both the mnemonic and the address; you'll need them in step 5. The mnemonic is **not** printed to stdout. After capturing, `rm` the file — it does not auto-delete.
 
 2. Get an L1 deposit address from that wallet:
    ```bash

@@ -16,8 +16,9 @@
 
 import "dotenv/config";
 import { stdin, stdout, stderr, exit, env } from "node:process";
-import { saveEncryptedMnemonic, DEFAULT_SEED_PATH } from "../../../lib/encrypted-seed.js";
+import { saveEncryptedMnemonic, writeMnemonicBackupFile, DEFAULT_SEED_PATH } from "../../../lib/encrypted-seed.js";
 import { existsSync } from "node:fs";
+import { dirname } from "node:path";
 
 const SEED_PATH = env.SPARK_SEED_PATH || DEFAULT_SEED_PATH;
 const NETWORK = env.SPARK_NETWORK || "MAINNET";
@@ -131,10 +132,24 @@ async function main() {
   stdout.write(`encrypted seed: ${SEED_PATH}\n`);
 
   if (source === "generated") {
-    stdout.write("\n=== !!! BACK UP THIS MNEMONIC OFFLINE NOW !!! ===\n");
-    stdout.write(`  ${mnemonic}\n`);
-    stdout.write("=== this is the ONLY recovery path; this is the LAST time you'll see it ===\n");
-    stdout.write("After saving, clear your terminal scrollback.\n");
+    // CRITICAL: do NOT print the mnemonic to stdout. If this script is being
+    // invoked by an AI agent that captures stdout into a conversation log,
+    // printing the mnemonic would leak it into the transcript. Instead write
+    // the mnemonic to a persistent file (next to seed.enc) and print only
+    // the path.
+    const backupPath = await writeMnemonicBackupFile(mnemonic, { dir: dirname(SEED_PATH) });
+    stdout.write("\n=== !!! BACK UP YOUR MNEMONIC NOW !!! ===\n");
+    stdout.write(`The 12-word mnemonic was written to:\n  ${backupPath}\n`);
+    stdout.write("\nThis file is on disk, mode 0600, and does NOT auto-delete.\n");
+    stdout.write("\nWhat to do next:\n");
+    stdout.write("  1. Read the file:  cat \"" + backupPath + "\"\n");
+    stdout.write("     (Default: do this in your own terminal so the words don't land\n");
+    stdout.write("     in the agent's transcript. Asking the agent to read it is allowed\n");
+    stdout.write("     if you'd rather see it here, but accept the trade-off.)\n");
+    stdout.write("  2. Copy the words to an offline backup — paper, password manager,\n");
+    stdout.write("     or hardware-wallet seed backup. This is the ONLY recovery path.\n");
+    stdout.write(`  3. Delete the file:  rm "${backupPath}"\n`);
+    stdout.write("\nUntil you delete it, the file persists across reboots.\n");
   } else if (source === "env") {
     stdout.write("\nNext: remove SPARK_MNEMONIC from .env and replace with SPARK_PASSPHRASE.\n");
   }

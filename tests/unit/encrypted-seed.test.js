@@ -1,7 +1,8 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { saveEncryptedMnemonic, loadMnemonic } from "../../lib/encrypted-seed.js";
-import { rmSync, statSync, readFileSync } from "node:fs";
+import { saveEncryptedMnemonic, loadMnemonic, writeMnemonicBackupFile } from "../../lib/encrypted-seed.js";
+import { rmSync, statSync, readFileSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const SAMPLE = "gift monkey author panel east casual sudden surface talent all broken lonely";
 const STRONG_PP = "correct horse battery staple pikachu";
@@ -9,7 +10,7 @@ const STRONG_PP = "correct horse battery staple pikachu";
 let toCleanUp = [];
 afterEach(() => {
   for (const p of toCleanUp) {
-    try { rmSync(p); } catch {}
+    try { rmSync(p, { recursive: true, force: true }); } catch {}
   }
   toCleanUp = [];
 });
@@ -102,4 +103,51 @@ describe("encrypted-seed", () => {
     expect(buf[1]).toBe(0x01); // kdf = scrypt
     expect(buf[2]).toBe(0x01); // cipher = aes-256-gcm
   }, 30_000);
+
+  describe("writeMnemonicBackupFile", () => {
+    function tmpDir() {
+      const dir = mkdtempSync(join(tmpdir(), "spark-test-backup-"));
+      toCleanUp.push(dir);
+      return dir;
+    }
+
+    it("writes the mnemonic to a file with mode 0600", async () => {
+      const dir = tmpDir();
+      const path = await writeMnemonicBackupFile(SAMPLE, { dir });
+      const mode = statSync(path).mode & 0o777;
+      expect(mode).toBe(0o600);
+      const contents = readFileSync(path, "utf8");
+      expect(contents).toContain(SAMPLE);
+    });
+
+    it("returns a conspicuous filename with random component, in the requested dir", async () => {
+      const dir = tmpDir();
+      const p1 = await writeMnemonicBackupFile(SAMPLE, { dir });
+      const p2 = await writeMnemonicBackupFile(SAMPLE, { dir });
+      expect(p1).not.toBe(p2);
+      expect(p1.startsWith(dir)).toBe(true);
+      expect(p1).toMatch(/MNEMONIC_BACKUP_[0-9a-f]+\.txt$/);
+    });
+
+    it("rejects empty mnemonic", async () => {
+      const dir = tmpDir();
+      await expect(writeMnemonicBackupFile("", { dir })).rejects.toThrow(/non-empty/);
+      await expect(writeMnemonicBackupFile("   ", { dir })).rejects.toThrow(/non-empty/);
+    });
+
+    it("file contents include a destruction warning, not just the mnemonic", async () => {
+      // Defensive: if the user copies this file elsewhere, the warning travels with it.
+      const dir = tmpDir();
+      const path = await writeMnemonicBackupFile(SAMPLE, { dir });
+      const contents = readFileSync(path, "utf8");
+      expect(contents.toLowerCase()).toMatch(/delete this file|back this up/);
+    });
+
+    it("creates the target directory if it does not exist", async () => {
+      const dir = join(tmpDir(), "nested", "subdir");
+      const path = await writeMnemonicBackupFile(SAMPLE, { dir });
+      expect(path.startsWith(dir)).toBe(true);
+      expect(statSync(path).mode & 0o777).toBe(0o600);
+    });
+  });
 });
