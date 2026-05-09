@@ -4,12 +4,14 @@ description: Set up Spark Bitcoin L2 wallet capabilities for AI agents — walle
 argument-hint: "[Optional: specify what to set up - wallet, payments, tokens, lightning, l402, or full]"
 requires:
   env:
-    - name: SPARK_MNEMONIC
-      description: 12 or 24 word BIP39 mnemonic for the Spark wallet. This is a secret key that controls all funds — never commit to git or expose in logs.
+    - name: SPARK_PASSPHRASE
+      description: Passphrase that decrypts the BIP39 mnemonic from the encrypted-seed file (~/.spark/seed.enc by default). Useless without the seed file. Run `npm run setup` once to create the encrypted seed.
       sensitive: true
     - name: SPARK_NETWORK
       description: Network to connect to (MAINNET or REGTEST)
       default: MAINNET
+    - name: SPARK_SEED_PATH
+      description: Optional override for the encrypted-seed file location. Defaults to ~/.spark/seed.enc.
 model-invocation: autonomous
 model-invocation-reason: This skill enables agents to autonomously send and receive Bitcoin payments. Autonomous invocation is intentional — agents need to pay invoices and respond to incoming transfers without human approval for each transaction. Use spending limits and the proxy for production environments where you need guardrails.
 ---
@@ -37,14 +39,16 @@ The proxy wraps the same Spark SDK behind authenticated REST endpoints. Agents g
 
 ## Rules for Claude when operating this skill
 
-These rules apply whenever this skill is active. They are not optional — the mnemonic in `SPARK_MNEMONIC` controls all funds in the wallet, and a leak into the conversation transcript or shell history is functionally identical to a leak from disk.
+These rules apply whenever this skill is active. They are not optional — the mnemonic and the passphrase that decrypts it both control all funds in the wallet, and a leak into the conversation transcript or shell history is functionally identical to a leak from disk.
 
 - **DO NOT print the mnemonic to chat, logs, or any other output.** Not to confirm it's set, not to verify the user pasted it correctly. To verify the wallet loads, call `wallet.getSparkAddress()` and compare *addresses*, never seed words.
+- **DO NOT print the passphrase either.** It's the other half of the seed material — leaking the passphrase in the same conversation that has the seed file path leaks the wallet.
 - **DO NOT read `.env` back into the conversation.** Load it programmatically with `import "dotenv/config"`. Never `cat .env`, `head .env`, `Read` the file, or otherwise put its contents in chat. Same rule for `.env.local`, `.envrc`, and any secrets-bearing dotfile.
-- **DO NOT run `env`, `printenv`, `set`, or `echo $SPARK_MNEMONIC`** in the conversation — these dump the mnemonic into the transcript.
+- **DO NOT read the encrypted-seed file** (`~/.spark/seed.enc`) into the conversation either, even though it's encrypted — there is no reason to.
+- **DO NOT run `env`, `printenv`, `set`, or `echo $SPARK_PASSPHRASE`** in the conversation — these dump the passphrase into the transcript.
 - **DO NOT include the mnemonic in commit messages, code comments, test fixtures, README examples, or git history.** REGTEST throwaway mnemonics are the only exception; when logging one, prefix it with "REGTEST throwaway" inline so a future reader doesn't mistake it for a mainnet seed.
-- **DO NOT silently embed a generated mnemonic in code.** When `SparkWallet.initialize()` returns a fresh mnemonic, surface it to the user once with explicit instructions to save it offline, then drop it from working context.
-- **If you think a mnemonic has been exposed in this conversation,** stop and tell the user before doing anything else. Do not attempt to "clean up" by generating a new wallet or sweeping funds without explicit user instruction.
+- **DO NOT silently embed a generated mnemonic in code.** When `SparkWallet.initialize()` or the setup script returns a fresh mnemonic, surface it to the user once with explicit instructions to save it offline, then drop it from working context.
+- **If you think a mnemonic or passphrase has been exposed in this conversation,** stop and tell the user before doing anything else. Do not attempt to "clean up" by generating a new wallet or sweeping funds without explicit user instruction.
 
 ## Why Bitcoin for Agents
 

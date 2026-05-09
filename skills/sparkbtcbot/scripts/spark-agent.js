@@ -1,5 +1,6 @@
 import "dotenv/config";
 import { SparkWallet } from "@buildonspark/spark-sdk";
+import { loadMnemonicFromEnv } from "../../../lib/encrypted-seed.js";
 
 export class SparkAgent {
   #wallet;
@@ -179,21 +180,8 @@ export class SparkAgent {
 
 async function main() {
   const network = process.env.SPARK_NETWORK || "MAINNET";
-
-  if (!process.env.SPARK_MNEMONIC) {
-    console.log("No SPARK_MNEMONIC set. Generating new wallet...\n");
-  }
-
-  const { agent, mnemonic } = await SparkAgent.create(
-    process.env.SPARK_MNEMONIC,
-    network,
-  );
-
-  if (mnemonic) {
-    // WARNING: Only for initial setup. Save securely and clear terminal history.
-    console.log("Generated mnemonic (SAVE SECURELY, then clear terminal):");
-    console.log(mnemonic, "\n");
-  }
+  const mnemonic = await loadMnemonicFromEnv();
+  const { agent } = await SparkAgent.create(mnemonic, network);
 
   const identity = await agent.getIdentity();
   console.log("=== Agent Identity ===");

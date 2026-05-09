@@ -1,11 +1,7 @@
 import "dotenv/config";
 import { SparkWallet } from "@buildonspark/spark-sdk";
 import { decode } from "light-bolt11-decoder";
-
-if (!process.env.SPARK_MNEMONIC) {
-  console.error("SPARK_MNEMONIC not set. Run wallet-setup.js first.");
-  process.exit(1);
-}
+import { loadMnemonicFromEnv } from "../../../lib/encrypted-seed.js";
 
 const network = process.env.SPARK_NETWORK || "MAINNET";
 
@@ -196,8 +192,9 @@ async function previewL402(url) {
 }
 
 async function main() {
+  const mnemonic = await loadMnemonicFromEnv();
   const { wallet } = await SparkWallet.initialize({
-    mnemonicOrSeed: process.env.SPARK_MNEMONIC,
+    mnemonicOrSeed: mnemonic,
     options: { network },
   });
 

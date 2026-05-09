@@ -10,13 +10,12 @@
     "light-bolt11-decoder": "^3.2.0"
   },
   "scripts": {
-    "example:setup": "node skills/sparkbtcbot/scripts/wallet-setup.js",
+    "setup": "node skills/sparkbtcbot/scripts/setup-encrypted-seed.js",
     "example:balance": "node skills/sparkbtcbot/scripts/balance-and-deposits.js",
     "example:payments": "node skills/sparkbtcbot/scripts/payment-flow.js",
     "example:tokens": "node skills/sparkbtcbot/scripts/token-operations.js",
     "example:agent": "node skills/sparkbtcbot/scripts/spark-agent.js",
     "example:l402": "node skills/sparkbtcbot/scripts/l402-paywalls.js",
-    "setup:encrypted-seed": "node skills/sparkbtcbot/scripts/setup-encrypted-seed.js",
     "test": "vitest run tests/unit",
     "test:unit": "vitest run tests/unit",
     "test:integration": "vitest run tests/integration --exclude tests/integration/funded",
