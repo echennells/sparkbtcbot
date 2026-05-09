@@ -202,6 +202,16 @@ await wallet.cleanupConnections();
 
 Decrypt happens once at boot (~250ms scrypt). Hold the wallet — do not call `loadMnemonicFromEnv()` per request.
 
+The lib also exports `loadEncryptedMnemonic` as an alias of `loadMnemonic` (symmetric with `saveEncryptedMnemonic`); both work, pick one for your project.
+
+### Running setup in sandboxed / constrained environments
+
+A few rough edges that bite agents running in containers, devcontainers, or sandboxes:
+
+- **Working directory matters for `npm run setup`.** The script's `dotenv/config` import resolves `.env` relative to `process.cwd()`, not the script's location. Run from the project root (the directory containing `package.json`). If you `cd` somewhere else first, `.env` won't load and `SPARK_PASSPHRASE` will be empty.
+- **`~` must be writable.** The default seed path is `~/.spark/seed.enc`. In some sandboxes `$HOME` is read-only or set to an unexpected location (e.g., `HOME=/workspace` with `/workspace/.spark/` not writable). If the default fails, override with `SPARK_SEED_PATH=/tmp/spark/seed.enc` (or any writable path) — the mnemonic-backup file follows the same directory automatically.
+- **Module resolution.** Node walks up from the script's file path looking for `node_modules`. If the SDK imports fail (`Cannot find module '@buildonspark/spark-sdk'`), the script is being run from outside a tree that has the dependencies installed. Run from the cloned skill repo (where `npm install` already ran), or install the deps in your target project first.
+
 ## Backup and Recovery
 
 The mnemonic is the entire backup. Spark operators hold leaf state authoritatively — there is no local channel state or other persisted data that needs separate replication. A fresh install on a new host with the same mnemonic recovers the full wallet (balance, deposit addresses, identity).

@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { saveEncryptedMnemonic, loadMnemonic, writeMnemonicBackupFile } from "../../lib/encrypted-seed.js";
+import { saveEncryptedMnemonic, loadMnemonic, loadEncryptedMnemonic, writeMnemonicBackupFile } from "../../lib/encrypted-seed.js";
 import { rmSync, statSync, readFileSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -26,6 +26,14 @@ describe("encrypted-seed", () => {
     const path = tmp("roundtrip.enc");
     await saveEncryptedMnemonic({ mnemonic: SAMPLE, passphrase: STRONG_PP, path });
     const got = await loadMnemonic({ passphrase: STRONG_PP, path });
+    expect(got).toBe(SAMPLE);
+  }, 30_000);
+
+  it("loadEncryptedMnemonic is an alias for loadMnemonic", async () => {
+    expect(loadEncryptedMnemonic).toBe(loadMnemonic);
+    const path = tmp("alias.enc");
+    await saveEncryptedMnemonic({ mnemonic: SAMPLE, passphrase: STRONG_PP, path });
+    const got = await loadEncryptedMnemonic({ passphrase: STRONG_PP, path });
     expect(got).toBe(SAMPLE);
   }, 30_000);
 
