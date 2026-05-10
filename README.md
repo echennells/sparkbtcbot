@@ -27,18 +27,27 @@ Spark is a Bitcoin Layer 2 that lets you send and receive Bitcoin instantly with
 
 ## Installation
 
-Clone into your Claude Code skills directory:
+Recommended — install via the Claude Code plugin system:
+
+```bash
+claude plugin marketplace add https://github.com/echennells/sparkbtcbot-skill
+claude plugin install sparkbtcbot
+```
+
+That registers this repo as a marketplace and installs the skill. Updates flow through `claude plugin update sparkbtcbot`.
+
+Alternative — clone the repo directly (useful if you want to run the example scripts and tests locally):
 
 ```bash
 git clone https://github.com/echennells/sparkbtcbot-skill.git ~/.claude/skills/sparkbtcbot-skill
 ```
 
-Or add the path to your Claude Code configuration.
+Both methods leave Claude with the same skill loaded; the difference is whether you also have a working tree of the example scripts. The Quick Start below assumes the cloned-locally path.
 
 ## Quick Start
 
 ```bash
-# Install dependencies (in the skill directory)
+# Install dependencies (in the cloned skill directory)
 cd ~/.claude/skills/sparkbtcbot-skill
 npm install
 
