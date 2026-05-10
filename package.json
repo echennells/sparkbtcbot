@@ -1,13 +1,56 @@
 {
   "name": "sparkbtcbot-skill",
   "version": "0.1.0",
+  "description": "Spark Bitcoin L2 wallet skill for AI agents — encrypted-at-rest seed storage, Lightning interop, L402 paywall payment, BTKN/LRC20 tokens. Works with Claude Code (via plugin marketplace) and any other LLM agent framework (via the npm package's getSkillContent helpers).",
+  "keywords": [
+    "claude",
+    "claude-code",
+    "claude-skill",
+    "claude-plugin",
+    "ai-agent",
+    "llm-agent",
+    "agentic",
+    "bitcoin",
+    "spark",
+    "spark-l2",
+    "lightning",
+    "lightning-network",
+    "l402",
+    "lsat",
+    "wallet",
+    "bip39",
+    "btkn",
+    "lrc20",
+    "mcp",
+    "btc"
+  ],
+  "homepage": "https://github.com/echennells/sparkbtcbot-skill",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/echennells/sparkbtcbot-skill.git"
+  },
+  "bugs": "https://github.com/echennells/sparkbtcbot-skill/issues",
+  "license": "MIT",
+  "author": "Eric Chennells",
   "type": "module",
-  "description": "Claude Code skill for setting up Spark Bitcoin L2 wallet capabilities for AI agents",
-  "dependencies": {
-    "@buildonspark/issuer-sdk": "^0.1.35",
-    "@buildonspark/spark-sdk": "^0.7.17",
-    "dotenv": "^16.4.7",
-    "light-bolt11-decoder": "3.2.0"
+  "main": "./lib/index.js",
+  "types": "./lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "import": "./lib/index.js"
+    }
+  },
+  "files": [
+    "lib/",
+    "skills/",
+    ".claude-plugin/",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "engines": {
+    "node": ">=18"
   },
   "scripts": {
     "setup": "node skills/sparkbtcbot/scripts/setup-encrypted-seed.js",
@@ -23,6 +66,10 @@
     "test:all": "vitest run"
   },
   "devDependencies": {
+    "@buildonspark/issuer-sdk": "^0.1.35",
+    "@buildonspark/spark-sdk": "^0.7.17",
+    "dotenv": "^16.4.7",
+    "light-bolt11-decoder": "3.2.0",
     "vitest": "4.1.5"
   }
 }
