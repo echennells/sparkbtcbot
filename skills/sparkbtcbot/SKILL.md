@@ -13,7 +13,7 @@ requires:
     - name: SPARK_SEED_PATH
       description: Optional override for the encrypted-seed file location. Defaults to ~/.spark/seed.enc.
 model-invocation: autonomous
-model-invocation-reason: This skill enables agents to autonomously send and receive Bitcoin payments. Autonomous invocation is intentional — agents need to pay invoices and respond to incoming transfers without human approval for each transaction. Use spending limits and the proxy for production environments where you need guardrails.
+model-invocation-reason: This skill enables agents to autonomously send and receive Bitcoin payments. Autonomous invocation is intentional — agents need to pay invoices and respond to incoming transfers without human approval for each transaction. The direct-SDK path here is full-custody-once-decrypted with no spending caps; for guardrails (scoped tokens, per-tx and daily limits, audit logs, revocation), run sparkbtcbot-proxy and have the agent talk to it over HTTP instead.
 ---
 
 # Spark Bitcoin L2 for AI Agents
@@ -263,8 +263,7 @@ This means:
 
 - Regularly sweep earned funds to a more secure wallet (hardware wallet, cold storage, or a separate wallet you control directly).
 - Only keep the minimum operational balance the agent needs on Spark.
-- Use `wallet.transfer()` or `wallet.withdraw()` to move funds out periodically.
-- Consider automating sweeps when the balance exceeds a threshold.
+- Use `wallet.transfer()` or `wallet.withdraw()` to move funds out periodically. This skill does not ship an automated sweeper — sweep manually as part of your operations rhythm, or build the listener yourself if you want it on autopilot (`transfer:claimed` event + balance check + `wallet.transfer()`).
 
 ### Operational Security
 
@@ -273,7 +272,7 @@ This means:
 3. **Monitor transfers** via event listeners for unexpected outgoing activity (see `references/extras.md`).
 4. **Call `cleanupConnections()`** when the wallet is no longer needed.
 5. **Use REGTEST** for development and testing, MAINNET only for production.
-6. **Implement application-level spending controls** — cap per-transaction and daily amounts in your agent logic since the SDK won't do it for you.
+6. **For spending limits, use the proxy.** This skill does not enforce per-tx or daily caps — anything in the agent's process can call `wallet.transfer()` directly, so an in-process wrapper would be bypassed by a compromised process. If you need real spending limits, run [sparkbtcbot-proxy](https://github.com/echennells/sparkbtcbot-proxy) and have the agent talk to it via scoped bearer tokens with `maxTxSats` / `dailyBudgetSats` enforced server-side.
 
 ## Resources
 
