@@ -68,9 +68,6 @@ export const skillPath: string;
 /** Absolute path to the bundled references/ directory inside this npm package. */
 export const referencesDir: string;
 
-/** Absolute path to the bundled LESSONS.md (security comparison) inside this npm package. */
-export const lessonsPath: string;
-
 /**
  * Returns the SKILL.md body as a string. Pass to your LLM framework's
  * system-prompt / context-injection mechanism.

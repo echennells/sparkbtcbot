@@ -26,7 +26,6 @@ lib/
 skills/
   sparkbtcbot/
     SKILL.md                          # Always-loaded skill body (security, setup, navigator)
-    LESSONS.md                        # Notes from comparable skills (Alby, Nunchuk)
     references/                       # Detail loaded on demand (SDK API, agent class, L402, etc.)
       encrypted-seed.md               # Threat model, setup modes, recovery
     scripts/                          # Runnable example scripts
