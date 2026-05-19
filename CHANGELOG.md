@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.2 — 2026-05-19
+
+Repo-health and test-coverage release. Published-package contents unchanged from 0.1.0 (no runtime, API, or shipped-file changes).
+
+### Added
+
+- Community-health files: `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md` (Contributor Covenant v2.1), `SECURITY.md` with private disclosure to eric@brodie.rocks.
+- GitHub Actions CI (`.github/workflows/ci.yml`) running `npm test` on Node 18, 20, and 22 for push and PR against `main`.
+- 16 new unit tests (total now 72):
+  - `tests/unit/skill-content.test.js` — covers `getSkillContent`, `getReference`, `listReferences`, `skillPath`, `referencesDir`, including a reference-doc anti-drift check against the names promised in the README.
+  - `tests/unit/plugin-manifest.test.js` — validates `.claude-plugin/marketplace.json` JSON shape and that every referenced skill path resolves to a real `SKILL.md`.
+  - `tests/unit/encrypted-seed.test.js` — adds tests for `loadMnemonicFromEnv` (env-reading + missing-passphrase) and for the unsupported version/kdf/cipher byte rejection paths plus the too-short-file guard.
+
 ## 0.1.0 — 2026-05-10
 
 Initial public release.

@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { saveEncryptedMnemonic, loadMnemonic, loadEncryptedMnemonic, writeMnemonicBackupFile } from "../../lib/encrypted-seed.js";
-import { rmSync, statSync, readFileSync, mkdtempSync } from "node:fs";
+import { saveEncryptedMnemonic, loadMnemonic, loadEncryptedMnemonic, loadMnemonicFromEnv, writeMnemonicBackupFile } from "../../lib/encrypted-seed.js";
+import { rmSync, statSync, readFileSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -156,6 +156,72 @@ describe("encrypted-seed", () => {
       const path = await writeMnemonicBackupFile(SAMPLE, { dir });
       expect(path.startsWith(dir)).toBe(true);
       expect(statSync(path).mode & 0o777).toBe(0o600);
+    });
+  });
+
+  describe("loadMnemonicFromEnv", () => {
+    const originalPassphrase = process.env.SPARK_PASSPHRASE;
+    const originalSeedPath = process.env.SPARK_SEED_PATH;
+
+    afterEach(() => {
+      if (originalPassphrase === undefined) delete process.env.SPARK_PASSPHRASE;
+      else process.env.SPARK_PASSPHRASE = originalPassphrase;
+      if (originalSeedPath === undefined) delete process.env.SPARK_SEED_PATH;
+      else process.env.SPARK_SEED_PATH = originalSeedPath;
+    });
+
+    it("reads SPARK_PASSPHRASE and SPARK_SEED_PATH from env and decrypts", async () => {
+      const path = tmp("from-env.enc");
+      await saveEncryptedMnemonic({ mnemonic: SAMPLE, passphrase: STRONG_PP, path });
+      process.env.SPARK_PASSPHRASE = STRONG_PP;
+      process.env.SPARK_SEED_PATH = path;
+      const got = await loadMnemonicFromEnv();
+      expect(got).toBe(SAMPLE);
+    }, 30_000);
+
+    it("throws when SPARK_PASSPHRASE is missing", async () => {
+      delete process.env.SPARK_PASSPHRASE;
+      await expect(loadMnemonicFromEnv()).rejects.toThrow(/SPARK_PASSPHRASE/);
+    });
+  });
+
+  describe("header byte rejection", () => {
+    async function corruptHeader(byteIndex, newValue) {
+      const path = tmp(`hdr-${byteIndex}.enc`);
+      await saveEncryptedMnemonic({ mnemonic: SAMPLE, passphrase: STRONG_PP, path });
+      const buf = readFileSync(path);
+      buf[byteIndex] = newValue;
+      writeFileSync(path, buf);
+      return path;
+    }
+
+    it("rejects an unsupported version byte", async () => {
+      const path = await corruptHeader(0, 0x99);
+      await expect(
+        loadMnemonic({ passphrase: STRONG_PP, path }),
+      ).rejects.toThrow(/unsupported seed file version/);
+    }, 30_000);
+
+    it("rejects an unsupported kdf id", async () => {
+      const path = await corruptHeader(1, 0x99);
+      await expect(
+        loadMnemonic({ passphrase: STRONG_PP, path }),
+      ).rejects.toThrow(/unsupported kdf/);
+    }, 30_000);
+
+    it("rejects an unsupported cipher id", async () => {
+      const path = await corruptHeader(2, 0x99);
+      await expect(
+        loadMnemonic({ passphrase: STRONG_PP, path }),
+      ).rejects.toThrow(/unsupported cipher/);
+    }, 30_000);
+
+    it("rejects a file too short to contain a valid header + salt + iv + tag", async () => {
+      const path = tmp("too-short.enc");
+      writeFileSync(path, Buffer.alloc(10));
+      await expect(
+        loadMnemonic({ passphrase: STRONG_PP, path }),
+      ).rejects.toThrow(/corrupted|too short/i);
     });
   });
 });
