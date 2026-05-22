@@ -148,7 +148,10 @@ async function fetchWithL402(wallet, url, options = {}) {
     throw new Error("L402 payment succeeded but no preimage available");
   }
 
-  console.log("Payment complete, preimage:", preimage.slice(0, 16) + "...");
+  // The preimage is the L402 authorization secret — it goes straight into the
+  // Authorization header below. Never log it (not even a prefix): stdout from a
+  // Bash-invoked script gets captured into the agent's transcript.
+  console.log("Payment complete.");
 
   // Step 5: Retry with L402 authorization
   console.log("Fetching protected content...");

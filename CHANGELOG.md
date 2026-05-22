@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.3 — 2026-05-22
+
+### Security
+
+- `skills/sparkbtcbot/scripts/l402-paywalls.js` no longer logs the Lightning payment preimage. The preimage is the L402 authorization secret (it goes directly into the `Authorization` header); printing even a prefix of it to stdout risked leaking it into an agent's captured transcript.
+
 ## 0.1.2 — 2026-05-19
 
 Repo-health and test-coverage release. Published-package contents unchanged from 0.1.0 (no runtime, API, or shipped-file changes).
