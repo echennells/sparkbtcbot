@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.0 — 2026-05-29
+
+### Added
+
+- **Opt-in outbound recipient allowlist** (`lib/recipients-allowlist.js`). When `~/.spark/recipients.allow` exists with at least one entry, transfers and cooperative withdrawals to any address not on the list fail; a missing or empty/all-comments file leaves the gate unenforced. Spark (`sp1…`) and L1 addresses share one file (one per line, `#` comments allowed), matched as plain strings. New exports `loadRecipientsAllowlist`, `assertRecipientAllowed`, `DEFAULT_ALLOWLIST_PATH`; enforced in `spark-agent.js` on transfer/withdraw (Lightning BOLT11 sends are not gated, since they target node pubkeys). This is an operator-surprise guardrail, **not** a defense against a compromised agent (which can rewrite the file) — `sparkbtcbot-proxy` remains the path for hard-enforced, server-side limits.
+
+### Security
+
+- **Atomic, crash-safe seed writes.** `saveEncryptedMnemonic()` and the mnemonic-backup writer now write via temp file + `fsync` + atomic rename instead of a plain exclusive-create, so a crash mid-write can no longer leave a partial or corrupt `seed.enc`. Exclusive-create semantics (refuses to overwrite) and `0o600` permissions are unchanged.
+- **Passphrase env hygiene.** `loadMnemonicFromEnv()` now clears `SPARK_PASSPHRASE` from `process.env` immediately after reading it, on all paths, shrinking the window it lives in process memory (debugger snapshots, child-process inheritance, crash dumps). Opt out with `loadMnemonicFromEnv({ clearEnv: false })` if a later path must re-read it. Crypto primitives unchanged (scrypt N=2¹⁷, AES-256-GCM).
+
 ## 0.2.0 — 2026-05-29
 
 ### Changed
