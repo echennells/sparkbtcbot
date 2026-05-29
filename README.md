@@ -1,6 +1,8 @@
 # sparkbtcbot-skill
 
-Spark Bitcoin L2 wallet skill for AI agents — encrypted-at-rest seed storage, Lightning interop, L402 paywall payment, BTKN/LRC20 tokens. Works with Claude Code via the plugin marketplace, and with any other LLM agent framework via the npm package.
+Spark Bitcoin L2 wallet skill for AI agents — give an agent its own Bitcoin wallet so it can send and receive money on its own: pay for an API call, get paid for a task, tip, or settle up, without a human signing off on every transaction.
+
+Built on [Spark](https://docs.spark.money), a Bitcoin Layer 2 with instant, near-zero-fee transfers and native Lightning support — and fully self-custodial, so the agent holds its own keys. Use it in Claude Code as a plugin, or in any other LLM agent framework via the npm package.
 
 ## What is Spark?
 
