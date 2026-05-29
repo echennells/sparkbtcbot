@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.0 — 2026-05-29
+
+### Changed
+
+- **Runtime dependencies are now declared in `dependencies` instead of `devDependencies`.** `@buildonspark/spark-sdk`, `@buildonspark/issuer-sdk`, `dotenv`, and `light-bolt11-decoder` previously lived in `devDependencies`, so installing the package as a project dependency (`npm install sparkbtcbot-skill`) did **not** pull them — the example scripts then failed with `ERR_MODULE_NOT_FOUND` until a separate manual SDK install. They now install automatically. `vitest` remains the only `devDependency`.
+- Bumped the Spark SDKs and tooling: `@buildonspark/spark-sdk` `0.7.17 → 0.8.1`, `@buildonspark/issuer-sdk` `0.1.35 → 0.1.37`, `dotenv` `^16 → ^17.4.2`, `vitest` `4.1.5 → ^4.1.7`. Consistent caret (`^`) ranges throughout.
+
+### Security
+
+- The `@buildonspark/spark-sdk` 0.8.0 bump enables **signing-operator TLS certificate verification by default**. Earlier SDK versions defaulted to `rejectUnauthorized: false` (TLS-encrypted but certificate-unverified) for signing-operator connections unless a `certPath` was supplied — which this skill never did — leaving that channel open to an active man-in-the-middle. 0.8.x verifies by default; disabling now requires an explicit `SPARK_DANGEROUSLY_DISABLE_TLS_VERIFICATION` flag and is restricted to local (`localhost`/`*.minikube.local`) hostnames.
+- The SDK bump also pulled patched transitive dependencies (`protobufjs`, `ws`), clearing two moderate-severity advisories. `npm audit` is now clean.
+
 ## 0.1.3 — 2026-05-22
 
 ### Security
