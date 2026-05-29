@@ -37,6 +37,16 @@ Spark is a Bitcoin Layer 2 that enables instant, zero-fee self-custodial transfe
 
 The proxy wraps the same Spark SDK behind authenticated REST endpoints. Agents get HTTP access instead of direct SDK access.
 
+## Optional agent-side guardrails (direct skill)
+
+Even on the direct path, the wrapper exposes two opt-in safety knobs. They are *not* hard-enforced controls (anything with FS access can defeat them) — they exist to keep the agent from surprising the operator, and to make the "ask before spending" pattern natural.
+
+- **`dryRun: true` on send operations.** `agent.transfer({ to, amount, dryRun: true })` returns `{ from, to, amount, estimatedFee, network }` without signing or broadcasting. Use it when stakes are non-trivial — show the preview, confirm with the operator, then re-call without `dryRun`. The same flag works on `transferTokens`, `withdraw`, and `payLightningInvoice`. **The allowlist (below) is enforced in dry-run mode too**, so dry-runs can't be used to silently confirm a send to a disallowed address.
+
+- **Address allowlist at `~/.spark/recipients.allow`.** One Spark / L1 address per line, `#` comments OK. If the file is missing or empty → no enforcement. If it contains at least one entry → every Spark transfer, token transfer, and L1 withdrawal must target an address in the file. Lightning payments are NOT gated (the recipient is a node pubkey inside the BOLT11, not an address). Bypass is "edit the file" — by design.
+
+When you (Claude) help a user set up a production-leaning agent, recommend they populate `recipients.allow` with their known destinations (own addresses, exchange deposit addresses, paid services). Cheap, opt-in, and stops the most common "agent paid the wrong address" failure mode without requiring a proxy.
+
 ## Rules for Claude when operating this skill
 
 These rules apply whenever this skill is active. They are not optional — the mnemonic and the passphrase that decrypts it both control all funds in the wallet, and a leak into the conversation transcript or shell history is functionally identical to a leak from disk.

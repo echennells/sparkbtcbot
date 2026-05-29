@@ -1,12 +1,18 @@
 import "dotenv/config";
 import { SparkWallet } from "@buildonspark/spark-sdk";
 import { loadMnemonicFromEnv } from "../../../lib/encrypted-seed.js";
+import {
+  loadRecipientsAllowlist,
+  assertRecipientAllowed,
+} from "../../../lib/recipients-allowlist.js";
 
 export class SparkAgent {
   #wallet;
+  #network;
 
-  constructor(wallet) {
+  constructor(wallet, network) {
     this.#wallet = wallet;
+    this.#network = network;
   }
 
   static async create(mnemonic, network = "MAINNET") {
@@ -14,7 +20,19 @@ export class SparkAgent {
       mnemonicOrSeed: mnemonic,
       options: { network },
     });
-    return { agent: new SparkAgent(wallet), mnemonic: generated };
+    return { agent: new SparkAgent(wallet, network), mnemonic: generated };
+  }
+
+  // --- Outbound safety check (allowlist gate, called by transfer/withdraw)
+  //
+  // Reads ~/.spark/recipients.allow on every send. If the file is missing
+  // or empty, no enforcement. If it contains addresses, the destination
+  // MUST match one of them. Bypass = edit the file. This is a guardrail
+  // against the agent surprising the operator, NOT a defense against a
+  // compromised agent — anything with FS access to ~/.spark can edit it.
+  async #assertAllowed(address) {
+    const allowlist = await loadRecipientsAllowlist();
+    assertRecipientAllowed(address, allowlist);
   }
 
   // --- Identity ---
@@ -55,11 +73,34 @@ export class SparkAgent {
   }
 
   // --- Spark Transfers ---
+  //
+  // `dryRun: true` returns a structured preview WITHOUT signing or
+  // broadcasting. Use it to confirm with the operator before spending:
+  //
+  //   const preview = await agent.transfer({ to: "sp1...", amount: 1000n, dryRun: true });
+  //   // → { dryRun: true, operation: "spark_transfer", from, to, amount, estimatedFee: "0", network }
+  //   // → ask user, then call again with dryRun omitted to actually send.
+  //
+  // Allowlist enforcement applies in BOTH modes (so dry-runs can't be used
+  // to silently confirm a send to a disallowed address).
 
-  async transfer(recipientAddress, amountSats) {
+  async transfer({ to, amount, dryRun = false }) {
+    await this.#assertAllowed(to);
+    if (dryRun) {
+      return {
+        dryRun: true,
+        operation: "spark_transfer",
+        from: await this.#wallet.getSparkAddress(),
+        to,
+        amount: String(amount),
+        unit: "sats",
+        estimatedFee: "0", // Spark-to-Spark transfers are free
+        network: this.#network,
+      };
+    }
     return await this.#wallet.transfer({
-      receiverSparkAddress: recipientAddress,
-      amountSats,
+      receiverSparkAddress: to,
+      amountSats: amount,
     });
   }
 
@@ -79,7 +120,29 @@ export class SparkAgent {
     return request.invoice.encodedInvoice;
   }
 
-  async payLightningInvoice(bolt11, maxFeeSats = 10) {
+  // `dryRun: true` returns a preview (incl. estimated routing fee) without
+  // paying. Lightning recipients are node pubkeys embedded in the BOLT11,
+  // so the allowlist (which targets Spark/L1 addresses) does not apply here
+  // — confirm the invoice's amount and decoded payee with the operator
+  // before paying when stakes warrant it.
+  async payLightningInvoice(bolt11, { maxFeeSats = 10, amountSats, dryRun = false } = {}) {
+    if (dryRun) {
+      const feeEst = await this.#wallet.getLightningSendFeeEstimate({
+        encodedInvoice: bolt11,
+        amountSats,
+      });
+      return {
+        dryRun: true,
+        operation: "lightning_pay",
+        from: await this.#wallet.getSparkAddress(),
+        invoice: bolt11,
+        amount: amountSats !== undefined ? String(amountSats) : "<from invoice>",
+        unit: "sats",
+        estimatedFee: String(feeEst?.fee ?? feeEst ?? "unknown"),
+        maxFeeSats: String(maxFeeSats),
+        network: "lightning",
+      };
+    }
     return await this.#wallet.payLightningInvoice({
       invoice: bolt11,
       maxFeeSats,
@@ -117,15 +180,35 @@ export class SparkAgent {
 
   // --- Tokens ---
 
-  async transferTokens(tokenIdentifier, amount, recipientAddress) {
+  async transferTokens({ tokenIdentifier, amount, to, dryRun = false }) {
+    await this.#assertAllowed(to);
+    if (dryRun) {
+      return {
+        dryRun: true,
+        operation: "token_transfer",
+        from: await this.#wallet.getSparkAddress(),
+        to,
+        tokenIdentifier,
+        amount: String(amount),
+        unit: "tokens",
+        estimatedFee: "0", // Spark token transfers are free
+        network: this.#network,
+      };
+    }
     return await this.#wallet.transferTokens({
       tokenIdentifier,
       tokenAmount: amount,
-      receiverSparkAddress: recipientAddress,
+      receiverSparkAddress: to,
     });
   }
 
+  // Allowlist applies to every receiver in the batch. One disallowed
+  // recipient blocks the whole batch — that's the safer default.
   async batchTransferTokens(transfers) {
+    for (const t of transfers) {
+      const to = t.receiverSparkAddress ?? t.to;
+      if (to) await this.#assertAllowed(to);
+    }
     return await this.#wallet.batchTransferTokens(transfers);
   }
 
@@ -138,11 +221,37 @@ export class SparkAgent {
     });
   }
 
-  async withdraw(onchainAddress, amountSats, speed = "MEDIUM") {
+  // Cooperative exit back to L1 Bitcoin. Allowlist applies to `to` (L1 BTC
+  // address). dryRun returns the fee quote without broadcasting.
+  async withdraw({ to, amount, speed = "MEDIUM", dryRun = false }) {
+    await this.#assertAllowed(to);
+    const quote = await this.#wallet.getWithdrawalFeeQuote({
+      amountSats: amount,
+      withdrawalAddress: to,
+    });
+    if (dryRun) {
+      // The SDK's quote shape varies by SDK version (sometimes a single
+      // number, sometimes per-speed tiers). Surface the whole thing so the
+      // caller can inspect; keep estimatedFee a best-effort scalar.
+      const estimatedFee =
+        quote?.[speed.toLowerCase()] ?? quote?.fee ?? quote ?? "unknown";
+      return {
+        dryRun: true,
+        operation: "l1_withdraw",
+        from: await this.#wallet.getSparkAddress(),
+        to,
+        amount: String(amount),
+        unit: "sats",
+        estimatedFee: String(estimatedFee),
+        speed,
+        network: "bitcoin",
+        quote, // raw SDK quote, in case caller needs per-speed breakdown
+      };
+    }
     return await this.#wallet.withdraw({
-      onchainAddress,
+      onchainAddress: to,
       exitSpeed: speed,
-      amountSats,
+      amountSats: amount,
     });
   }
 

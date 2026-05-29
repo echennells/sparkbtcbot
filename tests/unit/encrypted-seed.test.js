@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { saveEncryptedMnemonic, loadMnemonic, loadEncryptedMnemonic, loadMnemonicFromEnv, writeMnemonicBackupFile } from "../../lib/encrypted-seed.js";
-import { rmSync, statSync, readFileSync, mkdtempSync, writeFileSync } from "node:fs";
+import { rmSync, statSync, readFileSync, mkdtempSync, writeFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -90,6 +90,34 @@ describe("encrypted-seed", () => {
       saveEncryptedMnemonic({ mnemonic: SAMPLE, passphrase: STRONG_PP, path }),
     ).rejects.toMatchObject({ code: "EEXIST" });
   }, 60_000);
+
+  it("leaves no .tmp files behind after a successful save", async () => {
+    // Atomic write goes via `${path}.<pid>.<ts>.<rand>.tmp`; on success
+    // the temp file is renamed away, so the parent directory must contain
+    // only the final file.
+    const dir = mkdtempSync(join(tmpdir(), "spark-test-atomic-"));
+    toCleanUp.push(dir);
+    const path = join(dir, "seed.enc");
+    await saveEncryptedMnemonic({ mnemonic: SAMPLE, passphrase: STRONG_PP, path });
+    const entries = readdirSync(dir);
+    expect(entries).toEqual(["seed.enc"]);
+    expect(entries.some(f => f.endsWith(".tmp"))).toBe(false);
+  }, 30_000);
+
+  it("cleans up the .tmp file when the rename fails (EEXIST race)", async () => {
+    // Pre-create the destination so the access() pre-check fires EEXIST
+    // before any temp file is written. Verifies no temp file is left
+    // behind even on the failure path.
+    const dir = mkdtempSync(join(tmpdir(), "spark-test-atomic-fail-"));
+    toCleanUp.push(dir);
+    const path = join(dir, "seed.enc");
+    writeFileSync(path, "preexisting", { mode: 0o600 });
+    await expect(
+      saveEncryptedMnemonic({ mnemonic: SAMPLE, passphrase: STRONG_PP, path }),
+    ).rejects.toMatchObject({ code: "EEXIST" });
+    const entries = readdirSync(dir);
+    expect(entries.some(f => f.endsWith(".tmp"))).toBe(false);
+  }, 30_000);
 
   it("rejects a corrupted file", async () => {
     const path = tmp("corrupt.enc");
@@ -183,6 +211,38 @@ describe("encrypted-seed", () => {
       delete process.env.SPARK_PASSPHRASE;
       await expect(loadMnemonicFromEnv()).rejects.toThrow(/SPARK_PASSPHRASE/);
     });
+
+    it("clears SPARK_PASSPHRASE from env on success (default)", async () => {
+      const path = tmp("clear-env-ok.enc");
+      await saveEncryptedMnemonic({ mnemonic: SAMPLE, passphrase: STRONG_PP, path });
+      process.env.SPARK_PASSPHRASE = STRONG_PP;
+      process.env.SPARK_SEED_PATH = path;
+      const got = await loadMnemonicFromEnv();
+      expect(got).toBe(SAMPLE);
+      expect(process.env.SPARK_PASSPHRASE).toBeUndefined();
+    }, 30_000);
+
+    it("clears SPARK_PASSPHRASE from env even when decrypt fails (BAD_PASSPHRASE)", async () => {
+      // The env var should be wiped BEFORE the decrypt runs, so a failed
+      // load doesn't leave the passphrase sitting in env for a retry path
+      // or a crash dumper to pick up.
+      const path = tmp("clear-env-bad.enc");
+      await saveEncryptedMnemonic({ mnemonic: SAMPLE, passphrase: STRONG_PP, path });
+      process.env.SPARK_PASSPHRASE = "wrongpassphrase-1234";
+      process.env.SPARK_SEED_PATH = path;
+      await expect(loadMnemonicFromEnv()).rejects.toMatchObject({ code: "BAD_PASSPHRASE" });
+      expect(process.env.SPARK_PASSPHRASE).toBeUndefined();
+    }, 30_000);
+
+    it("keeps SPARK_PASSPHRASE in env when clearEnv: false is requested", async () => {
+      const path = tmp("keep-env.enc");
+      await saveEncryptedMnemonic({ mnemonic: SAMPLE, passphrase: STRONG_PP, path });
+      process.env.SPARK_PASSPHRASE = STRONG_PP;
+      process.env.SPARK_SEED_PATH = path;
+      const got = await loadMnemonicFromEnv({ clearEnv: false });
+      expect(got).toBe(SAMPLE);
+      expect(process.env.SPARK_PASSPHRASE).toBe(STRONG_PP);
+    }, 30_000);
   });
 
   describe("header byte rejection", () => {
