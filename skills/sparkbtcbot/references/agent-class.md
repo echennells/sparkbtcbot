@@ -273,7 +273,7 @@ export class SparkAgent {
   }
 
   cleanup() {
-    this.#wallet.cleanupConnections();
+    this.#wallet.cleanup();
   }
 }
 

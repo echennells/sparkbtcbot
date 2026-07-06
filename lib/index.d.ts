@@ -1,4 +1,4 @@
-// Type declarations for sparkbtcbot-skill.
+// Type declarations for sparkbtcbot.
 
 // --- Encryption library ---
 

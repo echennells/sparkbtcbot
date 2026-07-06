@@ -239,7 +239,7 @@ async function main() {
   // console.log("Paid:", result2.paid, "Cached:", result2.cached);
   // console.log("Data:", result2.data);
 
-  wallet.cleanupConnections();
+  wallet.cleanup();
 }
 
 main().catch((err) => {

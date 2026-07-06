@@ -48,6 +48,7 @@ describe("skill-content helpers", () => {
       "extras",
       "l402",
       "lightning",
+      "security",
       "spark-invoices",
       "tokens",
       "wallet",

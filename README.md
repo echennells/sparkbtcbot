@@ -1,8 +1,17 @@
-# sparkbtcbot-skill
+# sparkbtcbot
+
+[![CI](https://github.com/echennells/sparkbtcbot/actions/workflows/ci.yml/badge.svg)](https://github.com/echennells/sparkbtcbot/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
+[![Node](https://img.shields.io/badge/node-%E2%89%A518-brightgreen.svg)](https://nodejs.org)
 
 Spark Bitcoin L2 wallet skill for AI agents — give an agent its own Bitcoin wallet so it can send and receive money on its own: pay for an API call, get paid for a task, tip, or settle up, without a human signing off on every transaction.
 
 Built on [Spark](https://docs.spark.money), a Bitcoin Layer 2 with instant, near-zero-fee transfers and native Lightning support — and fully self-custodial, so the agent holds its own keys. Use it in Claude Code as a plugin, or in any other LLM agent framework via the npm package.
+
+> ⚠️ **Handles real Bitcoin.** Mainnet by default, full custody the moment the seed is decrypted, no built-in spending caps — treat the agent like a hot wallet. Use a dedicated wallet with limited funds, or run [sparkbtcbot-proxy](https://github.com/echennells/sparkbtcbot-proxy) for server-enforced per-transaction and daily limits.
+
+**Best for:** autonomous agents that send/receive small amounts — pay per API call, get paid for a task, tip, settle up — plus dev/test on REGTEST and trusted agents you control.
+**Not for:** custody of large balances on the direct SDK path, or anything needing hard spending caps or revocable access (use the proxy for those).
 
 ## What is Spark?
 
@@ -34,7 +43,7 @@ Two install paths depending on your stack.
 ### Claude Code
 
 ```bash
-claude plugin marketplace add https://github.com/echennells/sparkbtcbot-skill
+claude plugin marketplace add https://github.com/echennells/sparkbtcbot
 claude plugin install sparkbtcbot
 ```
 
@@ -43,13 +52,13 @@ Native plugin install. Updates flow through `claude plugin update sparkbtcbot`. 
 ### Any other LLM agent framework (Cursor, LangChain, OpenAI Agents SDK, Aider, etc.)
 
 ```bash
-npm install sparkbtcbot-skill
+npm install sparkbtcbot
 ```
 
 The package ships both the skill content (so you can load it into your LLM's context) and the encryption library (so generated code can import the helpers). Minimal use:
 
 ```javascript
-import { getSkillContent, getReference, listReferences } from "sparkbtcbot-skill";
+import { getSkillContent, getReference, listReferences } from "sparkbtcbot";
 
 // Always-loaded skill body — pass to your framework's system-prompt mechanism
 const instructions = await getSkillContent();
@@ -64,7 +73,7 @@ const l402Doc = await getReference("l402");
 Generated code (or your own glue) can also import the encryption helpers:
 
 ```javascript
-import { saveEncryptedMnemonic, loadMnemonicFromEnv } from "sparkbtcbot-skill";
+import { saveEncryptedMnemonic, loadMnemonicFromEnv } from "sparkbtcbot";
 
 await saveEncryptedMnemonic({ mnemonic, passphrase, path: "./seed.enc" });
 const decrypted = await loadMnemonicFromEnv(); // reads SPARK_PASSPHRASE
@@ -75,8 +84,8 @@ The package has zero runtime dependencies beyond Node 18+ built-ins.
 ### Local clone (for running the example scripts and tests yourself)
 
 ```bash
-git clone https://github.com/echennells/sparkbtcbot-skill.git ~/.claude/skills/sparkbtcbot-skill
-cd ~/.claude/skills/sparkbtcbot-skill
+git clone https://github.com/echennells/sparkbtcbot.git ~/.claude/skills/sparkbtcbot
+cd ~/.claude/skills/sparkbtcbot
 npm install
 ```
 
@@ -86,7 +95,7 @@ The Quick Start below assumes this path — useful if you want to kick the tires
 
 ```bash
 # Install dependencies (in the cloned skill directory)
-cd ~/.claude/skills/sparkbtcbot-skill
+cd ~/.claude/skills/sparkbtcbot
 npm install
 
 # Copy env template, set SPARK_PASSPHRASE (>=12 chars)

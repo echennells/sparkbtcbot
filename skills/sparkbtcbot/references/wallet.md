@@ -109,7 +109,7 @@ Unilateral exit (without operator cooperation) is also possible as a safety mech
 ## Cleanup
 
 ```javascript
-await wallet.cleanupConnections();
+await wallet.cleanup();
 ```
 
 Call when shutting down to release gRPC streams. Long-running agents should keep the connection open and only cleanup on shutdown.

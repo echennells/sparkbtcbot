@@ -51,7 +51,7 @@ async function main() {
     console.log("\nNo transfers yet.");
   }
 
-  wallet.cleanupConnections();
+  wallet.cleanup();
 }
 
 main().catch((err) => {

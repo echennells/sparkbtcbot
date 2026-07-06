@@ -1,8 +1,8 @@
-# sparkbtcbot-skill
+# sparkbtcbot
 
 Claude Code skill for setting up Spark Bitcoin L2 wallet capabilities for AI agents.
 
-**Installation:** Clone to `~/.claude/skills/sparkbtcbot-skill`
+**Installation:** Clone to `~/.claude/skills/sparkbtcbot`
 
 ## What This Skill Does
 

@@ -67,7 +67,7 @@ async function main() {
   // console.log("Listening for incoming transfers... (Ctrl+C to stop)");
   // await new Promise(() => {}); // keep alive
 
-  wallet.cleanupConnections();
+  wallet.cleanup();
 }
 
 main().catch((err) => {

@@ -72,7 +72,7 @@ async function main() {
   // });
   // console.log("Transfer:", transfer.id);
 
-  wallet.cleanupConnections();
+  wallet.cleanup();
 }
 
 main().catch((err) => {

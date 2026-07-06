@@ -5,7 +5,7 @@ argument-hint: "[Optional: specify what to set up - wallet, payments, tokens, li
 requires:
   env:
     - name: SPARK_PASSPHRASE
-      description: Passphrase that decrypts the BIP39 mnemonic from the encrypted-seed file (~/.spark/seed.enc by default). Useless without the seed file. Run `npm run setup` once to create the encrypted seed.
+      description: Passphrase (minimum 12 characters) that decrypts the BIP39 mnemonic from the encrypted-seed file (~/.spark/seed.enc by default). Useless without the seed file. Run `npm run setup` once to create the encrypted seed.
       sensitive: true
     - name: SPARK_NETWORK
       description: Network to connect to (MAINNET or REGTEST)
@@ -22,7 +22,7 @@ You are an expert in setting up Spark Bitcoin L2 wallet capabilities for AI agen
 
 Spark is a Bitcoin Layer 2 that enables instant, zero-fee self-custodial transfers of BTC and tokens, with native Lightning Network interoperability. Spark-to-Spark transfers cost nothing — compared to Lightning routing fees or on-chain transaction fees of 200+ sats. Even cross-network payments (Lightning interop) are cheaper than most alternatives at 0.15-0.25%. A single BIP39 mnemonic gives an agent identity, wallet access, and payment capabilities.
 
-## For Production Use
+## Custody Model (and When to Use the Proxy)
 
 **This skill gives the agent full custody of the wallet.** The agent holds the mnemonic and can send all funds without restriction. This is appropriate for:
 - Development and testing (use REGTEST with no real funds)
@@ -47,6 +47,8 @@ Even on the direct path, the wrapper exposes two opt-in safety knobs. They are *
 
 When you (Claude) help a user set up a production-leaning agent, recommend they populate `recipients.allow` with their known destinations (own addresses, exchange deposit addresses, paid services). Cheap, opt-in, and stops the most common "agent paid the wrong address" failure mode without requiring a proxy.
 
+**The allowlist does not bound Lightning or L402 spend.** Both pay a node pubkey embedded in a BOLT11 invoice, not an address, so `recipients.allow` cannot gate them — and on the direct-SDK path there is *no* cap on how much an agent can push out over Lightning or L402. Populating `recipients.allow` does **not** make outbound spend safe. To bound Lightning/L402 spend, the proxy's server-side `maxTxSats` / `dailyBudgetSats` are the only real control.
+
 ## Rules for Claude when operating this skill
 
 These rules apply whenever this skill is active. They are not optional — the mnemonic and the passphrase that decrypts it both control all funds in the wallet, and a leak into the conversation transcript or shell history is functionally identical to a leak from disk.
@@ -61,66 +63,30 @@ These rules apply whenever this skill is active. They are not optional — the m
 - **DO NOT silently embed a generated mnemonic in code.** When `SparkWallet.initialize()` or the setup script returns a fresh mnemonic, surface it to the user once with explicit instructions to save it offline, then drop it from working context.
 - **If you think a mnemonic or passphrase has been exposed in this conversation,** stop and tell the user before doing anything else. Do not attempt to "clean up" by generating a new wallet or sweeping funds without explicit user instruction.
 
-## Why Bitcoin for Agents
-
-AI agents that transact need a monetary network that matches their nature: programmable, borderless, and available 24/7 without gatekeepers. Bitcoin is that network.
-
-- **Hard-capped supply** — 21 million coins, protocol-enforced ceiling.
-- **No account required** — generate a key and you're on the network. Matters for autonomous agents that can't fill out forms.
-- **Irreversible settlement** — once confirmed, transactions cannot be reversed. Agents don't handle chargebacks.
-- **Open infrastructure** — public network, transparent fee market. Agents can audit their own costs and verify their own balances without trusting an intermediary.
-- **Proven reliability** — operating continuously since 2009, no successful base-protocol attack, ~$1T+ in secured value.
-
 ## What is Spark
 
 Spark is a recently launched Bitcoin Layer 2 that lets you send and receive Bitcoin instantly with low fees. Spark-to-Spark transfers are free; Lightning interop costs 0.15–0.25%. Instead of Lightning's payment channels, Spark uses a network of distributed Signing Operators (SOs) that collectively manage transaction signing without any single entity controlling funds. Fully self-custodial (you hold your own keys), fully interoperable with Lightning. **However**, Spark requires trusting that at least 1-of-n operators behaves honestly during transfers, and lacks the provable finality of Bitcoin or Lightning. The network currently has only a small number of Signing Operators, so there is real risk of downtime or service disruption.
 
 → For deeper architecture, fee tables, Spark vs Lightning vs On-Chain comparison, and external tools, load `references/architecture.md`.
 
-### Trust Model — Important Tradeoffs
+### Trust & withdrawal caveats (advise users on these)
 
-Spark has **different trust assumptions than native Lightning**. Be upfront about these when advising users.
+- **1-of-n operator trust.** Spark requires that ≥1 of n Signing Operators behaves honestly during a transfer (currently two: Lightspark and Flashnet). Operators can censor or delay transfers but **cannot** move or steal funds. Unlike Lightning this is not fully trustless, and Spark lacks provable finality.
+- **L1 exit is guaranteed but neither cheap nor predictable.** Cooperative exit (operators online) is much cheaper than unilateral exit; on-chain fees are market-driven and fixed-cost, so small withdrawals are disproportionately expensive.
+- **Prefer [Boltz](https://boltz.exchange) for L1 withdrawals, and discourage any L1 withdrawal under 25,000 sats.** For ≥25,000 sats, route Spark → Lightning → L1 via Boltz rather than Spark's native cooperative exit.
+- **Operational dependencies.** If Signing Operators lose liveness, off-chain transfers halt (funds stay safe via unilateral exit); full security assumes someone — or a watchtower service — monitors the chain for fraudulent exit attempts.
 
-**1-of-n operator trust**: Spark requires that at least 1 of n Signing Operators behaves honestly during a transfer. Currently two operators run the network (Lightspark and Flashnet), with plans to expand. Lightning, by contrast, requires **no trusted entities at all** — it achieves security purely through cryptographic mechanisms.
-
-**Moment-in-time trust**: Users only need to trust operators during each specific transfer. Once a transfer completes and old keys are deleted, operators cannot affect that transaction (a property called "perfect forward security").
-
-**What operators CAN do**: view transfer metadata, temporarily delay transactions by going offline, refuse to process new transfers (censorship).
-
-**What operators CANNOT do**: move funds without user signatures, steal Bitcoin (even with full collusion), reverse finalized transactions.
-
-**Core limitation**: Spark lacks provable finality. Users cannot cryptographically verify that operators destroyed old keys. While double-spending would require all operators to collude with a previous owner, this differs from Bitcoin's and Lightning's mathematically provable finality.
-
-**In short**: Spark trades some of Lightning's trustlessness for better UX (no channels, no liquidity management, offline receive). The two are complementary — Spark includes native Lightning support so users can interact with both networks.
-
-### Unpredictable L1 Exit Costs — Important
-
-Exiting Spark to L1 Bitcoin carries **unpredictable costs** that agents and users must understand:
-
-1. **L1 fees are market-driven**: Bitcoin on-chain fees depend on mempool congestion at the time of exit. During high-fee periods, exit costs can spike significantly.
-2. **Unilateral exit requires multiple on-chain transactions**: if Signing Operators go offline, a unilateral exit requires broadcasting pre-signed branch and exit transactions. The number of transactions depends on the tree depth of your leaf — multiple on-chain fees can stack.
-3. **Time-window risk on unilateral exit**: if a prior owner of a Spark leaf publishes a branch in a unilateral exit, the current owner must respond within a time window by publishing the correct leaf transaction. Failure to respond means the attacker can claim the funds. Watchtower services exist to monitor for this; it's a real operational requirement.
-4. **Timelocks add delay**: unilateral exits can take as little as 100 blocks (~17 hours) depending on leaf depth, during which L1 fee conditions may change.
-5. **Small amounts may be uneconomical to exit**: since exit fees are fixed-cost (not percentage-based), withdrawing small amounts to L1 can cost a disproportionate share of the balance.
-
-**Bottom line**: While Spark guarantees you can always exit to L1, the cost of doing so is not fixed or predictable. Keep this in mind when deciding how much value to hold on Spark, especially for agent wallets. Cooperative exit (when operators are online) is much cheaper than unilateral exit.
-
-**Prefer Boltz for L1 withdrawals.** Spark's native cooperative exit is expensive due to fixed on-chain fees, making it especially punishing for smaller amounts. [Boltz](https://boltz.exchange) offers a cheaper path from Lightning to L1 (Spark → Lightning → L1 via submarine swap) with a minimum of 25,000 sats. **Discourage any L1 withdrawal activity under 25,000 sats** — fees will eat a disproportionate share. For 25,000 sats or more, route through Boltz rather than Spark's built-in cooperative exit.
-
-### Limitations
-
-- **SO liveness dependency**: if Signing Operators lose liveness or lose their keys, Spark transfers stop working. Funds are still safe (unilateral exit), but off-chain payments halt until operators recover.
-- **Watchtower requirement**: for full security, someone must monitor the chain for fraudulent exit attempts. Can be delegated to a watchtower service but is an operational dependency.
+The full trust model (moment-in-time / forward-security detail, what operators can and cannot do), unilateral-exit mechanics, and limitations are in `references/architecture.md`.
 
 ## Required Libraries
 
 ```bash
-npm install @buildonspark/spark-sdk@^0.7.17 dotenv
+npm install @buildonspark/spark-sdk@^0.8.8 dotenv
 ```
 
 For token issuance (minting new tokens), additionally:
 ```bash
-npm install @buildonspark/issuer-sdk@^0.1.35
+npm install @buildonspark/issuer-sdk@^0.1.44
 ```
 
 The SDK bundles BIP39 mnemonic generation, cooperative signing, and gRPC communication internally.
@@ -176,11 +142,9 @@ SPARK_NETWORK=MAINNET
 ```
 
 **Security warnings:**
-- **Never log the mnemonic or the passphrase** — not even during development. To verify the wallet loads, derive the Spark address and compare *addresses*, never seed words.
-- **Never commit `.env`** — add it to `.gitignore` before your first commit.
-- **The seed file (`~/.spark/seed.enc`) is sensitive too.** It's encrypted, but treat it like a password file — restrict to mode 0600, don't bundle it into container images or backups that travel with the passphrase.
-- **For production with real funds, use the proxy instead.** [sparkbtcbot-proxy](https://github.com/echennells/sparkbtcbot-proxy) keeps the mnemonic on a server you control and gives the agent scoped, revocable bearer tokens (read-only, invoice-only, or full) with per-transaction and daily spending caps. The agent never sees a mnemonic — it makes authenticated HTTP calls. Worth standing up before any deployment that holds non-trivial balance.
-- **Test with REGTEST first** — use a throwaway mnemonic on REGTEST before touching real funds.
+- **Never log the mnemonic or the passphrase** — not even during development. To verify the wallet loads, compare *addresses*, never seed words.
+- **Never commit `.env`** — add it to `.gitignore` first. The seed file (`~/.spark/seed.enc`) is sensitive too: mode 0600, keep it out of images/backups that travel with the passphrase.
+- **Test with REGTEST first** — throwaway mnemonic on REGTEST before touching real funds. For production with real funds, prefer the proxy (see Custody Model above).
 
 **Note on `accountNumber`:** defaults to 1 for MAINNET, 0 for REGTEST. If you reuse the same mnemonic across networks, set `accountNumber` explicitly to avoid address mismatches.
 
@@ -207,7 +171,7 @@ console.log("Spark Address:", address);
 console.log("Identity Key:", identityKey);
 console.log("Available:", satsBalance.available.toString(), "sats");
 
-await wallet.cleanupConnections();
+await wallet.cleanup();
 ```
 
 Decrypt happens once at boot (~250ms scrypt). Hold the wallet — do not call `loadMnemonicFromEnv()` per request.
@@ -245,44 +209,21 @@ Load only what's needed for the user's task. Each reference is a self-contained 
 | `references/l402.md` | L402 / LSAT paywalls — paying for HTTP APIs over Lightning |
 | `references/extras.md` | Message signing, event listeners, error handling, token *issuance* (`IssuerSparkWallet`) |
 | `references/encrypted-seed.md` | Canonical guide to the encrypted-seed file (`~/.spark/seed.enc`): threat model, setup modes, file format, recovery scenarios. Load when configuring a new wallet or troubleshooting load errors. |
+| `references/security.md` | Full operational-security guide: full-custody threat model, protecting the seed/passphrase, sweeping, monitoring, and what the recipient allowlist does and does not bound. |
 
 Runnable example scripts live in `skills/sparkbtcbot/scripts/` (run via `npm run setup`, `npm run example:balance`, `example:payments`, `example:tokens`, `example:agent`, `example:l402`).
 
 ## Security Best Practices
 
-### The Agent Has Full Wallet Access
+**Passphrase + seed file together = full, unscoped custody.** There is no spending limit, permission scope, or read-only mode in the SDK — a compromised host with both controls all funds, and access can't be revoked without sweeping to a new wallet. Treat the agent wallet as a hot wallet:
 
-Any process that holds **both the passphrase and the seed file** has **unrestricted control** over the wallet — it can check balance, create invoices, and send every sat to any address. There is no permission scoping, no spending limits, no read-only mode in the SDK itself. Encryption-at-rest raises the bar against `.env` leaks and env-var dumps; it does not scope what the running agent can do.
+- Back up the **mnemonic** offline (paper/hardware) — the encrypted seed file is not a substitute.
+- Never expose the mnemonic or passphrase in code, logs, git, or errors; keep `SPARK_PASSPHRASE` in a secret manager and `.env` in `.gitignore`.
+- Keep only a minimal operational balance; sweep earned funds to cold storage regularly (this skill ships no auto-sweeper).
+- Separate mnemonic per agent; separate `accountNumber` per wallet; call `cleanup()` when done.
+- For real per-transaction / daily caps, use [sparkbtcbot-proxy](https://github.com/echennells/sparkbtcbot-proxy) — in-process limits are bypassable by a compromised process.
 
-This means:
-- If the passphrase and seed file both leak, all funds are at risk immediately.
-- If an agent process is compromised while running, the attacker has the same full access (mnemonic is in process memory after decrypt).
-- There is no way to revoke access without sweeping funds to a new wallet.
-
-### Protect the Mnemonic and Passphrase
-
-1. **Back up the seed phrase offline** — write it down on paper or use a hardware backup. If you lose the mnemonic, the funds are gone permanently. The encrypted seed file is **not** a substitute for an offline seed backup.
-2. **Never expose the mnemonic or the passphrase** in code, logs, git history, or error messages.
-3. **Treat `SPARK_PASSPHRASE` like any production secret** — keep it out of source, out of build images, out of CI logs. A deployment secret manager is fine; `.env` in `.gitignore` is fine; a screenshot in a Slack thread is not.
-4. **Restrict the seed file** — `~/.spark/seed.enc` is mode 0600. Don't bundle it into container images that ship alongside the passphrase.
-5. **Add `.env` to `.gitignore`** — prevent accidental commits of secrets.
-
-### Sweep Funds to a Safer Wallet
-
-**Do not accumulate large balances in an agent wallet.** Even with encrypted-at-rest, a compromised host with passphrase + seed file = full custody — treat it as a hot wallet.
-
-- Regularly sweep earned funds to a more secure wallet (hardware wallet, cold storage, or a separate wallet you control directly).
-- Only keep the minimum operational balance the agent needs on Spark.
-- Use `wallet.transfer()` or `wallet.withdraw()` to move funds out periodically. This skill does not ship an automated sweeper — sweep manually as part of your operations rhythm, or build the listener yourself if you want it on autopilot (`transfer:claimed` event + balance check + `wallet.transfer()`).
-
-### Operational Security
-
-1. **Use separate mnemonics** for different agents — never share a mnemonic across agents. Each agent runs its own setup and has its own seed file + passphrase.
-2. **Use separate `accountNumber` values** if you need multiple wallets from one mnemonic.
-3. **Monitor transfers** via event listeners for unexpected outgoing activity (see `references/extras.md`).
-4. **Call `cleanupConnections()`** when the wallet is no longer needed.
-5. **Use REGTEST** for development and testing, MAINNET only for production.
-6. **For spending limits, use the proxy.** This skill does not enforce per-tx or daily caps — anything in the agent's process can call `wallet.transfer()` directly, so an in-process wrapper would be bypassed by a compromised process. If you need real spending limits, run [sparkbtcbot-proxy](https://github.com/echennells/sparkbtcbot-proxy) and have the agent talk to it via scoped bearer tokens with `maxTxSats` / `dailyBudgetSats` enforced server-side.
+→ Full operational-security guide (threat detail, sweeping patterns, monitoring, and exactly what the allowlist does and does not bound): `references/security.md`.
 
 ## Resources
 

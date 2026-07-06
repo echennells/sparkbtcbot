@@ -99,7 +99,7 @@ async function getMnemonicSource() {
   const { SparkWallet } = await import("@buildonspark/spark-sdk");
   const result = await SparkWallet.initialize({ options: { network: NETWORK } });
   const mnemonic = normalizeMnemonic(result.mnemonic);
-  await result.wallet.cleanupConnections();
+  await result.wallet.cleanup();
   return { mnemonic, source: "generated" };
 }
 
@@ -143,7 +143,7 @@ async function main() {
     options: { network: NETWORK },
   });
   const address = await wallet.getSparkAddress();
-  await wallet.cleanupConnections();
+  await wallet.cleanup();
 
   info("\nEncrypting...");
   await saveEncryptedMnemonic({ mnemonic, passphrase, path: SEED_PATH });

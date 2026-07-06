@@ -281,7 +281,7 @@ export class SparkAgent {
   // --- Lifecycle ---
 
   cleanup() {
-    this.#wallet.cleanupConnections();
+    this.#wallet.cleanup();
   }
 }
 

@@ -129,13 +129,13 @@ if (!tokenId) {
   tokenId = await wallet.getIssuerTokenIdentifier();
 }
 
-await wallet.mintTokens(1_000n);  // mint 0.001 token at 6 decimals to issuer's own balance
+await wallet.mintTokens({ tokenAmount: 1_000n, tokenIdentifier: tokenId });  // mint 0.001 token at 6 decimals to issuer's own balance
 // Then transfer with wallet.transferTokens(...) just like any token
 ```
 
 ### Other issuer operations
 
-- `wallet.burnTokens(amount)` — destroy supply you hold
+- `wallet.burnTokens({ tokenAmount, tokenIdentifier })` — destroy supply you hold
 - `wallet.freezeTokens(...)` / `wallet.unfreezeTokens(...)` — only if `isFreezeable: true` at create time
 - `wallet.getIssuerTokenBalance()` — issuer-side balance accounting
 - `wallet.getIssuerTokenDistribution()` — supply distribution across holders

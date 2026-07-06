@@ -53,6 +53,7 @@ describe("SparkWallet method surface", () => {
     "signMessageWithIdentityKey",
     "validateMessageWithIdentityKey",
     "getTransfers",
+    "cleanup",
     "cleanupConnections",
     "on",
     "off",

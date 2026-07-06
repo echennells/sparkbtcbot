@@ -49,13 +49,14 @@ export async function getOrCreateIssuerToken({
 // have supply to draw from. Spark tokens are 6-decimal by default; 1000 units
 // = 0.001 token at 6 decimals, which is plenty for a transfer test.
 export async function mintTo(issuerWallet, amount = 1_000n) {
-  return await issuerWallet.mintTokens(amount);
+  const tokenIdentifier = await issuerWallet.getIssuerTokenIdentifier();
+  return await issuerWallet.mintTokens({ tokenAmount: amount, tokenIdentifier });
 }
 
 export async function cleanupAllIssuers() {
   for (const w of trackedIssuers) {
     try {
-      await w.cleanupConnections();
+      await w.cleanup();
     } catch {}
   }
   trackedIssuers.clear();

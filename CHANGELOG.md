@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.1 — 2026-07-03
+
+### Changed
+
+- **Bumped the Spark SDKs and test tooling:** `@buildonspark/spark-sdk` `0.8.1 → 0.8.8`, `@buildonspark/issuer-sdk` `0.1.37 → 0.1.44`, `vitest` `4.1.7 → 4.1.9`. These are all patch-level upstream releases — every SDK method this skill calls keeps a byte-identical signature, so there are no API changes for consumers. Beyond the security patch below, the bump brings a fix that waits for optimization-held balances before reporting "insufficient funds" on a send (fewer spurious transfer failures) and a timeout on token-transaction RPC calls.
+- **Migrated off deprecated SDK calls in the example scripts and helpers.** `wallet.cleanupConnections()` → `wallet.cleanup()` (13 call sites across the example scripts, the `SparkAgent` wrapper, and the reference docs), and the issuer helper's positional `mintTokens(amount)` / `burnTokens(amount)` → the object form `mintTokens({ tokenAmount, tokenIdentifier })`. Both old forms were flagged `@deprecated … will be removed in a future version` by the SDK; moving now keeps the example code working across future SDK releases. No behavior change — the replacements are the SDK's own documented equivalents, and both paths are exercised by the test suite on REGTEST.
+- **Fixed stale install pins in `SKILL.md`.** The setup instructions still told users to `npm install @buildonspark/spark-sdk@^0.7.17` / `@buildonspark/issuer-sdk@^0.1.35` — two majors behind. They now match the bumped versions.
+
+### Security
+
+- Raising the `@buildonspark/spark-sdk` floor to `^0.8.8` guarantees the **protobufjs 8.0.1** patch for **GHSA-xq3m-2v4x-88gg** (shipped in spark-sdk 0.8.2), rather than merely allowing it within the previous `^0.8.1` range. `npm audit` is clean.
+
 ## 0.3.0 — 2026-05-29
 
 ### Added
