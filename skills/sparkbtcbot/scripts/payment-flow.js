@@ -58,7 +58,7 @@ async function main() {
   //
   // const payment = await wallet.payLightningInvoice({
   //   invoice: "lnbc...",
-  //   maxFeeSats: 10,
+  //   maxFeeSats: 25,  // size to the amount — a flat 10 blocks sends >~4,000 sats; see references/lightning.md
   //   preferSpark: true,
   // });
   // console.log("Payment sent:", payment);

@@ -188,9 +188,11 @@ A few rough edges that bite agents running in containers, devcontainers, or sand
 
 ## Backup and Recovery
 
-The mnemonic is the entire backup. Spark operators hold leaf state authoritatively — there is no local channel state or other persisted data that needs separate replication. A fresh install on a new host with the same mnemonic recovers the full wallet (balance, deposit addresses, identity).
+**As long as the Spark operators are online**, the mnemonic is all you need to back up: operators hold leaf state authoritatively, so a fresh install on a new host with the same mnemonic recovers the full wallet (balance, deposit addresses, identity) — there is no channel state to replicate.
 
-This is **stronger than Lightning**, where channel state must be backed up separately (Static Channel Backup / DLP) and channel funds can be lost on data-dir loss even if the seed is safe. With Spark, losing the local data directory loses nothing; losing the seed loses everything.
+**The exception is unilateral exit.** Recovering funds to L1 *without* the operators additionally requires a local backup of your **leaf material** — the pre-signed node/refund txs the operators hand your wallet at claim/transfer time — which is **not** derivable from the seed. If the operators vanish and you kept no copy, the seed alone cannot exit. Mirror that material to disk with `scripts/leaf-vault.js` (`enableLeafVault(wallet)`) and recover with `scripts/unilateral-exit.js`. See `references/unilateral-exit.md`.
+
+For **normal recovery** this is **stronger than Lightning**, where channel state must be backed up separately (Static Channel Backup / DLP) and channel funds can be lost on data-dir loss even if the seed is safe. With Spark, *as long as the operators are up*, losing the local data directory loses nothing; losing the seed loses everything. The one thing local data protects that the seed does **not** is **unilateral exit** (above) — for that, the leaf-vault backup is what matters.
 
 Recovery extends Trust Model's "moment-in-time" trust assumption to one additional moment: at re-init, at least one operator must serve the leaf-state query. The same censorship risk that Trust Model lists for transfers applies here too. If recovery is censored, the unilateral-exit path described in Limitations is the fallback.
 
@@ -210,6 +212,7 @@ Load only what's needed for the user's task. Each reference is a self-contained 
 | `references/extras.md` | Message signing, event listeners, error handling, token *issuance* (`IssuerSparkWallet`) |
 | `references/encrypted-seed.md` | Canonical guide to the encrypted-seed file (`~/.spark/seed.enc`): threat model, setup modes, file format, recovery scenarios. Load when configuring a new wallet or troubleshooting load errors. |
 | `references/security.md` | Full operational-security guide: full-custody threat model, protecting the seed/passphrase, sweeping, monitoring, and what the recipient allowlist does and does not bound. |
+| `references/unilateral-exit.md` | Recovering funds to L1 **without operators** — the leaf-vault backup (`scripts/leaf-vault.js`) plus the exit tool (`scripts/unilateral-exit.js`), CSV timelocks, and caveats. |
 
 Runnable example scripts live in `skills/sparkbtcbot/scripts/` (run via `npm run setup`, `npm run example:balance`, `example:payments`, `example:tokens`, `example:agent`, `example:l402`).
 

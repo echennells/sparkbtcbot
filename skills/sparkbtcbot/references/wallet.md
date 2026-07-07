@@ -35,17 +35,22 @@ Both are P2TR (`bc1p...` on mainnet, `bcrt1p...` on regtest). Deposits require 3
 
 ## Claim a Deposit
 
-If auto-claim is disabled or you want explicit control:
+If auto-claim is disabled or you want explicit control. **Bound the fee** — the SSP charges a spread for sweeping the deposit UTXO on-chain, and you don't want an over-priced claim accepted blind. The SDK enforces this server-side: `claimStaticDepositWithMaxFee` rejects the claim if the fee exceeds `maxFee`.
 
 ```javascript
+// Optional preview: how much will be credited?
 const quote = await wallet.getClaimStaticDepositQuote(txId, vout);
-const result = await wallet.claimStaticDeposit({
+console.log("credit:", quote.creditAmountSats, "sats");
+
+// Claim with a SERVER-ENFORCED fee ceiling — rejected if the SSP fee > maxFee.
+const result = await wallet.claimStaticDepositWithMaxFee({
   transactionId: txId,
-  creditAmountSats: quote.creditAmountSats,
-  sspSignature: quote.signature,
+  maxFee: 5000, // absolute sats; the claim fails if the fee exceeds this
   outputIndex: vout,
 });
 ```
+
+Note: `getUtxosForDepositAddress` returns only `{ txid, vout }` (no amount) and the quote carries only `creditAmountSats`, so there is **no** reliable client-side gross deposit amount to compute a percentage fee against — use the SDK's absolute `maxFee` ceiling above, not a client-side check. The `SparkAgent` wrapper bundles this: `agent.claimDeposit({ txid, vout, maxFeeSats, dryRun })`.
 
 To list unclaimed UTXOs at your registered deposit addresses:
 
@@ -53,7 +58,7 @@ To list unclaimed UTXOs at your registered deposit addresses:
 const addrs = await wallet.queryStaticDepositAddresses();
 for (const addr of addrs) {
   const utxos = await wallet.getUtxosForDepositAddress(addr, 100, 0, true);
-  // utxos[i] has { txid, vout, amount, ... }
+  // utxos[i] has { txid, vout } only (no amount/value field)
 }
 ```
 
@@ -89,10 +94,16 @@ const quote = await wallet.getWithdrawalFeeQuote({
   amountSats: 50000,
   withdrawalAddress: "bc1q...",
 });
-console.log("fast:  ", quote.l1BroadcastFeeFast?.originalValue, "sats");
-console.log("medium:", quote.l1BroadcastFeeMedium?.originalValue, "sats");
-console.log("slow:  ", quote.l1BroadcastFeeSlow?.originalValue, "sats");
+// Total fee per speed = userFee + l1BroadcastFee — both are CurrencyAmount, read
+// .originalValue (sats). Reporting only l1BroadcastFee under-states what you pay.
+const totalFee = (s) =>
+  (quote[`userFee${s}`]?.originalValue ?? 0) + (quote[`l1BroadcastFee${s}`]?.originalValue ?? 0);
+console.log("fast:  ", totalFee("Fast"), "sats");
+console.log("medium:", totalFee("Medium"), "sats");
+console.log("slow:  ", totalFee("Slow"), "sats");
 ```
+
+The `SparkAgent` wrapper and `lib/fee-guards.js` → `withdrawalTotalFee(quote, speed)` do this sum for you.
 
 ### Execute Withdrawal
 

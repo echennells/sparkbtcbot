@@ -35,10 +35,14 @@ For zero-amount invoices, also pass `amountSats`.
 ```javascript
 const result = await wallet.payLightningInvoice({
   invoice: "lnbc...",
-  maxFeeSats: 10,
+  maxFeeSats: 25,     // size to the payment — Spark→Lightning is ~0.25%, so a
+                      // flat 10 silently rejects any send over ~4,000 sats.
+                      // Rule of thumb: max(10, ceil(amountSats * 0.005)).
   preferSpark: true,  // route via Spark when invoice has embedded Spark address
 });
 ```
+
+The `SparkAgent` wrapper sizes this automatically (`lib/fee-guards.js` → `lightningFeeCap`) and, on a dry run, reports `withinCap` / `capReason` so an over-cap send is previewed rather than failing opaquely.
 
 ### Polling for Async Completion
 

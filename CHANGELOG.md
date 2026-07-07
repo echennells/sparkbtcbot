@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.4.0 — 2026-07-07
+
+### Added
+
+- **Unilateral-exit backup & recovery — the "leaf vault."** A Spark seed alone **cannot** unilaterally exit to L1: exit needs the tree of pre-signed node/refund txs ("leaf material") that operators hand the wallet at claim/transfer time, and that material is **not** derivable from the seed. Two new pieces close the gap:
+  - `lib/leaf-vault.js` + `skills/sparkbtcbot/scripts/leaf-vault.js` — continuously mirror the leaf material to `~/.spark/leaf-vault/current.json`. Each node is stored as its **canonical `TreeNode` protobuf hex** (the SDK's exact wire bytes), so recovery is a byte-faithful decode, not a fragile field-by-field JSON reconstruction. `enableLeafVault(wallet)` snapshots on boot, on every `balance:update`, and on a safety-net timer; a **fail-loud self-check** throws if the reached-into SDK internals move; an **integrity gate** refuses to write a vault unless it provably reconstructs every leaf's exit chain **offline** (no operators). `verifyVault()` / `node scripts/leaf-vault.js verify` re-checks any vault.
+  - `skills/sparkbtcbot/scripts/unilateral-exit.js` + `references/unilateral-exit.md` — the recovery tool. Rebuilds each exit chain offline (operators never contacted), builds CPFP fee-bump packages against an external L1 fee UTXO you control, broadcasts the pre-signed node txs, waits the refund's CSV timelock, and broadcasts the refunds. Env-configured; `--dry-run`; `submitpackage` on real networks with a regtest `generateblock` path for testing. Exercised end-to-end on a local Spark devnet (own operators + regtest bitcoind): mint → snapshot → operators stopped → reconstruct offline → broadcast → clear the ~2000-block CSV → funds recovered on L1.
+- **Fee guardrails on every value-moving path** (`lib/fee-guards.js`). Bounds both the fee **and** the amount on Lightning sends, L402 payments, deposit claims, and withdrawals, so a tampered SSP quote or an amountless invoice can't move more than the caller allowed. Wired into `SparkAgent`: `payLightningInvoice` takes `maxFeeSats` + `maxAmountSats`; deposit claims use the SDK's `claimStaticDepositWithMaxFee`; L402 enforces an amount ceiling.
+- Explicit runtime deps `@noble/curves` and `@scure/btc-signer` (keygen + PSBT signing for the exit tool), plus `npm run leaf-vault` / `npm run unilateral-exit` scripts.
+
+### Changed
+
+- **Corrected overstated backup/exit claims** in `SKILL.md` and `references/architecture.md`. "The mnemonic is the entire backup" and "Spark guarantees you can always exit to L1" are now accurate: the seed recovers the wallet **while operators are online**, but **unilateral exit additionally requires the locally-backed-up leaf material**. Normal recovery is unchanged — the correction is specifically the operators-gone case.
+
 ## 0.3.1 — 2026-07-03
 
 ### Changed

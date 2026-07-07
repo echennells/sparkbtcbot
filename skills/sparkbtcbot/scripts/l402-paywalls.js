@@ -6,6 +6,7 @@ import { SparkWallet } from "@buildonspark/spark-sdk";
 // for payment, so a malicious decoder can mislead pricing but cannot redirect
 // funds. Re-audit on version bump.
 import { decode } from "light-bolt11-decoder";
+import { checkL402Amount } from "../../../lib/fee-guards.js";
 import { loadMnemonicFromEnv } from "../../../lib/encrypted-seed.js";
 
 const network = process.env.SPARK_NETWORK || "MAINNET";
@@ -61,7 +62,7 @@ async function parseChallenge(response) {
  * Caches tokens by domain so repeat requests don't pay again.
  */
 async function fetchWithL402(wallet, url, options = {}) {
-  const { method = "GET", headers = {}, body, maxFeeSats = 10 } = options;
+  const { method = "GET", headers = {}, body, maxFeeSats, maxAmountSats = 10_000 } = options;
   const domain = new URL(url).host;
   const reqHeaders = { "Content-Type": "application/json", ...headers };
   const reqBody = body ? JSON.stringify(body) : undefined;
@@ -120,11 +121,18 @@ async function fetchWithL402(wallet, url, options = {}) {
   const amountSats = Math.ceil(Number(amountSection.value) / 1000);
   console.log(`Invoice amount: ${amountSats} sats`);
 
-  // Step 4: Pay the invoice
-  console.log("Paying invoice...");
+  // Bound the AMOUNT, not just the routing fee — a malicious/compromised paywall
+  // can demand an arbitrarily large invoice. Raise maxAmountSats for pricier resources.
+  const amtCheck = checkL402Amount({ amountSats, maxAmountSats });
+  if (!amtCheck.ok) throw new Error(`L402 payment blocked: ${amtCheck.reason}. Raise maxAmountSats to override.`);
+
+  // Step 4: Pay the invoice. Size the fee cap to the amount (Spark→Lightning is
+  // ~0.25%, so a flat 10 rejects any send over ~4,000 sats). Explicit override wins.
+  const feeCap = maxFeeSats ?? Math.max(10, Math.ceil(amountSats * 0.005));
+  console.log(`Paying invoice (max fee ${feeCap} sats)...`);
   const payResult = await wallet.payLightningInvoice({
     invoice,
-    maxFeeSats,
+    maxFeeSats: feeCap,
   });
 
   // Get preimage (may need to poll if payment is async)
@@ -227,7 +235,7 @@ async function main() {
   //
   // console.log("=== Fetch with L402 Payment ===");
   // const result = await fetchWithL402(wallet, L402_TEST_URL, {
-  //   maxFeeSats: 10,
+  //   maxFeeSats: 25,  // size to the amount — a flat 10 blocks sends >~4,000 sats; see references/lightning.md
   // });
   // console.log("Paid:", result.paid);
   // if (result.amountSats) console.log("Amount:", result.amountSats, "sats");

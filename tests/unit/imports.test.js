@@ -38,6 +38,7 @@ describe("SparkWallet method surface", () => {
     "getStaticDepositAddress",
     "getSingleUseDepositAddress",
     "claimStaticDeposit",
+    "claimStaticDepositWithMaxFee",
     "createSatsInvoice",
     "createTokensInvoice",
     "createLightningInvoice",

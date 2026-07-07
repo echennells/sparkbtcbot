@@ -7,7 +7,7 @@ Load when the user wants to understand how Spark works, weigh it against Lightni
 1. Users hold their own keys (BIP39 mnemonic) — fully self-custodial.
 2. Transactions are cooperatively signed by a threshold of Signing Operators (SOs).
 3. Funds live in Bitcoin UTXOs organized in hierarchical trees.
-4. Users can always exit to L1 unilaterally if operators go offline.
+4. Users can exit to L1 unilaterally if operators go offline — **but only with a local backup of their leaf material** (the pre-signed exit txs); a seed phrase alone is not sufficient. See `references/unilateral-exit.md`.
 
 ## Spark vs Lightning vs On-Chain
 
@@ -76,7 +76,7 @@ Exiting Spark to L1 Bitcoin carries **unpredictable costs** that agents and user
 4. **Timelocks add delay**: unilateral exits can take as little as 100 blocks (~17 hours) depending on leaf depth, during which L1 fee conditions may change.
 5. **Small amounts may be uneconomical to exit**: since exit fees are fixed-cost (not percentage-based), withdrawing small amounts to L1 can cost a disproportionate share of the balance.
 
-**Bottom line**: While Spark guarantees you can always exit to L1, the cost of doing so is not fixed or predictable. Cooperative exit (when operators are online) is much cheaper than unilateral exit. **Prefer [Boltz](https://boltz.exchange) for L1 withdrawals** (Spark → Lightning → L1 via submarine swap, minimum 25,000 sats), and discourage any L1 withdrawal under 25,000 sats — fixed fees eat a disproportionate share.
+**Bottom line**: While Spark lets you exit to L1 unilaterally — *provided your leaf material is backed up locally* (a seed phrase alone cannot exit; see `references/unilateral-exit.md`) — the cost of doing so is not fixed or predictable. Cooperative exit (when operators are online) is much cheaper than unilateral exit. **Prefer [Boltz](https://boltz.exchange) for L1 withdrawals** (Spark → Lightning → L1 via submarine swap, minimum 25,000 sats), and discourage any L1 withdrawal under 25,000 sats — fixed fees eat a disproportionate share.
 
 ## Limitations
 

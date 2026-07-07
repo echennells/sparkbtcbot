@@ -101,6 +101,75 @@ export function assertRecipientAllowed(
 /** ~/.spark/recipients.allow (resolved from os.homedir() at module load time) */
 export const DEFAULT_ALLOWLIST_PATH: string;
 
+// --- Fee guardrails (bound the fee on sends, claims, and withdrawals) ---
+
+/** An SDK CurrencyAmount, or a bare number of sats. */
+export interface CurrencyAmountLike {
+  originalValue: number;
+  originalUnit?: string;
+}
+
+/** Read a sats scalar out of a CurrencyAmount or bare number; null if unreadable. */
+export function satsFromCurrencyAmount(
+  amount: CurrencyAmountLike | number | null | undefined,
+): number | null;
+
+/**
+ * Read sats from a Lightning send fee estimate. The SDK returns a bare number
+ * at runtime despite typing it as { feeEstimate: CurrencyAmount } — this accepts
+ * both shapes. Returns null if unreadable.
+ */
+export function lightningEstimateSats(
+  estimate: number | { feeEstimate?: CurrencyAmountLike | number } | null | undefined,
+): number | null;
+
+export interface LightningFeeCapOptions {
+  amountSats?: number;
+  estimatedFeeSats?: number;
+  /** Minimum cap in sats (default 10). */
+  floorSats?: number;
+  /** Cap as basis points of the amount (default 50 = 0.50%). */
+  rateBps?: number;
+}
+
+/** Amount-aware default Lightning/L402 fee cap in sats. */
+export function lightningFeeCap(options?: LightningFeeCapOptions): number;
+
+export interface FeeCheck {
+  ok: boolean;
+  fee: number | null;
+  cap: number | null;
+  reason: string;
+}
+
+/** Decide whether an estimated fee is within a cap. `ok:false` => do not proceed. */
+export function checkFeeAgainstCap(
+  estimatedFeeSats: number | null | undefined,
+  capSats: number | null | undefined,
+): FeeCheck;
+
+export interface L402AmountCheckOptions {
+  amountSats?: number | null;
+  /** Max invoice amount in sats. */
+  maxAmountSats?: number;
+}
+
+export interface L402AmountCheck {
+  ok: boolean;
+  amountSats: number | null;
+  cap: number | null;
+  reason: string;
+}
+
+/** Bound an inbound-invoice payment amount (distinct from the routing-fee cap). */
+export function checkL402Amount(options: L402AmountCheckOptions): L402AmountCheck;
+
+/** Total cooperative-exit fee (userFee + l1BroadcastFee) for a speed; null if unreadable. */
+export function withdrawalTotalFee(
+  quote: unknown,
+  speed?: "FAST" | "MEDIUM" | "SLOW" | string,
+): number | null;
+
 // --- Skill-content helpers (for non-Claude LLM frameworks) ---
 
 /** Absolute path to the bundled SKILL.md inside this npm package. */

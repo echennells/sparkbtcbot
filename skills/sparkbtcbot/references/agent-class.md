@@ -4,10 +4,31 @@ Load when building an agent that wraps `SparkWallet` with a higher-level API for
 
 ```javascript
 import { SparkWallet } from "@buildonspark/spark-sdk";
+import { decode as decodeBolt11 } from "light-bolt11-decoder";
 import {
   loadRecipientsAllowlist,
   assertRecipientAllowed,
 } from "./lib/recipients-allowlist.js";
+import {
+  lightningEstimateSats,
+  lightningFeeCap,
+  checkFeeAgainstCap,
+  checkL402Amount,
+  withdrawalTotalFee,
+} from "./lib/fee-guards.js";
+
+// Best-effort BOLT11 amount in sats (undefined for amountless invoices or on a
+// decode error) — used to size the amount-aware Lightning fee cap.
+function invoiceAmountSats(bolt11) {
+  try {
+    const section = decodeBolt11(bolt11)?.sections?.find((s) => s.name === "amount");
+    if (!section?.value) return undefined;
+    const sats = Number(section.value) / 1000; // section.value is millisats
+    return Number.isFinite(sats) && sats > 0 ? Math.round(sats) : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 export class SparkAgent {
   #wallet;
@@ -62,6 +83,32 @@ export class SparkAgent {
     return await this.#wallet.getStaticDepositAddress();
   }
 
+  // Claim a confirmed L1 deposit into Spark balance with a SERVER-ENFORCED fee
+  // ceiling: claimStaticDepositWithMaxFee rejects the claim if the SSP's fee (its
+  // spread for sweeping the UTXO on-chain) exceeds maxFeeSats. No client-side
+  // gross-amount lookup is needed — and none is possible: getUtxosForDepositAddress
+  // returns only { txid, vout }. `dryRun` previews the credited amount.
+  async claimDeposit({ txid, vout = 0, maxFeeSats = 5000, dryRun = false }) {
+    if (dryRun) {
+      const quote = await this.#wallet.getClaimStaticDepositQuote(txid, vout);
+      const credit = Number(quote?.creditAmountSats);
+      return {
+        dryRun: true,
+        operation: "claim_deposit",
+        txid,
+        vout,
+        creditSats: Number.isFinite(credit) ? String(credit) : "unknown",
+        maxFeeSats: String(maxFeeSats),
+        network: this.#network,
+      };
+    }
+    return await this.#wallet.claimStaticDepositWithMaxFee({
+      transactionId: txid,
+      maxFee: maxFeeSats,
+      outputIndex: vout,
+    });
+  }
+
   // `dryRun: true` returns a structured preview without signing. Use it to
   // confirm the destination/amount with the operator before spending:
   //   await agent.transfer({ to, amount, dryRun: true })
@@ -101,27 +148,46 @@ export class SparkAgent {
   // Lightning recipients are node pubkeys inside the BOLT11; the address
   // allowlist (Spark/L1 addresses) does not apply. `dryRun: true` returns
   // an estimated routing fee without paying.
-  async payLightningInvoice(bolt11, { maxFeeSats = 10, amountSats, dryRun = false } = {}) {
+  async payLightningInvoice(bolt11, { maxFeeSats, amountSats, maxAmountSats = 10_000, dryRun = false } = {}) {
+    const est = await this.#wallet.getLightningSendFeeEstimate({
+      encodedInvoice: bolt11,
+      amountSats,
+    });
+    const estimatedFee = lightningEstimateSats(est);
+    const amt = amountSats ?? invoiceAmountSats(bolt11);
+    // Fee cap: amount-aware (0.5% of amount, min 10 sats) — replaces the old flat
+    // 10 that silently rejected sends over ~4,000 sats. Explicit maxFeeSats wins.
+    const cap = maxFeeSats ?? lightningFeeCap({ amountSats: amt, estimatedFeeSats: estimatedFee });
+    const feeCheck = checkFeeAgainstCap(estimatedFee, cap);
+    // Amount ceiling: the fee cap alone CANNOT stop an induced full-balance send
+    // (routing ~0.25% always fits a 0.5% fee cap), so bound the AMOUNT too — the
+    // same guard the L402 path uses. Fails closed on an amountless invoice.
+    const amtCheck = checkL402Amount({ amountSats: amt, maxAmountSats });
+    const ok = feeCheck.ok && amtCheck.ok;
+    const reason = !amtCheck.ok ? amtCheck.reason : feeCheck.reason;
     if (dryRun) {
-      const feeEst = await this.#wallet.getLightningSendFeeEstimate({
-        encodedInvoice: bolt11,
-        amountSats,
-      });
       return {
         dryRun: true,
         operation: "lightning_pay",
         from: await this.#wallet.getSparkAddress(),
         invoice: bolt11,
-        amount: amountSats !== undefined ? String(amountSats) : "<from invoice>",
+        amount: amt !== undefined ? String(amt) : "<from invoice>",
         unit: "sats",
-        estimatedFee: String(feeEst?.fee ?? feeEst ?? "unknown"),
-        maxFeeSats: String(maxFeeSats),
+        estimatedFee: estimatedFee != null ? String(estimatedFee) : "unknown",
+        maxFeeSats: String(cap),
+        maxAmountSats: String(maxAmountSats),
+        withinCap: ok,
+        capReason: ok ? "within caps" : reason,
         network: "lightning",
       };
     }
+    if (!ok) {
+      const hint = !amtCheck.ok ? "Raise maxAmountSats" : "Raise maxFeeSats";
+      throw new Error(`Lightning send blocked: ${reason}. ${hint} to override.`);
+    }
     return await this.#wallet.payLightningInvoice({
       invoice: bolt11,
-      maxFeeSats,
+      maxFeeSats: cap,
       preferSpark: true,
     });
   }
@@ -157,15 +223,22 @@ export class SparkAgent {
 
   // L1 exit. Allowlist applies to the L1 BTC `to` address. `dryRun` returns
   // the fee quote without broadcasting.
-  async withdraw({ to, amount, speed = "MEDIUM", dryRun = false }) {
+  async withdraw({ to, amount, speed = "MEDIUM", maxFeeSats, maxFeePct = 10, dryRun = false }) {
     await this.#assertAllowed(to);
     const quote = await this.#wallet.getWithdrawalFeeQuote({
       amountSats: amount,
       withdrawalAddress: to,
     });
+    // Total exit fee = userFee + l1BroadcastFee for the speed. Ceiling: reject an
+    // exit whose fee exceeds maxFeePct (default 10%) of the amount or an absolute
+    // maxFeeSats — legibly refusing uneconomical small withdrawals. Unreadable
+    // quote => proceed (defer to the SDK) rather than block a valid withdrawal.
+    const fee = withdrawalTotalFee(quote, speed);
+    const pctCap = Number.isFinite(Number(maxFeePct)) ? Math.ceil((Number(amount) * Number(maxFeePct)) / 100) : Infinity;
+    const absCap = Number.isFinite(Number(maxFeeSats)) ? Number(maxFeeSats) : Infinity;
+    const cap = Math.min(pctCap, absCap);
+    const check = checkFeeAgainstCap(fee, cap);
     if (dryRun) {
-      const estimatedFee =
-        quote?.[speed.toLowerCase()] ?? quote?.fee ?? quote ?? "unknown";
       return {
         dryRun: true,
         operation: "l1_withdraw",
@@ -173,11 +246,18 @@ export class SparkAgent {
         to,
         amount: String(amount),
         unit: "sats",
-        estimatedFee: String(estimatedFee),
+        estimatedFee: fee != null ? String(fee) : "unknown",
+        maxFeeSats: Number.isFinite(cap) ? String(cap) : null,
+        withinCap: check.ok,
+        capReason: check.reason,
         speed,
         network: "bitcoin",
         quote,
       };
+    }
+    if (!check.ok) {
+      const pct = ((check.fee / Number(amount)) * 100).toFixed(1);
+      throw new Error(`Withdrawal blocked: ${check.reason} (${pct}% of the ${amount}-sat exit). Raise maxFeeSats/maxFeePct to override.`);
     }
     return await this.#wallet.withdraw({
       onchainAddress: to,
@@ -199,7 +279,7 @@ export class SparkAgent {
   // L402 helpers (see references/l402.md for details)
   async fetchL402(url, options = {}) {
     const { decode } = await import("light-bolt11-decoder");
-    const { method = "GET", headers = {}, body, maxFeeSats = 10 } = options;
+    const { method = "GET", headers = {}, body, maxFeeSats, maxAmountSats = 10_000 } = options;
 
     const initialResponse = await fetch(url, {
       method,
@@ -220,9 +300,18 @@ export class SparkAgent {
 
     const decoded = decode(invoice);
     const amountSection = decoded.sections.find((s) => s.name === "amount");
-    const amountSats = Math.ceil(Number(amountSection.value) / 1000);
+    const amountSats = amountSection?.value ? Math.ceil(Number(amountSection.value) / 1000) : null;
 
-    const payResult = await this.#wallet.payLightningInvoice({ invoice, maxFeeSats });
+    // Bound the invoice AMOUNT, not just the routing fee — a malicious/compromised
+    // paywall can demand an arbitrarily large invoice, and fetchL402 re-fetches a
+    // fresh 402 challenge (so previewL402's price is NOT authoritative). Also
+    // refuses an amountless invoice. Raise maxAmountSats for pricier resources.
+    const amtCheck = checkL402Amount({ amountSats, maxAmountSats });
+    if (!amtCheck.ok) throw new Error(`L402 payment blocked: ${amtCheck.reason}. Raise maxAmountSats to override.`);
+
+    // Route through the guarded wrapper so the payment also gets the amount-aware
+    // routing-fee cap (maxFeeSats undefined => sized from the invoice amount).
+    const payResult = await this.payLightningInvoice(invoice, { maxFeeSats, amountSats });
     let preimage = payResult.paymentPreimage;
 
     if (!preimage && payResult.id) {
@@ -243,7 +332,7 @@ export class SparkAgent {
 
     const ct = finalResponse.headers.get("content-type") || "";
     const data = ct.includes("json") ? await finalResponse.json() : await finalResponse.text();
-    return { paid: true, amountSats, preimage, data };
+    return { paid: true, amountSats, macaroon, preimage, data };
   }
 
   async previewL402(url) {
@@ -255,6 +344,7 @@ export class SparkAgent {
     const invoice = challenge.invoice || challenge.payment_request;
     const decoded = decode(invoice);
     const amountSection = decoded.sections.find((s) => s.name === "amount");
+    if (!amountSection?.value) throw new Error("L402 invoice has no amount");
 
     return {
       requiresPayment: true,
