@@ -19,6 +19,8 @@
 //   SPARK_EXIT_FEE_PRIVKEY    hex privkey whose P2WPKH address holds a funded UTXO for CPFP fees
 //   SPARK_EXIT_FEERATE        target sat/vByte for the CPFP bump (default 2)
 //   SPARK_EXIT_REGTEST_MINE   "true" to mine blocks + use generateblock (regtest/devnet testing only)
+//   SPARK_EXIT_WAIT           "false" to broadcast each ready stage then EXIT rather than waiting the
+//                             CSV inline — re-run near maturity to fire the refund (idempotent/resumable)
 // CLI: `node unilateral-exit.js [--dry-run]`
 import { buildUnilateralExitChain, constructUnilateralExitFeeBumpPackages, getP2WPKHAddressFromPublicKey, Network } from "@buildonspark/spark-sdk";
 import { TreeNode } from "@buildonspark/spark-sdk/proto/spark";
@@ -44,6 +46,7 @@ export function loadConfig(env = process.env, argv = process.argv) {
     feePrivkeyHex: env.SPARK_EXIT_FEE_PRIVKEY || null,
     feeRate: Number(env.SPARK_EXIT_FEERATE || 2),
     regtestMine: env.SPARK_EXIT_REGTEST_MINE === "true",
+    wait: env.SPARK_EXIT_WAIT !== "false", // false = broadcast-ready-then-exit (resumable) vs inline CSV wait
     dryRun: argv.includes("--dry-run"),
   };
   if (cfg.regtestMine && !cfg.rpcWallet) cfg.rpcWallet = "default"; // wallet needed for auto-fund/mining
@@ -146,6 +149,13 @@ async function confHeightOfInput(cfg, btc, inp) {
   throw new Error("could not locate the prevout of a timelocked input to measure its confirmation height");
 }
 
+// Confirmation height of a tx via its own output 0 (unspent until the next stage
+// spends it), or null if unconfirmed / not yet broadcast. Enables idempotent resume.
+async function confirmedHeightOrNull(btc, txid) {
+  const out = await btc("gettxout", [txid, 0]).catch(() => null);
+  return out && out.confirmations >= 1 ? (await btc("getblockcount")) - out.confirmations + 1 : null;
+}
+
 async function broadcastPackage(cfg, btc, parentHex, childHex) {
   const txs = childHex ? [parentHex, childHex] : [parentHex];
   if (cfg.regtestMine) {
@@ -205,25 +215,43 @@ export async function runUnilateralExit(cfg = loadConfig()) {
 
   // BIP68 relative-timelock bit layout (encoded in the input sequence).
   const CSV_DISABLE = 0x80000000, CSV_TYPE_SECONDS = 0x00400000, CSV_VALUE = 0x0000ffff;
+  let pending = 0;
   for (const c of chains) {
-    let prevConfHeight = null; // confirmation height of the package we last broadcast
+    let prevConfHeight = null; // confirmation height of the package we last handled
     for (let i = 0; i < c.txPackages.length; i++) {
       const p = c.txPackages[i];
       const parent = parseRaw(p.tx);
+      // Idempotent resume: a package already confirmed on-chain is skipped, and its
+      // height becomes the base for the next stage's timelock. This is what lets the
+      // tool be re-run — broadcast the node tx now, fire the refund ~2 weeks later.
+      const doneH = await confirmedHeightOrNull(btc, parent.id);
+      if (doneH != null) {
+        console.log(`  leaf ${c.leafId.slice(0, 12)} pkg[${i}] ${parent.id.slice(0, 12)} already confirmed @ ${doneH} — skip`);
+        prevConfHeight = doneH;
+        continue;
+      }
       const inp = parent.getInput(0);
       const seq = (inp.sequence ?? 0) >>> 0;
       // A BIP68 relative timelock matures at the SPENT output's CONFIRMATION height
-      // + csv — NOT the current tip. The old code sampled the tip at broadcast time,
-      // so on mainnet (parent still unconfirmed in the mempool) it waited too few
-      // blocks and the refund was rejected non-BIP68-final. Regtest's generateblock
-      // confirmed each package immediately, which is exactly why this stayed hidden.
+      // + csv — NOT the current tip (H-1). On mainnet the parent may still sit
+      // unconfirmed in the mempool, so measure from its real confirmation height.
       if (!(seq & CSV_DISABLE) && (seq & CSV_VALUE) > 0) {
         if (seq & CSV_TYPE_SECONDS) throw new Error(`leaf ${c.leafId}: refund uses a time-based (512s) BIP68 timelock; this tool supports block-based CSV only`);
         const csv = seq & CSV_VALUE;
-        const confH = prevConfHeight ?? await confHeightOfInput(cfg, btc, inp); // re-run: look up the prevout
+        const confH = prevConfHeight ?? await confHeightOfInput(cfg, btc, inp);
         const target = confH + csv;
-        console.log(`  leaf ${c.leafId.slice(0, 12)} pkg[${i}]: CSV ${csv} from conf height ${confH} -> waiting for height ${target}`);
-        await waitForHeight(cfg, btc, target);
+        const tip = await btc("getblockcount");
+        if (tip < target) {
+          if (cfg.wait) {
+            console.log(`  leaf ${c.leafId.slice(0, 12)} pkg[${i}]: CSV ${csv} from conf height ${confH} -> waiting for height ${target}`);
+            await waitForHeight(cfg, btc, target);
+          } else {
+            const days = Math.round(((target - tip) * 10 / 1440) * 10) / 10; // ~10 min/block
+            console.log(`  leaf ${c.leafId.slice(0, 12)} pkg[${i}] NOT mature: needs height ${target} (~${target - tip} blocks, ~${days}d). Re-run after that height to fire the refund.`);
+            pending++;
+            break; // this chain is parked on its timelock; move to the next leaf
+          }
+        }
       }
       let childHex = null;
       if (p.feeBumpPsbt) {
@@ -231,16 +259,22 @@ export async function runUnilateralExit(cfg = loadConfig()) {
         if (!fin.complete) throw new Error(`could not finalize CPFP child for ${c.leafId} pkg[${i}]`);
         childHex = fin.hex;
       }
-      const res = await broadcastPackage(cfg, btc, p.tx, childHex);
+      let res;
+      try {
+        res = await broadcastPackage(cfg, btc, p.tx, childHex);
+      } catch (e) {
+        if (/already|txn-already-known|duplicate/i.test(String(e?.message))) res = { note: "already known" };
+        else throw e;
+      }
       console.log(`  leaf ${c.leafId.slice(0, 12)} pkg[${i}] ${parent.id.slice(0, 12)} -> ${JSON.stringify(res).slice(0, 120)}`);
-      // Wait for THIS package to confirm so the next stage's CSV is measured from
-      // its real confirmation height (mainnet: poll; regtest: generateblock already
-      // confirmed it, so this returns immediately).
+      // Confirm THIS package so the next stage's CSV is measured from its real
+      // confirmation height (mainnet: poll; regtest: generateblock already did it).
       if (i < c.txPackages.length - 1) prevConfHeight = await waitForConfirmation(cfg, btc, parent.id, 0);
     }
   }
-  console.log("✅ unilateral exit broadcast complete — funds recovering to L1.");
-  return { exited: chains.length };
+  if (pending) console.log(`⏳ ${pending} chain(s) parked on their CSV timelock — re-run this tool after the noted heights to broadcast the refunds.`);
+  else console.log("✅ unilateral exit broadcast complete — funds recovering to L1.");
+  return { exited: chains.length, pending };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
