@@ -12,6 +12,8 @@ requires:
       default: MAINNET
     - name: SPARK_SEED_PATH
       description: Optional override for the encrypted-seed file location. Defaults to ~/.spark/seed.enc.
+    - name: SPARK_LEAF_VAULT
+      description: Set to "off" to disable the automatic unilateral-exit backup (the "leaf-vault" — mirrors the data needed to recover funds if the Spark operators go offline). On by default.
 model-invocation: autonomous
 model-invocation-reason: This skill enables agents to autonomously send and receive Bitcoin payments. Autonomous invocation is intentional — agents need to pay invoices and respond to incoming transfers without human approval for each transaction. The direct-SDK path here is full-custody-once-decrypted with no spending caps; for guardrails (scoped tokens, per-tx and daily limits, audit logs, revocation), run sparkbtcbot-proxy and have the agent talk to it over HTTP instead.
 ---
@@ -190,7 +192,7 @@ A few rough edges that bite agents running in containers, devcontainers, or sand
 
 **As long as the Spark operators are online**, the mnemonic is all you need to back up: operators hold leaf state authoritatively, so a fresh install on a new host with the same mnemonic recovers the full wallet (balance, deposit addresses, identity) — there is no channel state to replicate.
 
-**The exception is unilateral exit.** Recovering funds to L1 *without* the operators additionally requires a local backup of your **leaf material** — the pre-signed node/refund txs the operators hand your wallet at claim/transfer time — which is **not** derivable from the seed. If the operators vanish and you kept no copy, the seed alone cannot exit. Mirror that material to disk with `scripts/leaf-vault.js` (`enableLeafVault(wallet)`) and recover with `scripts/unilateral-exit.js`. See `references/unilateral-exit.md`.
+**The exception is unilateral exit.** Recovering funds to L1 *without* the operators additionally requires a local backup of your **leaf material** — the pre-signed node/refund txs the operators hand your wallet at claim/transfer time — which is **not** derivable from the seed. If the operators vanish and you kept no copy, the seed alone cannot exit. The `SparkAgent` mirrors that material to disk **automatically** (via `scripts/leaf-vault.js` — snapshots on boot and on every send/receive/deposit; opt out with `SPARK_LEAF_VAULT=off`); recover with `scripts/unilateral-exit.js`. See `references/unilateral-exit.md`.
 
 For **normal recovery** this is **stronger than Lightning**, where channel state must be backed up separately (Static Channel Backup / DLP) and channel funds can be lost on data-dir loss even if the seed is safe. With Spark, *as long as the operators are up*, losing the local data directory loses nothing; losing the seed loses everything. The one thing local data protects that the seed does **not** is **unilateral exit** (above) — for that, the leaf-vault backup is what matters.
 
@@ -213,6 +215,7 @@ Load only what's needed for the user's task. Each reference is a self-contained 
 | `references/encrypted-seed.md` | Canonical guide to the encrypted-seed file (`~/.spark/seed.enc`): threat model, setup modes, file format, recovery scenarios. Load when configuring a new wallet or troubleshooting load errors. |
 | `references/security.md` | Full operational-security guide: full-custody threat model, protecting the seed/passphrase, sweeping, monitoring, and what the recipient allowlist does and does not bound. |
 | `references/unilateral-exit.md` | Recovering funds to L1 **without operators** — the leaf-vault backup (`scripts/leaf-vault.js`) plus the exit tool (`scripts/unilateral-exit.js`), CSV timelocks, and caveats. |
+| `references/recovery-scenarios.md` | Tested recovery behavior + conclusions: stale-backup failure modes, the justice / decrementing-timelock defense (verified on-chain), and what a backup can and cannot recover. |
 
 Runnable example scripts live in `skills/sparkbtcbot/scripts/` (run via `npm run setup`, `npm run example:balance`, `example:payments`, `example:tokens`, `example:agent`, `example:l402`).
 

@@ -21,18 +21,14 @@
 //   SPARK_EXIT_REGTEST_MINE   "true" to mine blocks + use generateblock (regtest/devnet testing only)
 // CLI: `node unilateral-exit.js [--dry-run]`
 import { buildUnilateralExitChain, constructUnilateralExitFeeBumpPackages, getP2WPKHAddressFromPublicKey, Network } from "@buildonspark/spark-sdk";
+import { TreeNode } from "@buildonspark/spark-sdk/proto/spark";
 import { secp256k1 } from "@noble/curves/secp256k1";
 import { Transaction } from "@scure/btc-signer";
 import { readVault, validateSnapshotShape } from "../../../lib/leaf-vault.js";
-import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { homedir } from "node:os";
-import { join, dirname } from "node:path";
+import { join } from "node:path";
 
-const require = createRequire(import.meta.url);
-const { TreeNode } = await import(
-  pathToFileURL(join(dirname(require.resolve("@buildonspark/spark-sdk")), "proto", "spark.js")).href
-);
 const decodeNode = (hex) => TreeNode.decode(Uint8Array.from(Buffer.from(hex, "hex")));
 const toHex = (u) => Buffer.from(u).toString("hex");
 const parseRaw = (h) => Transaction.fromRaw(Buffer.from(h, "hex"), { allowUnknownInputs: true, allowUnknownOutputs: true });
@@ -52,6 +48,11 @@ export function loadConfig(env = process.env, argv = process.argv) {
   };
   if (cfg.regtestMine && !cfg.rpcWallet) cfg.rpcWallet = "default"; // wallet needed for auto-fund/mining
   if (Network[cfg.network] === undefined) throw new Error(`unknown SPARK_NETWORK ${cfg.network}`);
+  // A test-only flag (generateblock + throwaway in-memory keys) must never touch a
+  // real network — on MAINNET the regtest fee path sends real BTC to a discarded key.
+  if (cfg.regtestMine && !["REGTEST", "LOCAL"].includes(cfg.network)) {
+    throw new Error(`SPARK_EXIT_REGTEST_MINE is regtest-only; refusing to use it on ${cfg.network}. Unset it and set SPARK_EXIT_FEE_PRIVKEY for a real broadcast.`);
+  }
   return cfg;
 }
 
@@ -118,6 +119,33 @@ async function waitForHeight(cfg, btc, target) {
   }
 }
 
+// Confirmation height of a tx output via gettxout (no txindex needed): while the
+// tx sits in the mempool gettxout reports confirmations 0; once mined, >=1. On
+// regtest we mine to force it. Returns the height the tx confirmed at.
+async function waitForConfirmation(cfg, btc, txid, vout = 0) {
+  for (;;) {
+    const out = await btc("gettxout", [txid, vout]).catch(() => null);
+    if (out && out.confirmations >= 1) {
+      const tip = await btc("getblockcount");
+      return tip - out.confirmations + 1;
+    }
+    if (cfg.regtestMine) { await mineBlocks(cfg, btc, 1); continue; }
+    console.log(`   waiting for ${txid.slice(0, 12)} to confirm…`);
+    await new Promise((r) => setTimeout(r, 30_000));
+  }
+}
+
+// Confirmation height of the output an input spends — used only on a re-run where
+// an earlier package already confirmed. Byte-order-agnostic (tries the txid both
+// reversed and as-is) so it doesn't depend on the signer lib's internal ordering.
+async function confHeightOfInput(cfg, btc, inp) {
+  const vout = inp.index ?? 0;
+  for (const txid of [Buffer.from(inp.txid).reverse().toString("hex"), Buffer.from(inp.txid).toString("hex")]) {
+    if (await btc("gettxout", [txid, vout]).catch(() => null)) return waitForConfirmation(cfg, btc, txid, vout);
+  }
+  throw new Error("could not locate the prevout of a timelocked input to measure its confirmation height");
+}
+
 async function broadcastPackage(cfg, btc, parentHex, childHex) {
   const txs = childHex ? [parentHex, childHex] : [parentHex];
   if (cfg.regtestMine) {
@@ -139,6 +167,15 @@ export async function runUnilateralExit(cfg = loadConfig()) {
 
   const info = await btc("getblockchaininfo");
   console.log(`bitcoind: ${info.chain}, height ${info.blocks}${cfg.dryRun ? "  [DRY RUN]" : ""}`);
+
+  // Warn if the CPFP fee rate is below what the node will even relay — the exit's
+  // node txs are 0-fee, so an underpriced child silently gates confirmation, and an
+  // operators-offline event may coincide with an L1 fee spike (everyone exiting).
+  try {
+    const minRate = (await btc("getmempoolinfo"))?.mempoolminfee;
+    const minSatVb = minRate ? minRate * 1e5 : 0; // BTC/kvB -> sat/vB
+    if (minSatVb > cfg.feeRate) console.log(`⚠️  fee rate ${cfg.feeRate} sat/vB is BELOW this node's mempool minimum (${minSatVb.toFixed(2)} sat/vB) — packages may be rejected. Raise SPARK_EXIT_FEERATE.`);
+  } catch { /* getmempoolinfo unavailable — skip the advisory */ }
 
   // Rebuild every leaf's chain OFFLINE (no operators) and collect node protobuf hexes.
   const reMap = new Map(vault.nodes.map((n) => [n.id, decodeNode(n.hex)]));
@@ -166,15 +203,26 @@ export async function runUnilateralExit(cfg = loadConfig()) {
     return { exited: 0, chains: chains.length, dryRun: true };
   }
 
+  // BIP68 relative-timelock bit layout (encoded in the input sequence).
+  const CSV_DISABLE = 0x80000000, CSV_TYPE_SECONDS = 0x00400000, CSV_VALUE = 0x0000ffff;
   for (const c of chains) {
+    let prevConfHeight = null; // confirmation height of the package we last broadcast
     for (let i = 0; i < c.txPackages.length; i++) {
       const p = c.txPackages[i];
       const parent = parseRaw(p.tx);
-      // Packages after the first spend a CSV-timelocked output of the prior tx.
-      if (i > 0) {
-        const csv = parent.getInput(0).sequence & 0x0000ffff;
-        const target = (await btc("getblockcount")) + csv;
-        console.log(`  leaf ${c.leafId.slice(0, 12)} pkg[${i}]: CSV ${csv} blocks -> waiting for height ${target}`);
+      const inp = parent.getInput(0);
+      const seq = (inp.sequence ?? 0) >>> 0;
+      // A BIP68 relative timelock matures at the SPENT output's CONFIRMATION height
+      // + csv — NOT the current tip. The old code sampled the tip at broadcast time,
+      // so on mainnet (parent still unconfirmed in the mempool) it waited too few
+      // blocks and the refund was rejected non-BIP68-final. Regtest's generateblock
+      // confirmed each package immediately, which is exactly why this stayed hidden.
+      if (!(seq & CSV_DISABLE) && (seq & CSV_VALUE) > 0) {
+        if (seq & CSV_TYPE_SECONDS) throw new Error(`leaf ${c.leafId}: refund uses a time-based (512s) BIP68 timelock; this tool supports block-based CSV only`);
+        const csv = seq & CSV_VALUE;
+        const confH = prevConfHeight ?? await confHeightOfInput(cfg, btc, inp); // re-run: look up the prevout
+        const target = confH + csv;
+        console.log(`  leaf ${c.leafId.slice(0, 12)} pkg[${i}]: CSV ${csv} from conf height ${confH} -> waiting for height ${target}`);
         await waitForHeight(cfg, btc, target);
       }
       let childHex = null;
@@ -185,13 +233,16 @@ export async function runUnilateralExit(cfg = loadConfig()) {
       }
       const res = await broadcastPackage(cfg, btc, p.tx, childHex);
       console.log(`  leaf ${c.leafId.slice(0, 12)} pkg[${i}] ${parent.id.slice(0, 12)} -> ${JSON.stringify(res).slice(0, 120)}`);
-      if (cfg.regtestMine) await mineBlocks(cfg, btc, 1);
+      // Wait for THIS package to confirm so the next stage's CSV is measured from
+      // its real confirmation height (mainnet: poll; regtest: generateblock already
+      // confirmed it, so this returns immediately).
+      if (i < c.txPackages.length - 1) prevConfHeight = await waitForConfirmation(cfg, btc, parent.id, 0);
     }
   }
   console.log("✅ unilateral exit broadcast complete — funds recovering to L1.");
   return { exited: chains.length };
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   runUnilateralExit().catch((e) => { console.error("unilateral-exit ERROR:", e?.message || e); process.exit(1); });
 }

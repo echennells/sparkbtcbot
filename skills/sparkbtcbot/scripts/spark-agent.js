@@ -14,6 +14,7 @@ import {
   checkL402Amount,
   withdrawalTotalFee,
 } from "../../../lib/fee-guards.js";
+import { enableLeafVault } from "./leaf-vault.js";
 
 // Best-effort BOLT11 amount in sats (undefined for amountless invoices or on a
 // decode error) — used to size the amount-aware Lightning fee cap.
@@ -31,10 +32,19 @@ function invoiceAmountSats(bolt11) {
 export class SparkAgent {
   #wallet;
   #network;
+  #vault = null;
 
   constructor(wallet, network) {
     this.#wallet = wallet;
     this.#network = network;
+    // Automatically mirror the unilateral-exit material to disk so funds stay
+    // recoverable if the Spark operators go offline — snapshots on boot and on
+    // every leaf change (send/receive/deposit) + a refresh safety timer. Opt out
+    // with SPARK_LEAF_VAULT set to off/false/0/no. See references/unilateral-exit.md.
+    const flag = String(process.env.SPARK_LEAF_VAULT ?? "").trim().toLowerCase();
+    if (!["off", "false", "0", "no"].includes(flag)) {
+      this.#vault = enableLeafVault(wallet, { networkLabel: network });
+    }
   }
 
   static async create(mnemonic, network = "MAINNET") {
@@ -42,7 +52,18 @@ export class SparkAgent {
       mnemonicOrSeed: mnemonic,
       options: { network },
     });
-    return { agent: new SparkAgent(wallet, network), mnemonic: generated };
+    const agent = new SparkAgent(wallet, network);
+    // Surface a broken recovery backup LOUDLY at startup instead of the silent
+    // console.error default — the wallet still works, but the operator is told.
+    const vaultReady = await agent.#vault?.ready;
+    if (vaultReady && !vaultReady.ok) {
+      console.warn(
+        `⚠️  leaf-vault backup is NOT active: ${vaultReady.error}\n` +
+        `   The wallet works, but UNILATERAL EXIT may be impossible until this is fixed.\n` +
+        `   Set SPARK_LEAF_VAULT=off to silence, or see references/unilateral-exit.md.`,
+      );
+    }
+    return { agent, mnemonic: generated };
   }
 
   // --- Outbound safety check (allowlist gate, called by transfer/withdraw)
@@ -361,9 +382,16 @@ export class SparkAgent {
     this.#wallet.on("deposit:confirmed", callback);
   }
 
+  // Recovery-backup health: { healthy, lastSuccessAt, consecutiveFailures,
+  // lastError }, or { disabled: true } when opted out via SPARK_LEAF_VAULT.
+  vaultHealth() {
+    return this.#vault?.health?.() ?? { disabled: true };
+  }
+
   // --- Lifecycle ---
 
-  cleanup() {
+  async cleanup() {
+    await this.#vault?.dispose?.();
     this.#wallet.cleanup();
   }
 }
@@ -398,12 +426,12 @@ async function main() {
   const bolt11 = await agent.createLightningInvoice(1000, "SparkAgent test");
   console.log("BOLT11:", bolt11);
 
-  agent.cleanup();
+  await agent.cleanup();
 }
 
 // Run the demo only when executed directly (`node spark-agent.js`), so the
 // SparkAgent class can be imported by other code without side effects.
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((err) => {
     console.error("Error:", err.message);
     process.exit(1);

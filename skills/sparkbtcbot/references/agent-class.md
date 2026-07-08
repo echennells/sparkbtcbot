@@ -33,10 +33,19 @@ function invoiceAmountSats(bolt11) {
 export class SparkAgent {
   #wallet;
   #network;
+  #vaultDisposer = null;
 
   constructor(wallet, network) {
     this.#wallet = wallet;
     this.#network = network;
+    // Auto-mirror the unilateral-exit material to disk so funds stay recoverable
+    // if the Spark operators go offline — snapshots on boot and on every leaf
+    // change (send/receive/deposit) plus a refresh safety timer. Reaches the SDK's
+    // protected leaf internals; fails loud (logged, non-fatal) if they move.
+    // Opt out with SPARK_LEAF_VAULT=off. See references/unilateral-exit.md.
+    if (process.env.SPARK_LEAF_VAULT !== "off") {
+      this.#vaultDisposer = enableLeafVault(wallet, { networkLabel: network }); // from ./leaf-vault.js
+    }
   }
 
   static async create(mnemonic, network = "MAINNET") {
@@ -363,6 +372,7 @@ export class SparkAgent {
   }
 
   cleanup() {
+    this.#vaultDisposer?.(); // stop the leaf-vault snapshotter
     this.#wallet.cleanup();
   }
 }
