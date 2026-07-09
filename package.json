@@ -60,7 +60,6 @@
     "example:agent": "node skills/sparkbtcbot/scripts/spark-agent.js",
     "example:l402": "node skills/sparkbtcbot/scripts/l402-paywalls.js",
     "leaf-vault": "node skills/sparkbtcbot/scripts/leaf-vault.js",
-    "unilateral-exit": "node skills/sparkbtcbot/scripts/unilateral-exit.js",
     "test": "vitest run tests/unit",
     "test:unit": "vitest run tests/unit",
     "test:integration": "vitest run tests/integration --exclude tests/integration/funded",
@@ -71,7 +70,6 @@
     "@buildonspark/issuer-sdk": "^0.1.44",
     "@buildonspark/spark-sdk": "^0.8.8",
     "@noble/curves": "^1.9.7",
-    "@scure/btc-signer": "^1.8.1",
     "dotenv": "^17.4.2",
     "light-bolt11-decoder": "^3.2.0"
   },

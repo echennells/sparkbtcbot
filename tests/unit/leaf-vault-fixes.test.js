@@ -36,14 +36,15 @@ describe("atomicWriteJson concurrency (H-3: unique temp + O_EXCL)", () => {
 
 // M-1 — the gate proved chain TOPOLOGY only; content (the pre-signed txs) could be empty.
 describe("integrity CONTENT gate (M-1)", () => {
+  const bundle = (leaf) => ({ schema: "spark.unilateral-exit-bundle.v1", createdAt: "2026-07-09T00:00:00.000Z", network: "LOCAL", leaves: [{ id: "leaf1", valueSats: 1, treeNodeHex: enc(leaf) }] });
   it("verifyVault passes a leaf WITH pre-signed txs and FAILS one without — topology passes for both", async () => {
     const good = uniq("lv-m1-good") + ".json";
     const bad = uniq("lv-m1-bad") + ".json";
     try {
       const withTx = { id: "leaf1", status: "AVAILABLE", nodeTx: Uint8Array.from([1, 2, 3]), refundTx: Uint8Array.from([4, 5, 6]) };
       const withoutTx = { id: "leaf1", status: "AVAILABLE" }; // chain length 1 (topology OK), but zero tx bytes
-      await atomicWriteJson(good, { version: 2, network: "LOCAL", updatedAt: "t", leafIds: ["leaf1"], nodes: [{ id: "leaf1", value: "1", hex: enc(withTx) }] });
-      await atomicWriteJson(bad, { version: 2, network: "LOCAL", updatedAt: "t", leafIds: ["leaf1"], nodes: [{ id: "leaf1", value: "1", hex: enc(withoutTx) }] });
+      await atomicWriteJson(good, bundle(withTx));
+      await atomicWriteJson(bad, bundle(withoutTx));
       expect(await verifyVault(good)).toMatchObject({ ok: true });
       const r = await verifyVault(bad);
       expect(r.ok).toBe(false);
@@ -60,22 +61,23 @@ describe("transient empty getLeaves guard (M-2)", () => {
     config: { getCoordinatorAddress: () => "coord" },
     getBalance: async () => ({ balance }),
   });
-  it("does NOT clobber a good vault when getLeaves is empty but balance > 0", async () => {
+  const goodBundle = { schema: "spark.unilateral-exit-bundle.v1", createdAt: "2026-07-09T00:00:00.000Z", network: "LOCAL", leaves: [{ id: "leaf1", valueSats: 200000, treeNodeHex: "0a020102" }] };
+  it("does NOT clobber a good bundle when getLeaves is empty but balance > 0", async () => {
     const p = uniq("lv-m2a") + ".json";
     try {
-      await atomicWriteJson(p, { version: 2, network: "LOCAL", updatedAt: "t", leafIds: ["leaf1"], nodes: [{ id: "leaf1", value: "200000", hex: "0a020102" }] });
+      await atomicWriteJson(p, goodBundle);
       const r = await snapshotLeafVault(mockWallet([], 200000n), { path: p, networkLabel: "LOCAL" });
       expect(r.skipped).toBe("transient-empty-getLeaves");
-      expect((await readVault(p)).leafIds).toEqual(["leaf1"]); // last-good vault preserved
+      expect((await readVault(p)).leaves.map((l) => l.id)).toEqual(["leaf1"]); // last-good bundle preserved
     } finally { await rm(p, { force: true }); }
   });
-  it("writes empty ONLY when the wallet genuinely has zero balance", async () => {
+  it("writes NO bundle for a genuinely empty wallet (schema needs >=1 leaf)", async () => {
     const p = uniq("lv-m2b") + ".json";
     try {
-      await atomicWriteJson(p, { version: 2, network: "LOCAL", updatedAt: "t", leafIds: ["leaf1"], nodes: [{ id: "leaf1", value: "0", hex: "0a020102" }] });
       const r = await snapshotLeafVault(mockWallet([], 0n), { path: p, networkLabel: "LOCAL" });
-      expect(r.leafCount).toBe(0);
-      expect((await readVault(p)).leafIds).toEqual([]);
+      expect(r.skipped).toBe("no-leaves");
+      const wrote = await readVault(p).then(() => true, () => false);
+      expect(wrote).toBe(false); // nothing written
     } finally { await rm(p, { force: true }); }
   });
 });

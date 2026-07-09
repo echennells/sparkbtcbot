@@ -1,29 +1,35 @@
 // Leaf-vault: continuously mirror the unilateral-exit "leaf material" to disk so
-// funds are recoverable with operators offline. See references/unilateral-exit.md.
+// funds are recoverable with the Spark operators offline. Recovery itself is NOT
+// done here — the exit is performed by Blink's production tool
+// (github.com/blinkbitcoin/spark-unilateral-exit); this module keeps a fresh,
+// complete recovery bundle in exactly the format that tool consumes
+// (`spark.unilateral-exit-bundle.v1`). See references/unilateral-exit.md.
 //
 // SDK reach-in half (the SDK-free persistence/validation is lib/leaf-vault.js).
-// The data we back up — the leaves as TreeNodes plus their resolved parent chain —
-// is reachable only through the SDK's `protected` internals (wallet.leafManager /
-// connectionManager / config) and the internal TreeNode proto codec. `protected`
-// is a TypeScript-only barrier; the fields are real at runtime. Since they are NOT
-// public API, we guard every access with a fail-loud self-check.
+// The data we back up — the leaves as TreeNodes plus their resolved ancestor
+// chain — is reachable only through the SDK's `protected` internals
+// (wallet.leafManager / connectionManager / config) and the internal TreeNode
+// proto codec. `protected` is a TypeScript-only barrier; the fields are real at
+// runtime. Since they are NOT public API, we guard every access with a fail-loud
+// self-check.
 //
 // Each node is persisted as its CANONICAL protobuf hex (TreeNode.encode) — the
-// exact bytes the SDK uses — so recovery is a byte-faithful TreeNode.decode rather
-// than a fragile field-by-field JSON reconstruction.
+// `treeNodeHex` Blink's CLI decodes — so recovery is a byte-faithful decode. The
+// bundle carries `leaves[]` (which leaves to exit) plus `nodes[]` (their ancestor
+// tree nodes), which Blink's createBundleSparkClient serves to the SDK offline to
+// rebuild each exit chain; the ancestors are REQUIRED for any multi-level tree.
 import { buildUnilateralExitChain, Network } from "@buildonspark/spark-sdk";
 import { pathToFileURL } from "node:url";
+import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { open, mkdir, unlink } from "node:fs/promises";
-import { atomicWriteJson, readVault, validateSnapshotShape } from "../../../lib/leaf-vault.js";
+import { atomicWriteJson, readVault, validateSnapshotShape, BUNDLE_SCHEMA } from "../../../lib/leaf-vault.js";
 
 // TreeNode protobuf codec — loaded LAZILY from the SDK's own exports subpath
-// (`@buildonspark/spark-sdk/proto/spark`), NOT by hand-navigating the package
-// layout. Lazy so a codec-resolution failure disables only the vault: this module
-// is statically imported by spark-agent.js, and a top-level `await import` that
-// threw would brick SparkAgent at construction — before the SPARK_LEAF_VAULT=off
-// opt-out could take effect and taking down all wallet functionality with it.
+// (`@buildonspark/spark-sdk/proto/spark`). Lazy so a codec-resolution failure
+// disables only the vault, NOT the whole agent (this module is statically
+// imported by spark-agent.js).
 let _TreeNode = null;
 async function getTreeNode() {
   if (_TreeNode) return _TreeNode;
@@ -40,8 +46,27 @@ const decodeNode = (TreeNode, hex) => TreeNode.decode(Uint8Array.from(Buffer.fro
 export const DEFAULT_VAULT_PATH =
   process.env.SPARK_LEAF_VAULT_PATH || join(homedir(), ".spark", "leaf-vault", "current.json");
 
+const KNOWN_NETWORKS = ["MAINNET", "REGTEST", "TESTNET", "SIGNET", "LOCAL"];
+const normalizeNetwork = (v) => String(v ?? "").toUpperCase();
+const APP_VERSION = "sparkbtcbot";
+const safe = async (fn) => { try { return await fn(); } catch { return undefined; } };
+const toHexMaybe = (v) => (typeof v === "string" ? v : v && v.length ? Buffer.from(v).toString("hex") : undefined);
+function toSafeSats(value) { try { const n = Number(BigInt(value ?? 0)); return Number.isSafeInteger(n) ? n : undefined; } catch { return undefined; } }
+let _sdkVersion;
+function sdkVersion() {
+  if (_sdkVersion !== undefined) return _sdkVersion;
+  try { _sdkVersion = createRequire(import.meta.url)("@buildonspark/spark-sdk/package.json").version ?? "unknown"; } catch { _sdkVersion = "unknown"; }
+  return _sdkVersion;
+}
+function exportBalances(balance, leaves) {
+  const btc = balance?.balance ?? balance?.satsBalance?.owned ?? balance?.satsBalance?.available;
+  let btcSats;
+  try { btcSats = btc != null ? String(BigInt(btc)) : String(leaves.reduce((s, l) => s + BigInt(l.value ?? 0), 0n)); } catch { btcSats = undefined; }
+  return { ...(btcSats != null ? { btcSats } : {}), usdb: { status: "not-covered-by-bitcoin-unilateral-exit" } };
+}
+
 // Fail LOUD if the protected internals we depend on have moved. A silently-empty
-// or unencodable vault is the worst possible failure for recovery data, so we
+// or unencodable bundle is the worst possible failure for recovery data, so we
 // throw rather than capture nothing.
 export function assertLeafInternalsIntact(wallet, TreeNode) {
   const missing = [];
@@ -60,141 +85,137 @@ export function assertLeafInternalsIntact(wallet, TreeNode) {
   }
 }
 
-// Take an online snapshot: resolve every leaf's leaf->root exit chain (the client
-// fills missing parents), encode each node to canonical protobuf hex, then run the
-// INTEGRITY GATE — prove the serialized snapshot rebuilds every chain OFFLINE (no
-// operators) AND that the leaf nodes carry their pre-signed txs — and only then
-// persist atomically. Writes nothing on any failure.
-export async function snapshotLeafVault(wallet, { path = DEFAULT_VAULT_PATH, networkLabel } = {}) {
+// Take an online snapshot into a Blink `spark.unilateral-exit-bundle.v1` bundle:
+// resolve every leaf's leaf->root exit chain (the client fills ancestors), split
+// into leaves + ancestor nodes, then run the INTEGRITY GATE — the leaf carries its
+// pre-signed txs, the chain reaches a genuine root, and every leaf reconstructs
+// OFFLINE — and only then persist atomically. Writes nothing on any failure.
+export async function snapshotLeafVault(wallet, { path = DEFAULT_VAULT_PATH, networkLabel, operatorSet = "spark-sdk", appVersion = APP_VERSION } = {}) {
   const TreeNode = await getTreeNode();
   assertLeafInternalsIntact(wallet, TreeNode);
 
   const leaves = await wallet.leafManager.getLeaves(true);
-  const network = networkLabel ?? String(leaves[0]?.network ?? "UNKNOWN");
-  const netEnum = networkLabel != null && Network[networkLabel] !== undefined ? Network[networkLabel] : undefined;
+  const network = normalizeNetwork(networkLabel ?? String(leaves[0]?.network ?? "MAINNET"));
 
   if (leaves.length === 0) {
-    // Guard a TRANSIENT empty getLeaves(true) (leaves momentarily non-AVAILABLE
-    // mid-optimize/transfer, or a coordinator hiccup) from atomically clobbering a
-    // good vault. Only persist empty if the wallet genuinely reports zero balance
-    // AND no prior vault held leaves; otherwise keep the last-good vault.
+    // The bundle schema requires >=1 leaf; an empty wallet has nothing to exit.
+    // Guard a TRANSIENT empty getLeaves from discarding a good bundle (M-2): only
+    // treat empty as real when the wallet genuinely reports zero balance.
     const prior = await readVault(path).catch(() => null);
-    const priorLeaves = prior?.leafIds?.length ?? 0;
-    if (priorLeaves > 0) {
+    if (Array.isArray(prior?.leaves) && prior.leaves.length > 0) {
       let sats = null;
-      try { const b = await wallet.getBalance(); sats = b?.balance ?? b?.satsBalance?.available ?? null; } catch { /* unreadable → treat as non-zero */ }
-      if (sats == null || BigInt(sats) > 0n) {
-        return { path, leafCount: priorLeaves, nodeCount: prior?.nodes?.length ?? 0, network, skipped: "transient-empty-getLeaves" };
-      }
+      try { const b = await wallet.getBalance(); sats = b?.balance ?? b?.satsBalance?.owned ?? b?.satsBalance?.available ?? null; } catch { /* unreadable → treat as non-zero */ }
+      if (sats == null || BigInt(sats) > 0n) return { path, leafCount: prior.leaves.length, skipped: "transient-empty-getLeaves" };
     }
-    const empty = { version: 2, network, updatedAt: new Date().toISOString(), leafIds: [], nodes: [] };
-    await atomicWriteJson(path, empty);
-    return { path, leafCount: 0, nodeCount: 0, network };
+    return { path, leafCount: 0, skipped: "no-leaves" }; // nothing to back up; any prior bundle is left in place
   }
 
+  const netEnum = Network[network];
   const client = await wallet.connectionManager.createSparkClient(wallet.config.getCoordinatorAddress());
 
-  const allNodes = new Map();  // id -> live TreeNode (leaves + every resolved parent)
-  const onlineLen = new Map(); // leafId -> resolved chain length (completeness target)
+  const leafIds = new Set(leaves.map((l) => l.id));
+  const ancestors = new Map();   // id -> ancestor TreeNode (non-leaf) => bundle.nodes
+  const onlineLen = new Map();   // leafId -> resolved chain length
+  const reachesRoot = new Map(); // leafId -> chain includes a genuine root (no parentNodeId)
   for (const leaf of leaves) {
     const nodeMap = new Map();
-    const chain = await buildUnilateralExitChain(leaf, nodeMap, client, netEnum); // real network (not undefined→MAINNET)
+    const chain = await buildUnilateralExitChain(leaf, nodeMap, client, netEnum);
     if (!chain.length) throw new Error(`leaf-vault: could not resolve exit chain for leaf ${leaf.id}; backup NOT captured.`);
     onlineLen.set(leaf.id, chain.length);
-    allNodes.set(leaf.id, leaf);
-    for (const n of nodeMap.values()) allNodes.set(n.id, n);
+    reachesRoot.set(leaf.id, chain.some((n) => !n?.parentNodeId));
+    for (const n of nodeMap.values()) if (!leafIds.has(n.id)) ancestors.set(n.id, n);
   }
 
-  // Encode each node to canonical protobuf hex. `value` is kept only for human
-  // readability; the hex is the source of truth.
-  const nodes = [...allNodes.values()].map((n) => ({ id: n.id, value: String(n.value ?? ""), hex: encodeNode(TreeNode, n) }));
-  const snapshot = { version: 2, network, updatedAt: new Date().toISOString(), leafIds: leaves.map((l) => l.id), nodes };
+  const identity = toHexMaybe(await safe(() => wallet.getIdentityPublicKey?.()));
+  const balance = await safe(() => wallet.getBalance?.());
+  const bundle = {
+    schema: BUNDLE_SCHEMA,
+    createdAt: new Date().toISOString(),
+    network,
+    operatorSet,
+    ...(identity ? { walletIdentityPublicKey: identity } : {}),
+    sparkSdkVersion: sdkVersion(),
+    appVersion,
+    leaves: leaves.map((l) => ({
+      id: l.id,
+      ...(l.status != null ? { status: String(l.status) } : {}),
+      ...(toSafeSats(l.value) !== undefined ? { valueSats: toSafeSats(l.value) } : {}),
+      treeNodeHex: encodeNode(TreeNode, l),
+    })),
+    ...(ancestors.size ? { nodes: [...ancestors.values()].map((n) => ({ id: n.id, treeNodeHex: encodeNode(TreeNode, n) })) } : {}),
+    balances: exportBalances(balance, leaves),
+  };
 
   // --- INTEGRITY GATE (must pass or nothing is written) ---
-  const persisted = JSON.parse(JSON.stringify(snapshot)); // exactly the bytes that hit disk
+  const persisted = JSON.parse(JSON.stringify(bundle)); // exactly the bytes that hit disk
   const shape = validateSnapshotShape(persisted);
-  if (!shape.ok) throw new Error(`leaf-vault: snapshot failed shape validation (${shape.reason}); backup NOT written.`);
+  if (!shape.ok) throw new Error(`leaf-vault: bundle failed shape validation (${shape.reason}); NOT written.`);
 
-  const reMap = new Map(persisted.nodes.map((n) => [n.id, decodeNode(TreeNode, n.hex)]));
-
-  // CONTENT gate: chain topology alone (buildUnilateralExitChain reads only
-  // status/parentNodeId) can PASS even if an SDK change emptied the pre-signed tx
-  // bytes — TreeNode.fromPartial silently defaults absent fields to empty. The
-  // exit CONSUMES nodeTx/refundTx, so assert the leaf nodes actually carry them,
-  // or "validated" would not imply "exitable".
-  for (const leafId of persisted.leafIds) {
-    const ln = reMap.get(leafId);
-    if (!(ln?.nodeTx?.length > 0) || !(ln?.refundTx?.length > 0)) {
-      throw new Error(`leaf-vault: leaf ${leafId} is missing pre-signed nodeTx/refundTx bytes — captured data is not exitable; backup NOT written.`);
-    }
-  }
-
-  // TOPOLOGY gate: every leaf must rebuild to the same chain length OFFLINE.
-  for (const leafId of persisted.leafIds) {
-    const offline = await buildUnilateralExitChain(reMap.get(leafId), reMap, undefined, undefined); // NO client
-    if (offline.length !== onlineLen.get(leafId)) {
-      throw new Error(
-        `leaf-vault: leaf ${leafId} rebuilds to ${offline.length}/${onlineLen.get(leafId)} nodes offline — ` +
-        `incomplete recovery data; backup NOT written.`,
-      );
-    }
+  // Rebuild a combined id->TreeNode map (leaves + ancestor nodes) exactly like
+  // Blink's createBundleSparkClient, and prove every leaf reconstructs OFFLINE.
+  const reMap = new Map([...persisted.leaves, ...(persisted.nodes ?? [])].map((n) => [n.id, decodeNode(TreeNode, n.treeNodeHex)]));
+  for (const leaf of persisted.leaves) {
+    const ln = reMap.get(leaf.id);
+    // content: the exit consumes nodeTx/refundTx — topology alone is not enough (M-1).
+    if (!(ln?.nodeTx?.length > 0) || !(ln?.refundTx?.length > 0)) throw new Error(`leaf-vault: leaf ${leaf.id} missing pre-signed nodeTx/refundTx — not exitable; NOT written.`);
+    // completeness: the chain must reach a genuine tree root — guards the bulk-query
+    // root-skip that silently produced incomplete bundles in Blink's case study.
+    if (!reachesRoot.get(leaf.id)) throw new Error(`leaf-vault: leaf ${leaf.id} exit chain never reaches a tree root — incomplete bundle; NOT written.`);
+    const offline = await buildUnilateralExitChain(reMap.get(leaf.id), reMap, undefined, undefined); // NO client
+    if (offline.length !== onlineLen.get(leaf.id)) throw new Error(`leaf-vault: leaf ${leaf.id} rebuilds to ${offline.length}/${onlineLen.get(leaf.id)} nodes offline — incomplete; NOT written.`);
   }
 
   await atomicWriteJson(path, persisted);
-  return { path, leafCount: persisted.leafIds.length, nodeCount: persisted.nodes.length, network };
+  return { path, leafCount: persisted.leaves.length, nodeCount: (persisted.nodes ?? []).length, network };
 }
 
-// "Can I actually recover from this file?" — reload a vault and rebuild every
-// leaf's chain OFFLINE (no wallet, no operators), AND confirm each leaf carries
-// its pre-signed txs. Run periodically / before you trust a vault.
+// "Can Blink's tool actually recover from this file?" — reload a bundle, validate
+// its shape, and rebuild every leaf's chain OFFLINE (no wallet, no operators) to a
+// genuine root with its pre-signed txs intact. Run periodically / before trusting.
 export async function verifyVault(path = DEFAULT_VAULT_PATH) {
   const TreeNode = await getTreeNode();
-  const vault = await readVault(path);
-  const shape = validateSnapshotShape(vault);
-  if (!shape.ok) return { ok: false, reason: shape.reason, leafCount: vault?.leafIds?.length ?? 0 };
-  const reMap = new Map(vault.nodes.map((n) => [n.id, decodeNode(TreeNode, n.hex)]));
+  const bundle = await readVault(path);
+  const shape = validateSnapshotShape(bundle);
+  if (!shape.ok) return { ok: false, reason: shape.reason, leafCount: bundle?.leaves?.length ?? 0 };
+  const reMap = new Map([...(bundle.leaves ?? []), ...(bundle.nodes ?? [])].map((n) => [n.id, decodeNode(TreeNode, n.treeNodeHex)]));
   const failed = [];
-  for (const leafId of vault.leafIds) {
-    const ln = reMap.get(leafId);
+  for (const leaf of bundle.leaves) {
+    const ln = reMap.get(leaf.id);
     const chain = await buildUnilateralExitChain(ln, reMap, undefined, undefined);
-    if (!chain.length || !(ln?.nodeTx?.length > 0) || !(ln?.refundTx?.length > 0)) failed.push(leafId);
+    const complete = chain.length && chain.some((n) => !n?.parentNodeId);
+    if (!complete || !(ln?.nodeTx?.length > 0) || !(ln?.refundTx?.length > 0)) failed.push(leaf.id);
   }
   return {
     ok: failed.length === 0,
-    reason: failed.length ? `${failed.length} leaf/leaves do not reconstruct offline (or lack pre-signed txs)` : "all leaves reconstruct offline",
-    leafCount: vault.leafIds.length,
+    reason: failed.length ? `${failed.length} leaf/leaves do not reconstruct offline to a root (or lack pre-signed txs)` : "all leaves reconstruct offline to a root",
+    leafCount: bundle.leaves.length,
     failed,
-    updatedAt: vault.updatedAt,
-    network: vault.network,
+    createdAt: bundle.createdAt,
+    network: bundle.network,
   };
 }
 
-// A conspicuous on-disk signal that the backup is failing, so a broken vault is
-// not merely a single unread stderr line. Written next to the vault.
+// A conspicuous on-disk signal that the backup is failing, so a broken bundle is
+// not merely a single unread stderr line (H-2). Written next to the bundle.
 async function writeBrokenMarker(markerPath, err, failures) {
   const body =
     `leaf-vault backup is BROKEN as of ${new Date().toISOString()}\n` +
     `consecutive failures: ${failures}\n` +
     `last error: ${err?.message ?? err}\n\n` +
     `Unilateral exit may be IMPOSSIBLE until this is resolved. The wallet still works,\n` +
-    `but the operatorless-recovery backup is NOT being written. See references/unilateral-exit.md.\n`;
+    `but the operatorless-recovery bundle is NOT being written. See references/unilateral-exit.md.\n`;
   await mkdir(dirname(markerPath), { recursive: true, mode: 0o700 }).catch(() => {});
   const fh = await open(markerPath, "w", 0o600);
   try { await fh.writeFile(body); } finally { await fh.close(); }
 }
 
-// Keep the vault current. Snapshots at boot, on every leaf-changing event
-// (`balance:update`, `transfer:claimed`, `deposit:confirmed` — the receive/send/
-// deposit signals), and on a low-frequency safety-net timer that catches timelock
-// REFRESHES (which change exit material without a balance event; a refresh-stale
-// vault still recovers to you, so the timer lag is harmless — see
-// references/recovery-scenarios.md). Overlapping triggers are single-flighted so
-// concurrent writes can't race; a burst of events is also debounced. Returns
-// `{ dispose, ready, health }` — `ready` resolves to `{ ok, error? }` for the boot
-// snapshot so a caller can surface a broken backup loudly instead of silently.
+// Keep the bundle current. Snapshots at boot, on every leaf-changing event
+// (`balance:update`, `transfer:claimed`, `deposit:confirmed`), and on a
+// low-frequency safety-net timer (catches timelock refreshes). Overlapping
+// triggers are single-flighted so concurrent writes can't race; a burst of events
+// is also debounced. Returns `{ dispose, ready, health }` — `ready` resolves to
+// `{ ok, error? }` for the boot snapshot so a caller can surface a broken backup.
 export function enableLeafVault(wallet, { path = DEFAULT_VAULT_PATH, networkLabel, intervalMs = 20 * 60_000, debounceMs = 4000, maxConsecutiveFailures = 3, onError } = {}) {
-  // Validate options so a bad interval/debounce can't silently disable the refresh
-  // safety-net.
   debounceMs = Number.isFinite(debounceMs) && debounceMs >= 0 ? debounceMs : 4000;
   intervalMs = Number.isFinite(intervalMs) && intervalMs > 0 ? intervalMs : 20 * 60_000;
 
@@ -207,9 +228,6 @@ export function enableLeafVault(wallet, { path = DEFAULT_VAULT_PATH, networkLabe
 
   const report = (e) => (onError ? onError(e) : console.error(`[leaf-vault] snapshot FAILED (${consecutiveFailures}x in a row): ${e?.message ?? e}`));
 
-  // Single-flight: coalesce overlapping triggers (boot + event + timer) into ONE
-  // running snapshot, so concurrent atomicWriteJson calls can't race and a burst
-  // doesn't stack redundant operator round-trips.
   const runSnapshot = () => {
     if (disposed) return Promise.resolve(null);
     if (inFlight) return inFlight;
@@ -217,14 +235,11 @@ export function enableLeafVault(wallet, { path = DEFAULT_VAULT_PATH, networkLabe
       try {
         const r = await snapshotLeafVault(wallet, { path, networkLabel });
         consecutiveFailures = 0; lastSuccessAt = Date.now(); lastError = null;
-        await unlink(brokenMarker).catch(() => {}); // recovered → clear the marker
+        await unlink(brokenMarker).catch(() => {});
         return r;
       } catch (e) {
         consecutiveFailures++; lastError = e;
         report(e);
-        // Fail LOUD-and-persistent, not one unread stderr line. An internals-moved
-        // / codec-load error means capture is IMPOSSIBLE (not transient) → mark
-        // immediately; otherwise mark after N failures in a row.
         const fatal = /SDK internals moved|cannot load the SDK TreeNode/i.test(String(e?.message));
         if (fatal || consecutiveFailures >= maxConsecutiveFailures) await writeBrokenMarker(brokenMarker, e, consecutiveFailures).catch(() => {});
         throw e;
@@ -235,7 +250,6 @@ export function enableLeafVault(wallet, { path = DEFAULT_VAULT_PATH, networkLabe
     return inFlight;
   };
 
-  // Debounce chatty events into one snapshot after the wallet settles.
   let debounceTimer = null;
   const schedule = () => {
     if (debounceTimer) clearTimeout(debounceTimer);
@@ -243,13 +257,10 @@ export function enableLeafVault(wallet, { path = DEFAULT_VAULT_PATH, networkLabe
     debounceTimer.unref?.();
   };
 
-  // Boot snapshot; `ready` always RESOLVES (never rejects) to a health object.
   const ready = runSnapshot().then(() => ({ ok: true }), (e) => ({ ok: false, error: e?.message ?? String(e) }));
 
   const events = ["balance:update", "transfer:claimed", "deposit:confirmed"];
   for (const ev of events) wallet.on?.(ev, schedule);
-  // Timer calls runSnapshot DIRECTLY (not the debounced schedule) so the refresh
-  // safety-net fires regardless of the debounce interval.
   const timer = setInterval(() => runSnapshot().catch(() => {}), intervalMs);
   timer.unref?.();
 
@@ -258,7 +269,7 @@ export function enableLeafVault(wallet, { path = DEFAULT_VAULT_PATH, networkLabe
     for (const ev of events) wallet.off?.(ev, schedule);
     clearInterval(timer);
     if (debounceTimer) clearTimeout(debounceTimer);
-    await inFlight?.catch(() => {}); // let an in-flight snapshot finish before teardown
+    await inFlight?.catch(() => {});
   };
 
   return {
@@ -268,7 +279,7 @@ export function enableLeafVault(wallet, { path = DEFAULT_VAULT_PATH, networkLabe
   };
 }
 
-// CLI: `node leaf-vault.js verify` checks the current vault; no arg takes a
+// CLI: `node leaf-vault.js verify` checks the current bundle; no arg takes a
 // snapshot using the encrypted-seed wallet.
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   if (process.argv[2] === "verify") {

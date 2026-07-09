@@ -4,13 +4,13 @@ import { join } from "node:path";
 import { rm } from "node:fs/promises";
 import { atomicWriteJson, readVault, validateSnapshotShape, isHexString } from "../../lib/leaf-vault.js";
 
-describe("atomicWriteJson + readVault (plain-JSON protobuf-hex vault)", () => {
-  it("writes and reads back a vault verbatim", async () => {
+describe("atomicWriteJson + readVault (plain-JSON recovery bundle)", () => {
+  it("writes and reads back a bundle verbatim", async () => {
     const p = join(tmpdir(), `leafvault-test-${process.pid}.json`);
     try {
-      const snap = { version: 2, network: "REGTEST", updatedAt: "2026-07-07T00:00:00.000Z", leafIds: ["n1"], nodes: [{ id: "n1", value: "4096", hex: "0a0401020304" }] };
-      await atomicWriteJson(p, snap);
-      expect(await readVault(p)).toEqual(snap);
+      const bundle = { schema: "spark.unilateral-exit-bundle.v1", createdAt: "2026-07-09T00:00:00.000Z", network: "REGTEST", leaves: [{ id: "n1", valueSats: 4096, treeNodeHex: "0a0401020304" }] };
+      await atomicWriteJson(p, bundle);
+      expect(await readVault(p)).toEqual(bundle);
     } finally {
       await rm(p, { force: true });
     }
@@ -30,36 +30,53 @@ describe("isHexString", () => {
   });
 });
 
-describe("validateSnapshotShape", () => {
-  const node = (id) => ({ id, value: "1", hex: "0a020102" });
-  it("accepts a well-formed vault", () => {
-    expect(validateSnapshotShape({ version: 2, network: "REGTEST", leafIds: ["a"], nodes: [node("a"), node("b")] })).toMatchObject({ ok: true });
+// validateSnapshotShape mirrors Blink's validateRecoveryBundle — this is the
+// compatibility contract with blinkbitcoin/spark-unilateral-exit's CLI.
+describe("validateSnapshotShape (spark.unilateral-exit-bundle.v1)", () => {
+  const bundle = (over = {}) => ({
+    schema: "spark.unilateral-exit-bundle.v1",
+    createdAt: "2026-07-09T00:00:00.000Z",
+    network: "MAINNET",
+    leaves: [{ id: "leaf1", valueSats: 4096, treeNodeHex: "0a020102" }],
+    ...over,
   });
-  it("accepts an explicit empty vault (no leaves)", () => {
-    expect(validateSnapshotShape({ version: 2, network: "REGTEST", leafIds: [], nodes: [] })).toMatchObject({ ok: true });
+  it("accepts a well-formed bundle (leaves only)", () => {
+    expect(validateSnapshotShape(bundle())).toMatchObject({ ok: true });
   });
-  it("rejects missing version or network", () => {
-    expect(validateSnapshotShape({ network: "R", leafIds: [], nodes: [] }).ok).toBe(false);
-    expect(validateSnapshotShape({ version: 2, leafIds: [], nodes: [] }).ok).toBe(false);
+  it("accepts optional ancestor nodes", () => {
+    expect(validateSnapshotShape(bundle({ nodes: [{ id: "root", treeNodeHex: "0a020304" }] })).ok).toBe(true);
   });
-  it("rejects a node with no/invalid protobuf hex (unusable recovery data)", () => {
-    expect(validateSnapshotShape({ version: 2, network: "R", leafIds: ["a"], nodes: [{ id: "a", hex: "" }] }).ok).toBe(false);
-    expect(validateSnapshotShape({ version: 2, network: "R", leafIds: ["a"], nodes: [{ id: "a", hex: "zz" }] }).ok).toBe(false);
-    const r = validateSnapshotShape({ version: 2, network: "R", leafIds: ["a"], nodes: [{ id: "a", hex: "abc" }] });
+  it("rejects a wrong/missing schema", () => {
+    expect(validateSnapshotShape(bundle({ schema: "nope" })).ok).toBe(false);
+    expect(validateSnapshotShape(bundle({ schema: undefined })).ok).toBe(false);
+  });
+  it("rejects a non-ISO createdAt", () => {
+    expect(validateSnapshotShape(bundle({ createdAt: "not-a-date" })).ok).toBe(false);
+  });
+  it("rejects a missing network", () => {
+    expect(validateSnapshotShape(bundle({ network: "" })).ok).toBe(false);
+  });
+  it("rejects an empty leaves array (schema requires >=1 leaf)", () => {
+    expect(validateSnapshotShape(bundle({ leaves: [] })).ok).toBe(false);
+  });
+  it("rejects a leaf with no/invalid treeNodeHex (unusable recovery data)", () => {
+    expect(validateSnapshotShape(bundle({ leaves: [{ id: "a", treeNodeHex: "" }] })).ok).toBe(false);
+    expect(validateSnapshotShape(bundle({ leaves: [{ id: "a", treeNodeHex: "zz" }] })).ok).toBe(false);
+    const r = validateSnapshotShape(bundle({ leaves: [{ id: "a", treeNodeHex: "abc" }] }));
     expect(r.ok).toBe(false);
-    expect(r.reason).toContain("hex");
+    expect(r.reason).toContain("treeNodeHex");
   });
-  it("rejects a node missing a string id", () => {
-    const r = validateSnapshotShape({ version: 2, network: "R", leafIds: ["a"], nodes: [{ hex: "0a020102" }] });
+  it("rejects a leaf missing an id", () => {
+    const r = validateSnapshotShape(bundle({ leaves: [{ treeNodeHex: "0a020102" }] }));
     expect(r.ok).toBe(false);
     expect(r.reason).toContain("id");
   });
-  it("rejects a leaf that is not present among the nodes (chain can't start)", () => {
-    const r = validateSnapshotShape({ version: 2, network: "R", leafIds: ["gone"], nodes: [node("a")] });
-    expect(r.ok).toBe(false);
-    expect(r.reason).toContain("gone");
+  it("rejects a non-integer valueSats", () => {
+    expect(validateSnapshotShape(bundle({ leaves: [{ id: "a", valueSats: 1.5, treeNodeHex: "0a020102" }] })).ok).toBe(false);
   });
-  it("rejects leafIds-empty-but-nodes-present (inconsistent)", () => {
-    expect(validateSnapshotShape({ version: 2, network: "R", leafIds: [], nodes: [node("a")] }).ok).toBe(false);
+  it("rejects malformed nodes when present", () => {
+    expect(validateSnapshotShape(bundle({ nodes: "x" })).ok).toBe(false);
+    expect(validateSnapshotShape(bundle({ nodes: [{ id: "r", treeNodeHex: "zz" }] })).ok).toBe(false);
+    expect(validateSnapshotShape(bundle({ nodes: [{ treeNodeHex: "0a020102" }] })).ok).toBe(false);
   });
 });
