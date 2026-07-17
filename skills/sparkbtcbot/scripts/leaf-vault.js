@@ -65,6 +65,28 @@ function exportBalances(balance, leaves) {
   return { ...(btcSats != null ? { btcSats } : {}), usdb: { status: "not-covered-by-bitcoin-unilateral-exit" } };
 }
 
+// The wallet's reported owned sats as a BigInt, or null when unreadable. Used by
+// the empty- and shrink-guards to distinguish a real balance change from a
+// transient/partial getLeaves. Unreadable is deliberately null (caller treats it
+// conservatively) rather than 0.
+async function reportedBalanceSats(wallet) {
+  try {
+    const b = await wallet.getBalance?.();
+    const v = b?.balance ?? b?.satsBalance?.owned ?? b?.satsBalance?.available ?? null;
+    return v == null ? null : BigInt(v);
+  } catch { return null; }
+}
+
+// Sum of a bundle's leaf `valueSats` as a BigInt, or null if any leaf lacks a
+// value (so we never silently under-count and mis-fire the shrink guard).
+function sumLeafSats(leaves) {
+  try {
+    let s = 0n;
+    for (const l of leaves) { if (l?.valueSats == null) return null; s += BigInt(l.valueSats); }
+    return s;
+  } catch { return null; }
+}
+
 // Fail LOUD if the protected internals we depend on have moved. A silently-empty
 // or unencodable bundle is the worst possible failure for recovery data, so we
 // throw rather than capture nothing.
@@ -103,9 +125,8 @@ export async function snapshotLeafVault(wallet, { path = DEFAULT_VAULT_PATH, net
     // treat empty as real when the wallet genuinely reports zero balance.
     const prior = await readVault(path).catch(() => null);
     if (Array.isArray(prior?.leaves) && prior.leaves.length > 0) {
-      let sats = null;
-      try { const b = await wallet.getBalance(); sats = b?.balance ?? b?.satsBalance?.owned ?? b?.satsBalance?.available ?? null; } catch { /* unreadable → treat as non-zero */ }
-      if (sats == null || BigInt(sats) > 0n) return { path, leafCount: prior.leaves.length, skipped: "transient-empty-getLeaves" };
+      const sats = await reportedBalanceSats(wallet); // null when unreadable → treat as non-zero
+      if (sats == null || sats > 0n) return { path, leafCount: prior.leaves.length, skipped: "transient-empty-getLeaves" };
     }
     return { path, leafCount: 0, skipped: "no-leaves" }; // nothing to back up; any prior bundle is left in place
   }
@@ -163,6 +184,33 @@ export async function snapshotLeafVault(wallet, { path = DEFAULT_VAULT_PATH, net
     if (!reachesRoot.get(leaf.id)) throw new Error(`leaf-vault: leaf ${leaf.id} exit chain never reaches a tree root — incomplete bundle; NOT written.`);
     const offline = await buildUnilateralExitChain(reMap.get(leaf.id), reMap, undefined, undefined); // NO client
     if (offline.length !== onlineLen.get(leaf.id)) throw new Error(`leaf-vault: leaf ${leaf.id} rebuilds to ${offline.length}/${onlineLen.get(leaf.id)} nodes offline — incomplete; NOT written.`);
+  }
+
+  // --- SHRINK GUARD (M-2 generalized: partial getLeaves, not just empty) ---
+  // getLeaves(true) can return a NON-EMPTY subset (its coordinator recover path
+  // swallows transient failures), and every leaf that IS present passes the gate
+  // above — so an unchecked partial capture would atomically overwrite the complete
+  // prior bundle with health still green and strand the dropped leaves' only backup.
+  // A previously-backed-up leaf may vanish legitimately only if it was SPENT, in
+  // which case the wallet balance has fallen below the prior bundle's total. If we
+  // cannot positively confirm that, keep the prior bundle and surface it (a thrown
+  // snapshot increments the failure count and trips the BROKEN marker if persistent).
+  const prior = await readVault(path).catch(() => null);
+  if (Array.isArray(prior?.leaves) && prior.leaves.length > 0) {
+    const newIds = new Set(persisted.leaves.map((l) => l.id));
+    const missing = prior.leaves.filter((l) => !newIds.has(l.id));
+    if (missing.length > 0) {
+      const priorSats = sumLeafSats(prior.leaves);
+      const reported = await reportedBalanceSats(wallet);
+      const spent = priorSats != null && reported != null && reported < priorSats;
+      if (!spent) {
+        throw new Error(
+          `leaf-vault: capture dropped ${missing.length} leaf/leaves present in the prior bundle ` +
+          `without a matching balance decrease (wallet reports ${reported ?? "an unreadable"} vs prior total ${priorSats ?? "unknown"} sats) ` +
+          `— treating as a partial getLeaves; prior bundle KEPT, new bundle NOT written.`,
+        );
+      }
+    }
   }
 
   await atomicWriteJson(path, persisted);

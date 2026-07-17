@@ -330,7 +330,13 @@ export class SparkAgent {
     const pctCap = Number.isFinite(Number(maxFeePct)) ? Math.ceil((Number(amount) * Number(maxFeePct)) / 100) : Infinity;
     const absCap = Number.isFinite(Number(maxFeeSats)) ? Number(maxFeeSats) : Infinity;
     const cap = Math.min(pctCap, absCap);
-    const check = checkFeeAgainstCap(fee, cap);
+    // Unlike the Lightning/L402/claim paths — which hand the SDK a SERVER-enforced
+    // maxFee — the executed withdraw binds to `feeQuote` below. So an UNREADABLE quote
+    // means we cannot confirm the fee is within the ceiling; fail CLOSED rather than
+    // defer to an SDK cap that does not exist for this path.
+    const check = (fee == null && Number.isFinite(cap))
+      ? { ok: false, fee: null, cap, reason: `fee quote is unreadable — cannot verify it is within the ${cap}-sat ceiling` }
+      : checkFeeAgainstCap(fee, cap);
     if (dryRun) {
       return {
         dryRun: true,
@@ -349,13 +355,19 @@ export class SparkAgent {
       };
     }
     if (!check.ok) {
-      const pct = ((check.fee / Number(amount)) * 100).toFixed(1);
-      throw new Error(`Withdrawal blocked: ${check.reason} (${pct}% of the ${amount}-sat exit). Raise maxFeeSats/maxFeePct to override.`);
+      const detail = check.fee != null
+        ? ` (${((check.fee / Number(amount)) * 100).toFixed(1)}% of the ${amount}-sat exit). Raise maxFeeSats/maxFeePct to override.`
+        : `. Re-fetch the quote or check the SDK CoopExitFeeQuote shape.`;
+      throw new Error(`Withdrawal blocked: ${check.reason}${detail}`);
     }
+    // Bind the executed exit to the SAME quote we just vetted: the SDK derives
+    // feeAmountSats + feeQuoteId from `feeQuote`, so the operator charges the quoted
+    // fee we checked rather than re-pricing at broadcast (closes the TOCTOU gap).
     return await this.#wallet.withdraw({
       onchainAddress: to,
       exitSpeed: speed,
       amountSats: amount,
+      feeQuote: quote,
     });
   }
 

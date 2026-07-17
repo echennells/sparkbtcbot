@@ -100,3 +100,53 @@ describe("auto-vault surfaces failure loudly (H-2)", () => {
     } finally { await v.dispose(); await rm(dir, { recursive: true, force: true }); }
   });
 });
+
+// A NON-EMPTY partial getLeaves must not silently overwrite a complete bundle —
+// the sibling of the empty-case (M-2) guard. A previously-backed-up leaf may vanish
+// legitimately only if it was SPENT (balance fell to match); otherwise it is a
+// partial capture and the prior complete bundle must be kept.
+describe("partial getLeaves shrink guard", () => {
+  const leafObj = (id) => ({ id, status: "AVAILABLE", nodeTx: Uint8Array.from([1, 2, 3]), refundTx: Uint8Array.from([4, 5, 6]) });
+  const writePriorTwo = (p) => atomicWriteJson(p, {
+    schema: "spark.unilateral-exit-bundle.v1", createdAt: "2026-07-09T00:00:00.000Z", network: "LOCAL",
+    leaves: [{ id: "leaf1", valueSats: 100000, treeNodeHex: "0a020102" }, { id: "leaf2", valueSats: 100000, treeNodeHex: "0a020102" }],
+  });
+  const mockWallet = (leaves, balance) => ({
+    leafManager: { getLeaves: async () => leaves },
+    connectionManager: { createSparkClient: async () => ({}) },
+    config: { getCoordinatorAddress: () => "coord" },
+    getBalance: async () => ({ balance }),
+  });
+
+  it("KEEPS the complete 2-leaf bundle when getLeaves drops a leaf but balance still covers both", async () => {
+    const p = uniq("lv-shrink-partial") + ".json";
+    try {
+      await writePriorTwo(p);
+      await expect(
+        snapshotLeafVault(mockWallet([leafObj("leaf1")], 200000n), { path: p, networkLabel: "LOCAL" }),
+      ).rejects.toThrow(/partial getLeaves|prior bundle KEPT/i);
+      expect((await readVault(p)).leaves.map((l) => l.id)).toEqual(["leaf1", "leaf2"]); // complete bundle preserved
+    } finally { await rm(p, { force: true }); }
+  });
+
+  it("WRITES the smaller bundle when the dropped leaf was genuinely spent (balance fell)", async () => {
+    const p = uniq("lv-shrink-spent") + ".json";
+    try {
+      await writePriorTwo(p);
+      const r = await snapshotLeafVault(mockWallet([leafObj("leaf1")], 100000n), { path: p, networkLabel: "LOCAL" });
+      expect(r.leafCount).toBe(1);
+      expect((await readVault(p)).leaves.map((l) => l.id)).toEqual(["leaf1"]); // legit shrink published
+    } finally { await rm(p, { force: true }); }
+  });
+
+  it("KEEPS the complete bundle when a leaf is dropped and balance is UNREADABLE (conservative)", async () => {
+    const p = uniq("lv-shrink-unreadable") + ".json";
+    try {
+      await writePriorTwo(p);
+      const wallet = mockWallet([leafObj("leaf1")], 0n);
+      wallet.getBalance = async () => { throw new Error("coordinator unreachable"); };
+      await expect(snapshotLeafVault(wallet, { path: p, networkLabel: "LOCAL" })).rejects.toThrow(/partial getLeaves|unreadable/i);
+      expect((await readVault(p)).leaves.map((l) => l.id)).toEqual(["leaf1", "leaf2"]);
+    } finally { await rm(p, { force: true }); }
+  });
+});

@@ -14,6 +14,11 @@
 
 - **Corrected overstated backup/exit claims** in `SKILL.md` and `references/architecture.md`. "The mnemonic is the entire backup" and "Spark guarantees you can always exit to L1" are now accurate: the seed recovers the wallet **while operators are online**, but **unilateral exit additionally requires the locally-backed-up leaf material**. Normal recovery is unchanged — the correction is specifically the operators-gone case.
 
+### Security
+
+- **leaf-vault: refuse to publish a partial capture over a complete bundle.** `getLeaves` can transiently return a non-empty *subset* of the wallet's leaves (its coordinator recover path swallows failures), and each present leaf still passes the integrity gate — so an unchecked partial snapshot would atomically overwrite a complete bundle, health still green, silently stranding the dropped leaves' only backup. The snapshot now keeps the prior complete bundle (and surfaces the failure) unless a matching balance decrease confirms the dropped leaves were genuinely spent. Generalizes the existing empty-`getLeaves` guard to the partial case.
+- **Withdrawal fee ceiling now binds the executed exit.** `withdraw` checked a fetched quote against a ceiling but then executed the exit without passing a fee, so a re-priced or unreadable quote bypassed the ceiling. It now passes the vetted `feeQuote` into the SDK (which derives `feeAmountSats` + `feeQuoteId`), so the operator charges the fee that was checked, and fails **closed** when the quote fee is unreadable instead of deferring to an SDK cap that does not exist for this path.
+
 ## 0.3.1 — 2026-07-03
 
 ### Changed
