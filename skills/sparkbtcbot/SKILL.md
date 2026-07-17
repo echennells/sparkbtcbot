@@ -214,7 +214,7 @@ Load only what's needed for the user's task. Each reference is a self-contained 
 | `references/extras.md` | Message signing, event listeners, error handling, token *issuance* (`IssuerSparkWallet`) |
 | `references/encrypted-seed.md` | Canonical guide to the encrypted-seed file (`~/.spark/seed.enc`): threat model, setup modes, file format, recovery scenarios. Load when configuring a new wallet or troubleshooting load errors. |
 | `references/security.md` | Full operational-security guide: full-custody threat model, protecting the seed/passphrase, sweeping, monitoring, and what the recipient allowlist does and does not bound. |
-| `references/unilateral-exit.md` | Recovering funds to L1 **without operators** — the leaf-vault backup (`scripts/leaf-vault.js`) plus the exit tool (`scripts/unilateral-exit.js`), CSV timelocks, and caveats. |
+| `references/unilateral-exit.md` | Recovering funds to L1 **without operators** — the leaf-vault backup (`scripts/leaf-vault.js`) that keeps a fresh recovery bundle, the exit performed by Blink's `spark-unilateral-exit` tool, CSV timelocks, and caveats. |
 | `references/recovery-scenarios.md` | Tested recovery behavior + conclusions: stale-backup failure modes, the justice / decrementing-timelock defense (verified on-chain), and what a backup can and cannot recover. |
 
 Runnable example scripts live in `skills/sparkbtcbot/scripts/` (run via `npm run setup`, `npm run example:balance`, `example:payments`, `example:tokens`, `example:agent`, `example:l402`).
