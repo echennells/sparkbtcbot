@@ -2,6 +2,20 @@
 
 Load when building an agent that wraps `SparkWallet` with a higher-level API for identity, balance, transfers, Lightning, Spark invoices, tokens, withdrawal, message signing, L402 paywalls, and event listeners. Drop-in implementation.
 
+## Methods at a glance
+
+The `SparkAgent` class exposes these (all `async` unless noted); full signatures and bodies are in the code below.
+
+- **Identity & balance** — `getIdentity()`, `getBalance()`
+- **Deposits** — `getDepositAddress()`, `claimDeposit(...)`
+- **Send** — `transfer(...)`, `transferTokens(...)`, `withdraw(...)` (L1 cooperative exit)
+- **Lightning** — `createLightningInvoice(amountSats, memo)`, `payLightningInvoice(bolt11, ...)`
+- **Spark invoices** — `createSparkInvoice(amountSats, memo)`
+- **L402 paywalls** — `fetchL402(url, options)`, `previewL402(url)`
+- **Message signing** — `signMessage(text)`, `verifyOwnSignature(text, signature)`
+- **Events & lifecycle** (sync) — `onTransferReceived(cb)`, `onDepositConfirmed(cb)`, `cleanup()`
+- **Static factory** — `SparkAgent.create(mnemonic, network)` → `{ agent, mnemonic }`
+
 ```javascript
 import { SparkWallet } from "@buildonspark/spark-sdk";
 import { decode as decodeBolt11 } from "light-bolt11-decoder";

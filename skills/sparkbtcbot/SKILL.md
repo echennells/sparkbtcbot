@@ -1,6 +1,6 @@
 ---
 name: sparkbtcbot
-description: Set up Spark Bitcoin L2 wallet capabilities for AI agents — wallet initialization from BIP39 mnemonic, sats and BTKN/LRC20 token transfers, Lightning invoices (create and pay), Spark native invoices, L402 paywall payment, L1 deposits and cooperative withdrawals, message signing. Make sure to use this skill whenever the user wants an AI agent to send or receive Bitcoin/Lightning autonomously, mentions Spark, BTKN, BTC L2, or L402, asks how to give a bot a wallet or pay for API access from code, builds an agent that earns or spends sats, sets up a non-custodial wallet for an LLM, or describes any agent that needs to move money on Bitcoin — even if they don't say "Spark" specifically.
+description: Give an AI agent a self-custodial Bitcoin wallet on the Spark L2. Covers wallet init from a BIP39 mnemonic, zero-fee Spark and BTKN/LRC20 token transfers, Lightning invoices (create and pay), Spark native invoices, L402 paywall payment, L1 deposits and cooperative withdrawals, and message signing. Make sure to use this skill whenever the user wants an AI agent to send or receive Bitcoin/Lightning autonomously, mentions Spark, BTKN, BTC L2, or L402, asks how to give a bot a wallet or pay for API access from code, builds an agent that earns or spends sats, sets up a non-custodial wallet for an LLM, or describes any agent that needs to move money on Bitcoin — even if they don't say "Spark" specifically.
 argument-hint: "[Optional: specify what to set up - wallet, payments, tokens, lightning, l402, or full]"
 requires:
   env:
@@ -22,7 +22,7 @@ model-invocation-reason: This skill enables agents to autonomously send and rece
 
 You are an expert in setting up Spark Bitcoin L2 wallet capabilities for AI agents using `@buildonspark/spark-sdk`.
 
-Spark is a Bitcoin Layer 2 that enables instant, zero-fee self-custodial transfers of BTC and tokens, with native Lightning Network interoperability. Spark-to-Spark transfers cost nothing — compared to Lightning routing fees or on-chain transaction fees of 200+ sats. Even cross-network payments (Lightning interop) are cheaper than most alternatives at 0.15-0.25%. A single BIP39 mnemonic gives an agent identity, wallet access, and payment capabilities.
+Spark is a Bitcoin Layer 2 that enables instant, low-fee self-custodial transfers of BTC and tokens, with native Lightning Network interoperability. A single BIP39 mnemonic gives an agent identity, wallet access, and payment capabilities. (Fees, the trust model, and the Spark-vs-Lightning-vs-onchain comparison are covered under **What is Spark** below and in `references/architecture.md`.)
 
 ## Custody Model (and When to Use the Proxy)
 
@@ -45,7 +45,7 @@ Even on the direct path, the wrapper exposes two opt-in safety knobs. They are *
 
 - **`dryRun: true` on send operations.** `agent.transfer({ to, amount, dryRun: true })` returns `{ from, to, amount, estimatedFee, network }` without signing or broadcasting. Use it when stakes are non-trivial — show the preview, confirm with the operator, then re-call without `dryRun`. The same flag works on `transferTokens`, `withdraw`, and `payLightningInvoice`. **The allowlist (below) is enforced in dry-run mode too**, so dry-runs can't be used to silently confirm a send to a disallowed address.
 
-- **Address allowlist at `~/.spark/recipients.allow`.** One Spark / L1 address per line, `#` comments OK. If the file is missing or empty → no enforcement. If it contains at least one entry → every Spark transfer, token transfer, and L1 withdrawal must target an address in the file. Lightning payments are NOT gated (the recipient is a node pubkey inside the BOLT11, not an address). Bypass is "edit the file" — by design.
+- **Address allowlist at `~/.spark/recipients.allow`.** One Spark / L1 address per line, `#` comments OK. If the file is missing or empty → no enforcement. If it contains at least one entry → every Spark transfer, token transfer, and L1 withdrawal must target an address in the file. Bypass is "edit the file" — by design. (Lightning/L402 are not gated by the allowlist — see the caveat below.)
 
 When you (Claude) help a user set up a production-leaning agent, recommend they populate `recipients.allow` with their known destinations (own addresses, exchange deposit addresses, paid services). Cheap, opt-in, and stops the most common "agent paid the wrong address" failure mode without requiring a proxy.
 
@@ -67,7 +67,7 @@ These rules apply whenever this skill is active. They are not optional — the m
 
 ## What is Spark
 
-Spark is a recently launched Bitcoin Layer 2 that lets you send and receive Bitcoin instantly with low fees. Spark-to-Spark transfers are free; Lightning interop costs 0.15–0.25%. Instead of Lightning's payment channels, Spark uses a network of distributed Signing Operators (SOs) that collectively manage transaction signing without any single entity controlling funds. Fully self-custodial (you hold your own keys), fully interoperable with Lightning. **However**, Spark requires trusting that at least 1-of-n operators behaves honestly during transfers, and lacks the provable finality of Bitcoin or Lightning. The network currently has only a small number of Signing Operators, so there is real risk of downtime or service disruption.
+Spark is a recently launched Bitcoin Layer 2 that lets you send and receive Bitcoin instantly with low fees. Spark-to-Spark transfers are free; Lightning interop costs 0.15–0.25%. Instead of Lightning's payment channels, Spark uses a network of distributed Signing Operators (SOs) that collectively manage transaction signing without any single entity controlling funds. Fully self-custodial (you hold your own keys), fully interoperable with Lightning. It is **not** fully trustless, though — the trust and withdrawal caveats are in the next section.
 
 → For deeper architecture, fee tables, Spark vs Lightning vs On-Chain comparison, and external tools, load `references/architecture.md`.
 
