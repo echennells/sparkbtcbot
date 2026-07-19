@@ -1,0 +1,82 @@
+[
+  {
+    "query": "I just upgraded @buildonspark/spark-sdk from 0.5.x to 0.7.17 and `wallet.getBalance().balance` now logs `bigint` but my code reading it returns wrong numbers — what changed about the return shape?",
+    "should_trigger": true
+  },
+  {
+    "query": "calling `wallet.transferTokens({ tokenIdentifier, tokenAmount, receiverSparkAddress })` from @buildonspark/spark-sdk and getting 'insufficient balance' even though `tokenBalances.get(id).ownedBalance` shows 1000 — is `availableToSendBalance` different from owned for BTKN, and how do I wait for it to settle?",
+    "should_trigger": true
+  },
+  {
+    "query": "my Discord tipping bot is on Spark and a user just sent BTC to the static deposit address from `wallet.getStaticDepositAddress()` — `getBalance()` shows `incoming: 50000` but `available: 0` for over an hour. how do I claim it manually instead of waiting for auto-claim?",
+    "should_trigger": true
+  },
+  {
+    "query": "I'm minting a BTKN with IssuerSparkWallet from @buildonspark/issuer-sdk — `createToken({ tokenName: 'AgentPoints', tokenTicker: 'AGNTP', maxSupply: 1_000_000n, decimals: 6, isFreezeable: false })` succeeds but `mintTokens(1000n)` errors with no detail. is there a setup step between create and mint?",
+    "should_trigger": true
+  },
+  {
+    "query": "I want my agent to send messages to other agents and have them verify the sender — `signMessageWithIdentityKey('hi')` works but `validateMessageWithIdentityKey('hi', sig, peerPubKey)` throws. am I calling it wrong?",
+    "should_trigger": true
+  },
+  {
+    "query": "my agent fetches a paid endpoint and gets a 402 with a BOLT11 in `WWW-Authenticate: L402 macaroon=\"...\", invoice=\"...\"` — how do I pay it from my Spark wallet via `payLightningInvoice` and retry with the right Authorization header? need macaroon+preimage caching too",
+    "should_trigger": true
+  },
+  {
+    "query": "I'm withdrawing 8000 sats from my agent's Spark wallet back to a `bc1q...` address using `wallet.withdraw({ onchainAddress, exitSpeed: 'MEDIUM', amountSats: 8000 })` and the quote shows almost 4000 sats in fees — is this expected for cooperative exit at this size? is Boltz cheaper here?",
+    "should_trigger": true
+  },
+  {
+    "query": "running my LLM agent's Spark wallet against a hosted regtest — `SparkWallet.initialize({ mnemonicOrSeed, options: { network: 'REGTEST' } })` works locally but addresses come out as `sparkrt1p...` and the Lightspark faucet seems to want a `bcrt1...` L1 address. what address goes where",
+    "should_trigger": true
+  },
+  {
+    "query": "I want to give an autonomous AI agent a Bitcoin L2 wallet — needs zero-fee transfers to other agents, native Lightning interop, single BIP39 mnemonic that doubles as identity. what's the right SDK and how does it compare to running an LDK node",
+    "should_trigger": true
+  },
+  {
+    "query": "my agent gets paid in BTC via Lightning invoices and I want it to also be able to receive payments in stablecoins on the same wallet — does Spark BTKN cover this, and how does the BOLT11 vs Spark-native invoice flow differ for my receive code path?",
+    "should_trigger": true
+  },
+  {
+    "query": "I'm wiring my agent to a user's Alby Lightning wallet via NWC — building the `pay_invoice` request, how do I encrypt and route over the relay, and what's the timeout to handle a missing response",
+    "should_trigger": false
+  },
+  {
+    "query": "use Strike's API to give my agent Lightning send/receive — POST /v1/invoices, then poll the quote and handle the conversion-rate window. anyone got a wrapper",
+    "should_trigger": false
+  },
+  {
+    "query": "give my agent a self-custodial Lightning wallet via breez-sdk — how does their LSP-managed liquidity work and what's the channel-open cost on first receive",
+    "should_trigger": false
+  },
+  {
+    "query": "I'm using @lightsparkdev/wallet-sdk to fund my MCP agent — how do I subscribe to `invoice_paid` via the GraphQL subscription, and is there a polling fallback",
+    "should_trigger": false
+  },
+  {
+    "query": "integrating @tetherto/wdk-wallet-spark in my agent app — `WalletManagerSpark.getAccount(0)` returns a different address than my friend's wallet from the same seed. is the derivation account-number the same as the account index",
+    "should_trigger": false
+  },
+  {
+    "query": "BDK in node.js for an agent — I want descriptor-based receive addresses with separate external and change. how do I incrementally sync from electrum without re-scanning the chain",
+    "should_trigger": false
+  },
+  {
+    "query": "set up a Voltage Cloud node and connect my agent to it via gRPC + macaroon — looking for the right LndService.SendPaymentSync flow with timeouts and retries",
+    "should_trigger": false
+  },
+  {
+    "query": "OpenNode webhook setup — my agent needs to confirm a Lightning payment was received via the `invoice.paid` callback and verify the HMAC signature",
+    "should_trigger": false
+  },
+  {
+    "query": "I want my chat agent to redeem Cashu tokens for sats — `claim_tokens` against the federated mint, then I melt them out via Lightning. recommended JS lib",
+    "should_trigger": false
+  },
+  {
+    "query": "build a Lightning paywall in front of my chatbot's API using LNbits — generate per-user keys, gate routes by an `LNURL-pay` extension, and verify the preimage server-side",
+    "should_trigger": false
+  }
+]
