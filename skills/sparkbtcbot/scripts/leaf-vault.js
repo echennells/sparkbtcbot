@@ -273,15 +273,24 @@ export function enableLeafVault(wallet, { path = DEFAULT_VAULT_PATH, networkLabe
   let lastError = null;
   let inFlight = null;
   let disposed = false;
+  // Track uncaptured leaf changes so a short-lived process (init -> transact ->
+  // cleanup) still flushes a fresh bundle on the way out, WITHOUT a read-only run
+  // paying for a redundant snapshot. A generation counter (not a boolean) so an
+  // event that fires *during* a snapshot correctly leaves the vault dirty.
+  let changeGen = 0;   // bumped on each leaf-changing wallet event
+  let snappedGen = 0;  // highest changeGen a successful snapshot has captured
+  const isDirty = () => changeGen > snappedGen;
 
   const report = (e) => (onError ? onError(e) : console.error(`[leaf-vault] snapshot FAILED (${consecutiveFailures}x in a row): ${e?.message ?? e}`));
 
   const runSnapshot = () => {
     if (disposed) return Promise.resolve(null);
     if (inFlight) return inFlight;
+    const gen = changeGen; // the change-generation this run will capture
     inFlight = (async () => {
       try {
         const r = await snapshotLeafVault(wallet, { path, networkLabel });
+        if (gen > snappedGen) snappedGen = gen; // events during the run keep isDirty() true
         consecutiveFailures = 0; lastSuccessAt = Date.now(); lastError = null;
         await unlink(brokenMarker).catch(() => {});
         return r;
@@ -300,6 +309,7 @@ export function enableLeafVault(wallet, { path = DEFAULT_VAULT_PATH, networkLabe
 
   let debounceTimer = null;
   const schedule = () => {
+    changeGen += 1; // a leaf-changing event happened; mark the vault dirty
     if (debounceTimer) clearTimeout(debounceTimer);
     debounceTimer = setTimeout(() => { debounceTimer = null; runSnapshot().catch(() => {}); }, debounceMs);
     debounceTimer.unref?.();
@@ -313,11 +323,17 @@ export function enableLeafVault(wallet, { path = DEFAULT_VAULT_PATH, networkLabe
   timer.unref?.();
 
   const dispose = async () => {
-    disposed = true;
     for (const ev of events) wallet.off?.(ev, schedule);
     clearInterval(timer);
-    if (debounceTimer) clearTimeout(debounceTimer);
+    if (debounceTimer) { clearTimeout(debounceTimer); debounceTimer = null; }
     await inFlight?.catch(() => {});
+    // Flush a final snapshot ONLY if a leaf change happened that no snapshot has
+    // captured yet — closes the "init -> transfer -> cleanup exits before the 4s
+    // debounce fires" gap without making a read-only run snapshot on exit. Runs
+    // before `disposed` is set so this flush is allowed; best-effort, since a
+    // failure is already surfaced via the failure counter / BROKEN marker.
+    if (isDirty()) await runSnapshot().catch(() => {});
+    disposed = true;
   };
 
   return {

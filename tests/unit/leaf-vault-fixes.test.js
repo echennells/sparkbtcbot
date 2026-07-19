@@ -5,6 +5,7 @@ import { describe, it, expect } from "vitest";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { rm, readFile, readdir, stat, mkdir } from "node:fs/promises";
+import { EventEmitter } from "node:events";
 import { atomicWriteJson, readVault } from "../../lib/leaf-vault.js";
 import { snapshotLeafVault, verifyVault, enableLeafVault } from "../../skills/sparkbtcbot/scripts/leaf-vault.js";
 import { TreeNode } from "@buildonspark/spark-sdk/proto/spark";
@@ -147,6 +148,53 @@ describe("partial getLeaves shrink guard", () => {
       wallet.getBalance = async () => { throw new Error("coordinator unreachable"); };
       await expect(snapshotLeafVault(wallet, { path: p, networkLabel: "LOCAL" })).rejects.toThrow(/partial getLeaves|unreadable/i);
       expect((await readVault(p)).leaves.map((l) => l.id)).toEqual(["leaf1", "leaf2"]);
+    } finally { await rm(p, { force: true }); }
+  });
+});
+
+// Flush-on-dispose: an ENABLED vault must leave a fresh bundle when a short-lived
+// process transacts then exits before the 4s debounce fires — but a read-only run
+// (no leaf change) must NOT pay for a redundant snapshot on the way out.
+describe("leaf-vault flush-on-dispose (dirty tracking)", () => {
+  const leaf = (id) => ({ id, status: "AVAILABLE", nodeTx: Uint8Array.from([1, 2, 3]), refundTx: Uint8Array.from([4, 5, 6]) });
+  const mkWallet = (onGetLeaves, balance) => {
+    const ee = new EventEmitter();
+    return {
+      on: (ev, cb) => ee.on(ev, cb),
+      off: (ev, cb) => ee.off(ev, cb),
+      emit: (ev) => ee.emit(ev),
+      leafManager: { getLeaves: async () => onGetLeaves() },
+      connectionManager: { createSparkClient: async () => ({}) },
+      config: { getCoordinatorAddress: () => "coord" },
+      getBalance: async () => ({ balance }),
+    };
+  };
+
+  it("FLUSHES a final snapshot on dispose after a leaf-changing event (dirty)", async () => {
+    const p = uniq("lv-flush-dirty") + ".json";
+    try {
+      let calls = 0;
+      const w = mkWallet(() => { calls += 1; return [leaf("leaf1")]; }, 100000n);
+      // huge debounce/interval so ONLY the boot snapshot + our explicit flush run
+      const v = enableLeafVault(w, { path: p, networkLabel: "LOCAL", intervalMs: 9e6, debounceMs: 9e6 });
+      await v.ready;
+      expect(calls).toBe(1); // boot snapshot
+      w.emit("balance:update"); // a change; its debounced snapshot won't fire (9e6ms)
+      await v.dispose(); // dirty -> flush
+      expect(calls).toBe(2); // boot + flush
+      expect((await readVault(p)).leaves.map((l) => l.id)).toEqual(["leaf1"]);
+    } finally { await rm(p, { force: true }); }
+  });
+
+  it("does NOT flush on dispose for a read-only run (no leaf change)", async () => {
+    const p = uniq("lv-flush-clean") + ".json";
+    try {
+      let calls = 0;
+      const w = mkWallet(() => { calls += 1; return [leaf("leaf1")]; }, 100000n);
+      const v = enableLeafVault(w, { path: p, networkLabel: "LOCAL", intervalMs: 9e6, debounceMs: 9e6 });
+      await v.ready;
+      await v.dispose(); // no event -> not dirty -> no flush
+      expect(calls).toBe(1); // boot only
     } finally { await rm(p, { force: true }); }
   });
 });
