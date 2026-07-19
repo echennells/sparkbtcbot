@@ -200,13 +200,21 @@ export async function snapshotLeafVault(wallet, { path = DEFAULT_VAULT_PATH, net
     const newIds = new Set(persisted.leaves.map((l) => l.id));
     const missing = prior.leaves.filter((l) => !newIds.has(l.id));
     if (missing.length > 0) {
-      const priorSats = sumLeafSats(prior.leaves);
+      // A leaf present in the prior bundle is absent here. Legitimate only if every
+      // sat the wallet still reports as owned is represented by the leaves we just
+      // captured. Compare the CAPTURED total to the reported balance (not the PRIOR
+      // total): a send drops one leaf's balance but its change leaf is in the
+      // capture, so a complete capture still satisfies captured >= reported — while a
+      // send that ALSO transiently loses a different still-live leaf leaves captured
+      // < reported and is caught. (priorSats vs reported would wrongly let any spend
+      // excuse an arbitrary transient drop.)
+      const capturedSats = sumLeafSats(persisted.leaves);
       const reported = await reportedBalanceSats(wallet);
-      const spent = priorSats != null && reported != null && reported < priorSats;
-      if (!spent) {
+      const coversBalance = capturedSats != null && reported != null && capturedSats >= reported;
+      if (!coversBalance) {
         throw new Error(
-          `leaf-vault: capture dropped ${missing.length} leaf/leaves present in the prior bundle ` +
-          `without a matching balance decrease (wallet reports ${reported ?? "an unreadable"} vs prior total ${priorSats ?? "unknown"} sats) ` +
+          `leaf-vault: a leaf present in the prior bundle is missing and the capture holds ` +
+          `${capturedSats ?? "an unreadable"} sats vs a reported ${reported ?? "unreadable"} balance ` +
           `— treating as a partial getLeaves; prior bundle KEPT, new bundle NOT written.`,
         );
       }
@@ -290,7 +298,11 @@ export function enableLeafVault(wallet, { path = DEFAULT_VAULT_PATH, networkLabe
     inFlight = (async () => {
       try {
         const r = await snapshotLeafVault(wallet, { path, networkLabel });
-        if (gen > snappedGen) snappedGen = gen; // events during the run keep isDirty() true
+        // Only mark the change captured when the snapshot actually PERSISTED. The
+        // skip paths (transient-empty / no-leaves) resolve without writing, so
+        // advancing snappedGen there would falsely clear isDirty() and let dispose
+        // drop the flush — leaving a real leaf change unbacked. A skip stays dirty.
+        if (!r?.skipped && gen > snappedGen) snappedGen = gen; // events during a real run keep isDirty() true
         consecutiveFailures = 0; lastSuccessAt = Date.now(); lastError = null;
         await unlink(brokenMarker).catch(() => {});
         return r;

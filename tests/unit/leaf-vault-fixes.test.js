@@ -107,7 +107,7 @@ describe("auto-vault surfaces failure loudly (H-2)", () => {
 // legitimately only if it was SPENT (balance fell to match); otherwise it is a
 // partial capture and the prior complete bundle must be kept.
 describe("partial getLeaves shrink guard", () => {
-  const leafObj = (id) => ({ id, status: "AVAILABLE", nodeTx: Uint8Array.from([1, 2, 3]), refundTx: Uint8Array.from([4, 5, 6]) });
+  const leafObj = (id, value) => ({ id, status: "AVAILABLE", value, nodeTx: Uint8Array.from([1, 2, 3]), refundTx: Uint8Array.from([4, 5, 6]) });
   const writePriorTwo = (p) => atomicWriteJson(p, {
     schema: "spark.unilateral-exit-bundle.v1", createdAt: "2026-07-09T00:00:00.000Z", network: "LOCAL",
     leaves: [{ id: "leaf1", valueSats: 100000, treeNodeHex: "0a020102" }, { id: "leaf2", valueSats: 100000, treeNodeHex: "0a020102" }],
@@ -124,7 +124,7 @@ describe("partial getLeaves shrink guard", () => {
     try {
       await writePriorTwo(p);
       await expect(
-        snapshotLeafVault(mockWallet([leafObj("leaf1")], 200000n), { path: p, networkLabel: "LOCAL" }),
+        snapshotLeafVault(mockWallet([leafObj("leaf1", 100000n)], 200000n), { path: p, networkLabel: "LOCAL" }),
       ).rejects.toThrow(/partial getLeaves|prior bundle KEPT/i);
       expect((await readVault(p)).leaves.map((l) => l.id)).toEqual(["leaf1", "leaf2"]); // complete bundle preserved
     } finally { await rm(p, { force: true }); }
@@ -134,7 +134,7 @@ describe("partial getLeaves shrink guard", () => {
     const p = uniq("lv-shrink-spent") + ".json";
     try {
       await writePriorTwo(p);
-      const r = await snapshotLeafVault(mockWallet([leafObj("leaf1")], 100000n), { path: p, networkLabel: "LOCAL" });
+      const r = await snapshotLeafVault(mockWallet([leafObj("leaf1", 100000n)], 100000n), { path: p, networkLabel: "LOCAL" });
       expect(r.leafCount).toBe(1);
       expect((await readVault(p)).leaves.map((l) => l.id)).toEqual(["leaf1"]); // legit shrink published
     } finally { await rm(p, { force: true }); }
@@ -144,7 +144,7 @@ describe("partial getLeaves shrink guard", () => {
     const p = uniq("lv-shrink-unreadable") + ".json";
     try {
       await writePriorTwo(p);
-      const wallet = mockWallet([leafObj("leaf1")], 0n);
+      const wallet = mockWallet([leafObj("leaf1", 100000n)], 0n);
       wallet.getBalance = async () => { throw new Error("coordinator unreachable"); };
       await expect(snapshotLeafVault(wallet, { path: p, networkLabel: "LOCAL" })).rejects.toThrow(/partial getLeaves|unreadable/i);
       expect((await readVault(p)).leaves.map((l) => l.id)).toEqual(["leaf1", "leaf2"]);
@@ -195,6 +195,24 @@ describe("leaf-vault flush-on-dispose (dirty tracking)", () => {
       await v.ready;
       await v.dispose(); // no event -> not dirty -> no flush
       expect(calls).toBe(1); // boot only
+    } finally { await rm(p, { force: true }); }
+  });
+
+  it("a transient-empty getLeaves does NOT clear dirty, so dispose still flushes (ToB Finding 1)", async () => {
+    const p = uniq("lv-skip-dirty") + ".json";
+    try {
+      let call = 0;
+      // boot -> leaf present (writes); debounced snapshot -> transient empty (SKIP, keeps prior);
+      // dispose flush -> leaf present again. The skip must leave the vault dirty, so the flush runs.
+      const seq = [[leaf("leaf1")], [], [leaf("leaf1")]];
+      const w = mkWallet(() => seq[Math.min(call++, seq.length - 1)], 100000n);
+      const v = enableLeafVault(w, { path: p, networkLabel: "LOCAL", intervalMs: 9e6, debounceMs: 0 });
+      await v.ready; // boot snapshot (call 1 -> [leaf], writes)
+      w.emit("balance:update"); // changeGen -> 1; debounce 0 schedules an immediate snapshot
+      await new Promise((r) => setTimeout(r, 60)); // let it run (call 2 -> [] -> transient-empty SKIP)
+      await v.dispose(); // skip left it dirty -> flush (call 3 -> [leaf], writes)
+      expect(call).toBeGreaterThanOrEqual(3); // boot + skipped debounced + flush
+      expect((await readVault(p)).leaves.map((l) => l.id)).toEqual(["leaf1"]);
     } finally { await rm(p, { force: true }); }
   });
 });
