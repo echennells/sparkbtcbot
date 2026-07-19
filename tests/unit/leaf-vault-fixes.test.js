@@ -81,6 +81,24 @@ describe("transient empty getLeaves guard (M-2)", () => {
       expect(wrote).toBe(false); // nothing written
     } finally { await rm(p, { force: true }); }
   });
+  it("reads OWNED sats, not `available` — owned-but-locked funds keep a good bundle", async () => {
+    const p = uniq("lv-owned") + ".json";
+    try {
+      await atomicWriteJson(p, goodBundle); // prior complete bundle
+      // getLeaves transiently empty, but the wallet OWNS funds locked in an in-flight
+      // transfer: owned=200000, available=0. Must be treated as transient-empty (keep
+      // the prior bundle), proving the balance check reads `owned`, not `available`.
+      const wallet = {
+        leafManager: { getLeaves: async () => [] },
+        connectionManager: { createSparkClient: async () => ({}) },
+        config: { getCoordinatorAddress: () => "coord" },
+        getBalance: async () => ({ satsBalance: { owned: 200000n, available: 0n } }),
+      };
+      const r = await snapshotLeafVault(wallet, { path: p, networkLabel: "LOCAL" });
+      expect(r.skipped).toBe("transient-empty-getLeaves"); // owned>0 -> not a genuine empty
+      expect((await readVault(p)).leaves.map((l) => l.id)).toEqual(["leaf1"]);
+    } finally { await rm(p, { force: true }); }
+  });
 });
 
 // H-2 — a broken backup must surface, not vanish into one stderr line.

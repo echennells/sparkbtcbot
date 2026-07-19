@@ -374,10 +374,18 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   // needs SPARK_PASSPHRASE, and both paths honour SPARK_LEAF_VAULT_PATH /
   // SPARK_NETWORK, so it has to happen before either branch runs.
   await import("dotenv/config");
-  // The wallet whose leaves we back up is the one the operator actually funds, and
-  // that is not always account 0 (Blink-derived wallets live at 1). Snapshotting or
-  // balance-checking the wrong account silently reports an empty wallet as healthy.
-  const accountNumber = Number(process.env.SPARK_ACCOUNT_NUMBER ?? 0);
+  // Back up the SAME wallet the operator funds and that SparkAgent's auto-vault
+  // backs up: the SDK's network-correct default (account 1 on MAINNET, 0 on
+  // REGTEST), which every other script uses by OMITTING accountNumber. So leave it
+  // undefined unless SPARK_ACCOUNT_NUMBER is set — hardcoding 0 would inspect a
+  // different, empty wallet on MAINNET and falsely report "nothing to back up".
+  const acctEnv = process.env.SPARK_ACCOUNT_NUMBER;
+  const accountNumber = acctEnv != null && acctEnv !== "" ? Number(acctEnv) : undefined;
+  if (accountNumber !== undefined && !Number.isInteger(accountNumber)) {
+    console.error(`leaf-vault: SPARK_ACCOUNT_NUMBER="${acctEnv}" is not an integer.`);
+    process.exit(2);
+  }
+  const acctLabel = accountNumber ?? "default";
   const openWallet = async () => {
     const [{ SparkWallet }, { loadMnemonicFromEnv }] = await Promise.all([
       import("@buildonspark/spark-sdk"),
@@ -410,14 +418,22 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       process.exit(2);
     }
     try {
-      const { satsBalance } = await wallet.getBalance();
-      const sats = BigInt(satsBalance?.available ?? 0);
+      // Judge severity on OWNED sats, via the same helper the snapshot guards use
+      // (balance ?? satsBalance.owned ?? satsBalance.available) — NOT `available`
+      // alone. Funds locked in an in-flight transfer are owned, still exitable, and
+      // still need a backup, but would read as available=0 and hide the gap.
+      const sats = await reportedBalanceSats(wallet);
+      if (sats == null) {
+        console.log("⚠️ INDETERMINATE:", r.reason, "— could not read the wallet balance to judge severity.",
+          "Treat as CRITICAL if this wallet is funded.");
+        process.exit(2);
+      }
       if (sats > 0n) {
-        console.log("❌ CRITICAL:", r.reason, `— but account ${accountNumber} holds ${sats} sats.`,
+        console.log("❌ CRITICAL:", r.reason, `— but account ${acctLabel} holds ${sats} sats.`,
           "These funds have NO unilateral-exit backup. Take a snapshot now (`npm run leaf-vault`).");
         process.exit(1);
       }
-      console.log("✅ no vault, and nothing to back up:", `account ${accountNumber} holds 0 sats.`,
+      console.log("✅ no vault, and nothing to back up:", `account ${acctLabel} holds 0 sats.`,
         "A vault will be written once the wallet holds leaves.");
       process.exit(0);
     } finally {
