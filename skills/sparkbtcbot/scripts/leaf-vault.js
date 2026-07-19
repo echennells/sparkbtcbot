@@ -230,7 +230,17 @@ export async function snapshotLeafVault(wallet, { path = DEFAULT_VAULT_PATH, net
 // genuine root with its pre-signed txs intact. Run periodically / before trusting.
 export async function verifyVault(path = DEFAULT_VAULT_PATH) {
   const TreeNode = await getTreeNode();
-  const bundle = await readVault(path);
+  let bundle;
+  try {
+    bundle = await readVault(path);
+  } catch (err) {
+    // "No vault on disk" is a distinct state from "vault is broken", and only the
+    // caller knows which one is alarming: a wallet with no leaves has nothing to
+    // back up, while a funded wallet with no vault has lost its only unilateral-exit
+    // path. Report it as data instead of throwing a raw ENOENT so callers can decide.
+    if (err?.code === "ENOENT") return { ok: false, missing: true, reason: `no vault at ${path}`, leafCount: 0, path };
+    throw err;
+  }
   const shape = validateSnapshotShape(bundle);
   if (!shape.ok) return { ok: false, reason: shape.reason, leafCount: bundle?.leaves?.length ?? 0 };
   const reMap = new Map([...(bundle.leaves ?? []), ...(bundle.nodes ?? [])].map((n) => [n.id, decodeNode(TreeNode, n.treeNodeHex)]));
@@ -358,19 +368,63 @@ export function enableLeafVault(wallet, { path = DEFAULT_VAULT_PATH, networkLabe
 // CLI: `node leaf-vault.js verify` checks the current bundle; no arg takes a
 // snapshot using the encrypted-seed wallet.
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  if (process.argv[2] === "verify") {
-    const r = await verifyVault();
-    console.log(r.ok ? "✅" : "❌", JSON.stringify(r, null, 2));
-    process.exit(r.ok ? 0 : 1);
-  } else {
+  // Load .env here rather than at module scope: this file is also imported as a
+  // library (enableLeafVault / snapshotLeafVault / verifyVault), and importing a
+  // library should not mutate the caller's process.env. The snapshot path below
+  // needs SPARK_PASSPHRASE, and both paths honour SPARK_LEAF_VAULT_PATH /
+  // SPARK_NETWORK, so it has to happen before either branch runs.
+  await import("dotenv/config");
+  // The wallet whose leaves we back up is the one the operator actually funds, and
+  // that is not always account 0 (Blink-derived wallets live at 1). Snapshotting or
+  // balance-checking the wrong account silently reports an empty wallet as healthy.
+  const accountNumber = Number(process.env.SPARK_ACCOUNT_NUMBER ?? 0);
+  const openWallet = async () => {
     const [{ SparkWallet }, { loadMnemonicFromEnv }] = await Promise.all([
       import("@buildonspark/spark-sdk"),
       import("../../../lib/encrypted-seed.js"),
     ]);
     const { wallet } = await SparkWallet.initialize({
       mnemonicOrSeed: await loadMnemonicFromEnv(),
+      accountNumber,
       options: { network: process.env.SPARK_NETWORK || "MAINNET" },
     });
+    return wallet;
+  };
+
+  if (process.argv[2] === "verify") {
+    const r = await verifyVault();
+    if (!r.missing) {
+      console.log(r.ok ? "✅" : "❌", JSON.stringify(r, null, 2));
+      process.exit(r.ok ? 0 : 1);
+    }
+    // No vault. Whether that is fine or an emergency depends on whether there is
+    // anything to lose, so ask the wallet. If we cannot (no passphrase available,
+    // e.g. verifying a bundle on a machine that holds no secrets), say INDETERMINATE
+    // rather than guess — reporting "fine" would hide a real backup gap.
+    let wallet;
+    try {
+      wallet = await openWallet();
+    } catch (err) {
+      console.log("⚠️ INDETERMINATE:", r.reason, `— cannot check balance to judge severity (${err.message}).`,
+        "Set SPARK_PASSPHRASE to resolve, or treat as CRITICAL if this wallet is funded.");
+      process.exit(2);
+    }
+    try {
+      const { satsBalance } = await wallet.getBalance();
+      const sats = BigInt(satsBalance?.available ?? 0);
+      if (sats > 0n) {
+        console.log("❌ CRITICAL:", r.reason, `— but account ${accountNumber} holds ${sats} sats.`,
+          "These funds have NO unilateral-exit backup. Take a snapshot now (`npm run leaf-vault`).");
+        process.exit(1);
+      }
+      console.log("✅ no vault, and nothing to back up:", `account ${accountNumber} holds 0 sats.`,
+        "A vault will be written once the wallet holds leaves.");
+      process.exit(0);
+    } finally {
+      await wallet.cleanup();
+    }
+  } else {
+    const wallet = await openWallet();
     try {
       console.log("✅ leaf-vault snapshot:", JSON.stringify(await snapshotLeafVault(wallet, { networkLabel: process.env.SPARK_NETWORK })));
     } finally {
