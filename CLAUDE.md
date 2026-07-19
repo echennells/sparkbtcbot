@@ -35,9 +35,20 @@ skills/
       token-operations.js
       spark-agent.js
       l402-paywalls.js
-tests/                                # vitest suite (unit, integration, funded tiers)
+    evals/                            # Skill-quality evals (does the skill make Claude produce correct/safe code?)
+      evals.json                      # Output evals: SDK-correctness + security-behavior, with checkable assertions
+      trigger-eval.json               # Description-triggering queries (see NOTES: not measurable via claude -p here)
+      NOTES.md                        # How to run (subagent output evals, with-skill vs baseline) + last results
+tests/                                # vitest suite for the LIBRARY code (unit, integration, funded tiers)
 .env.example                          # Environment variable template
 ```
+
+**Two testing surfaces, don't conflate them:** `tests/` (vitest) verifies the
+**library code** — `lib/` helpers, SDK export/shape regressions, REGTEST flows.
+`skills/sparkbtcbot/evals/` verifies the **skill itself** — whether loading it
+makes Claude write correct, current-SDK, security-following code versus a no-skill
+baseline. The evals are run by subagents from a Claude Code session, not by
+`npm`; see `skills/sparkbtcbot/evals/NOTES.md`.
 
 ## Trigger Phrases
 

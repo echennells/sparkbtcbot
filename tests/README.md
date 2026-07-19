@@ -2,6 +2,8 @@
 
 Three tiers, run via `npm` scripts.
 
+> **Scope:** these tiers test the **library code** (`lib/` helpers + SDK usage). They do **not** test the *skill's* teaching quality — whether loading `skills/sparkbtcbot` makes Claude write correct, current-SDK, security-following code versus a no-skill baseline. Those are separate, subagent-run **skill evals** in [`../skills/sparkbtcbot/evals/`](../skills/sparkbtcbot/evals/NOTES.md) — not run by `npm`.
+
 | Script | Tier | Network | Funding | Purpose |
 |---|---|---|---|---|
 | `npm test` | unit | none | no | Default. SDK exports, balance shape regression. ~500ms. |
