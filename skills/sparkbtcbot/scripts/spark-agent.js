@@ -403,8 +403,8 @@ export class SparkAgent {
   // --- Lifecycle ---
 
   async cleanup() {
-    await this.#vault?.dispose?.();
-    this.#wallet.cleanup();
+    await this.#vault?.dispose?.(); // first: the final flush needs the live wallet
+    await this.#wallet.cleanup();
   }
 }
 
@@ -424,10 +424,8 @@ async function main() {
   console.log("\n=== Balance ===");
   console.log("BTC:", sats.toString(), "sats");
 
-  if (tokens.size > 0) {
-    for (const [id, info] of tokens) {
-      console.log(`${info.tokenMetadata.tokenTicker}: ${info.balance.toString()}`);
-    }
+  for (const [, info] of Object.entries(tokens)) {
+    console.log(`${info.ticker}: ${info.balance}`);
   }
 
   const depositAddr = await agent.getDepositAddress();

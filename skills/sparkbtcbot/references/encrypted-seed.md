@@ -23,7 +23,7 @@ To drain funds an attacker needs **either** the seed file plus the passphrase to
 
 ## Crypto choices
 
-- **scrypt** for key derivation: N=2^17, r=8, p=1. Memory-hard, OWASP-blessed for password hashing. Roughly 100ms on a modern CPU; intentionally slow to make brute-force expensive.
+- **scrypt** for key derivation: N=2^17, r=8, p=1. Memory-hard, OWASP-blessed for password hashing. Roughly 250ms on a modern CPU; intentionally slow to make brute-force expensive.
 - **AES-256-GCM** for encryption: 256-bit key, 96-bit IV, 128-bit auth tag. Authenticated — wrong passphrase or tampered ciphertext is detected.
 - All from Node's built-in `node:crypto`. Zero extra dependencies.
 

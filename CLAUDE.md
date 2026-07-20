@@ -17,19 +17,29 @@ Teaches Claude Code how to give AI agents Bitcoin capabilities using the Spark L
 7. **Token Operations** — Transfer BTKN/LRC20 tokens natively
 8. **Withdraw to L1** — Cooperative exit back to on-chain Bitcoin
 9. **Message Signing** — Sign and verify messages for identity proof
+10. **Unilateral-Exit Backup** — Continuously-fresh `spark.unilateral-exit-bundle.v1` recovery bundle (the "leaf-vault"), consumed by Blink's [spark-unilateral-exit](https://github.com/blinkbitcoin/spark-unilateral-exit) tool if the operators ever vanish
 
 ## Structure
 
 ```
 lib/
+  atomic-file.js                      # the one atomic writer (temp+fsync+link/rename+dir-fsync)
   encrypted-seed.js                   # scrypt + AES-256-GCM seed file helper
+  leaf-vault.js                       # SDK-free recovery-bundle persistence + shape validation
+  fee-guards.js                       # fee/amount ceilings for sends, claims, withdrawals
+  recipients-allowlist.js             # opt-in outbound allowlist guardrail
+  index.js / index.d.ts               # npm entry (also exports ./leaf-vault subpaths)
 skills/
   sparkbtcbot/
     SKILL.md                          # Always-loaded skill body (security, setup, navigator)
     references/                       # Detail loaded on demand (SDK API, agent class, L402, etc.)
       encrypted-seed.md               # Threat model, setup modes, recovery
+      unilateral-exit.md              # The leaf-vault backup + Blink's exit tool
+      recovery-scenarios.md           # Recovery properties (staleness, justice, economics)
     scripts/                          # Runnable example scripts
       setup-encrypted-seed.js         # `npm run setup` — one-time bootstrap
+      leaf-vault.js                   # snapshotLeafVault / verifyVault / enableLeafVault (library)
+      leaf-vault-cli.js               # `npm run leaf-vault [-- verify]` — snapshot/verify CLI
       balance-and-deposits.js
       payment-flow.js
       token-operations.js
@@ -66,6 +76,8 @@ npm install @buildonspark/spark-sdk dotenv
 SPARK_PASSPHRASE=<at least 12 chars — decrypts ~/.spark/seed.enc at boot>
 SPARK_NETWORK=MAINNET
 # SPARK_SEED_PATH=/custom/path/seed.enc   # optional override
+# SPARK_LEAF_VAULT=off                    # opt out of the automatic recovery-bundle backup
+# SPARK_LEAF_VAULT_PATH=/custom/path.json # recovery-bundle location (default ~/.spark/leaf-vault/current.json)
 ```
 
 ## Security Note

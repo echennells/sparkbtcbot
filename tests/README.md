@@ -6,7 +6,7 @@ Three tiers, run via `npm` scripts.
 
 | Script | Tier | Network | Funding | Purpose |
 |---|---|---|---|---|
-| `npm test` | unit | none | no | Default. SDK exports, balance shape regression. ~500ms. |
+| `npm test` | unit | none | no | Default. lib helpers, leaf-vault/encrypted-seed security regressions, SDK export/shape pins. ~10s. |
 | `npm run test:integration` | read-only | REGTEST | no | Wallet init, addresses, invoices, message signing against Spark's hosted REGTEST. ~10s. |
 | `npm run test:funded` | funded | REGTEST | **yes** | Transfers, Lightning payments. Skipped unless `SPARK_TEST_MNEMONIC` is set. |
 | `npm run test:all` | all | REGTEST | optional | Runs everything; funded tier auto-skips without env var. |
@@ -20,6 +20,16 @@ tests/
   unit/
     imports.test.js                 # SDK export sanity, SparkWallet method surface
     balance-shape.test.js           # regression: ownedBalance / availableToSendBalance
+    encrypted-seed.test.js          # seed encrypt/decrypt round-trip, EEXIST, perms, NO_PASSPHRASE
+    leaf-vault.test.js              # bundle shape validation (Blink compatibility contract)
+    leaf-vault-fixes.test.js        # ToB regression pins — H-3 concurrency, M-1 content gate, M-2 transient-empty, shrink guard, H-2 marker, flush-on-dispose
+    leaf-vault-hardening.test.js    # network derivation, identity guard, union rescue, skip accounting, re-arm, dispose races, atomic-writer failures, exports map
+    spark-agent-vault.test.js       # SparkAgent vault wiring: opt-out normalization + enabled path
+    fee-guards.test.js              # Lightning/L402/withdrawal fee + amount ceilings
+    withdraw-fee-guard.test.js      # withdraw() fail-closed + feeQuote binding
+    recipients-allowlist.test.js    # outbound allowlist guardrail
+    skill-content.test.js           # skill packaging: getSkillContent/getReference surface
+    plugin-manifest.test.js         # Claude Code plugin manifest sanity
   integration/
     wallet.test.js                  # init, getSparkAddress, getIdentityPublicKey, getBalance shape
     deposit.test.js                 # static & single-use deposit addresses

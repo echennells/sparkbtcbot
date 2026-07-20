@@ -39,6 +39,12 @@
     ".": {
       "types": "./lib/index.d.ts",
       "import": "./lib/index.js"
+    },
+    "./leaf-vault": {
+      "import": "./skills/sparkbtcbot/scripts/leaf-vault.js"
+    },
+    "./leaf-vault/core": {
+      "import": "./lib/leaf-vault.js"
     }
   },
   "files": [
@@ -59,7 +65,7 @@
     "example:tokens": "node skills/sparkbtcbot/scripts/token-operations.js",
     "example:agent": "node skills/sparkbtcbot/scripts/spark-agent.js",
     "example:l402": "node skills/sparkbtcbot/scripts/l402-paywalls.js",
-    "leaf-vault": "node skills/sparkbtcbot/scripts/leaf-vault.js",
+    "leaf-vault": "node skills/sparkbtcbot/scripts/leaf-vault-cli.js",
     "test": "vitest run tests/unit",
     "test:unit": "vitest run tests/unit",
     "test:integration": "vitest run tests/integration --exclude tests/integration/funded",

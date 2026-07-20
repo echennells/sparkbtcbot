@@ -35,6 +35,7 @@ Spark is a Bitcoin Layer 2 that lets you send and receive Bitcoin instantly with
 - **Withdrawal** — Cooperative exit back to L1 Bitcoin with fee estimation
 - **Message Signing** — Prove identity via cryptographic signatures
 - **L402 Paywalls** — Pay-per-request APIs via Lightning. Preview costs, pay invoices, cache tokens.
+- **Unilateral-Exit Backup** — Auto-maintained `spark.unilateral-exit-bundle.v1` recovery bundle, consumed by Blink's [spark-unilateral-exit](https://github.com/blinkbitcoin/spark-unilateral-exit) tool if the operators ever go dark. Verify with `npm run leaf-vault -- verify`.
 
 ## Installation
 
@@ -66,7 +67,8 @@ const instructions = await getSkillContent();
 // On-demand reference docs by name
 console.log(await listReferences());
 // → ['agent-class', 'architecture', 'encrypted-seed', 'extras', 'l402',
-//    'lightning', 'spark-invoices', 'tokens', 'wallet']
+//    'lightning', 'recovery-scenarios', 'security', 'spark-invoices',
+//    'tokens', 'unilateral-exit', 'wallet']
 const l402Doc = await getReference("l402");
 ```
 
@@ -77,6 +79,15 @@ import { saveEncryptedMnemonic, loadMnemonicFromEnv } from "sparkbtcbot";
 
 await saveEncryptedMnemonic({ mnemonic, passphrase, path: "./seed.enc" });
 const decrypted = await loadMnemonicFromEnv(); // reads SPARK_PASSPHRASE
+```
+
+And the unilateral-exit backup (the "leaf-vault") via its subpath export:
+
+```javascript
+import { enableLeafVault, snapshotLeafVault, verifyVault } from "sparkbtcbot/leaf-vault";
+
+const vault = enableLeafVault(wallet); // auto-refreshing recovery bundle
+// ... later: await vault.dispose();   // flushes a final snapshot if needed
 ```
 
 The package has zero runtime dependencies beyond Node 18+ built-ins.

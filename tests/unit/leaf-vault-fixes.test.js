@@ -54,13 +54,19 @@ describe("integrity CONTENT gate (M-1)", () => {
   });
 });
 
+// Real SDK getBalance shape: the top-level `balance` is a deprecated alias for
+// AVAILABLE; owned (which includes leaves locked in in-flight transfers/swaps)
+// lives in satsBalance. Mocks MUST use this shape — a mock that omits `balance`
+// certifies an owned-first ordering the production code might not have.
+const mkBalance = (owned, available = owned) => ({ balance: available, satsBalance: { available, owned, incoming: 0n } });
+
 // M-2 — a transient empty getLeaves() must not atomically clobber a good vault.
 describe("transient empty getLeaves guard (M-2)", () => {
-  const mockWallet = (leaves, balance) => ({
+  const mockWallet = (leaves, owned) => ({
     leafManager: { getLeaves: async () => leaves },
     connectionManager: { createSparkClient: async () => ({}) },
     config: { getCoordinatorAddress: () => "coord" },
-    getBalance: async () => ({ balance }),
+    getBalance: async () => mkBalance(owned),
   });
   const goodBundle = { schema: "spark.unilateral-exit-bundle.v1", createdAt: "2026-07-09T00:00:00.000Z", network: "LOCAL", leaves: [{ id: "leaf1", valueSats: 200000, treeNodeHex: "0a020102" }] };
   it("does NOT clobber a good bundle when getLeaves is empty but balance > 0", async () => {
@@ -86,13 +92,15 @@ describe("transient empty getLeaves guard (M-2)", () => {
     try {
       await atomicWriteJson(p, goodBundle); // prior complete bundle
       // getLeaves transiently empty, but the wallet OWNS funds locked in an in-flight
-      // transfer: owned=200000, available=0. Must be treated as transient-empty (keep
-      // the prior bundle), proving the balance check reads `owned`, not `available`.
+      // transfer: owned=200000, available=0 — and, like the real SDK, the deprecated
+      // top-level `balance` mirrors AVAILABLE (0). Must be treated as transient-empty
+      // (keep the prior bundle): an available-first read would see 0 and call this a
+      // genuinely empty wallet.
       const wallet = {
         leafManager: { getLeaves: async () => [] },
         connectionManager: { createSparkClient: async () => ({}) },
         config: { getCoordinatorAddress: () => "coord" },
-        getBalance: async () => ({ satsBalance: { owned: 200000n, available: 0n } }),
+        getBalance: async () => mkBalance(200000n, 0n),
       };
       const r = await snapshotLeafVault(wallet, { path: p, networkLabel: "LOCAL" });
       expect(r.skipped).toBe("transient-empty-getLeaves"); // owned>0 -> not a genuine empty
@@ -130,11 +138,11 @@ describe("partial getLeaves shrink guard", () => {
     schema: "spark.unilateral-exit-bundle.v1", createdAt: "2026-07-09T00:00:00.000Z", network: "LOCAL",
     leaves: [{ id: "leaf1", valueSats: 100000, treeNodeHex: "0a020102" }, { id: "leaf2", valueSats: 100000, treeNodeHex: "0a020102" }],
   });
-  const mockWallet = (leaves, balance) => ({
+  const mockWallet = (leaves, owned, available = owned) => ({
     leafManager: { getLeaves: async () => leaves },
     connectionManager: { createSparkClient: async () => ({}) },
     config: { getCoordinatorAddress: () => "coord" },
-    getBalance: async () => ({ balance }),
+    getBalance: async () => mkBalance(owned, available),
   });
 
   it("KEEPS the complete 2-leaf bundle when getLeaves drops a leaf but balance still covers both", async () => {
@@ -168,6 +176,21 @@ describe("partial getLeaves shrink guard", () => {
       expect((await readVault(p)).leaves.map((l) => l.id)).toEqual(["leaf1", "leaf2"]);
     } finally { await rm(p, { force: true }); }
   });
+
+  it("KEEPS the complete bundle when the dropped leaf is LOCKED, not spent (owned covers it, available does not)", async () => {
+    // leaf2 is locked in an in-flight transfer: getLeaves (available-only) drops
+    // it and `available` no longer counts it, but `owned` still does. Judging on
+    // available would call this a legitimate spend and overwrite leaf2's only
+    // exit material; judging on owned correctly blocks the shrink.
+    const p = uniq("lv-shrink-locked") + ".json";
+    try {
+      await writePriorTwo(p);
+      await expect(
+        snapshotLeafVault(mockWallet([leafObj("leaf1", 100000n)], 200000n, 100000n), { path: p, networkLabel: "LOCAL" }),
+      ).rejects.toThrow(/partial getLeaves|prior bundle KEPT/i);
+      expect((await readVault(p)).leaves.map((l) => l.id)).toEqual(["leaf1", "leaf2"]);
+    } finally { await rm(p, { force: true }); }
+  });
 });
 
 // Flush-on-dispose: an ENABLED vault must leave a fresh bundle when a short-lived
@@ -175,7 +198,7 @@ describe("partial getLeaves shrink guard", () => {
 // (no leaf change) must NOT pay for a redundant snapshot on the way out.
 describe("leaf-vault flush-on-dispose (dirty tracking)", () => {
   const leaf = (id) => ({ id, status: "AVAILABLE", nodeTx: Uint8Array.from([1, 2, 3]), refundTx: Uint8Array.from([4, 5, 6]) });
-  const mkWallet = (onGetLeaves, balance) => {
+  const mkWallet = (onGetLeaves, owned) => {
     const ee = new EventEmitter();
     return {
       on: (ev, cb) => ee.on(ev, cb),
@@ -184,7 +207,7 @@ describe("leaf-vault flush-on-dispose (dirty tracking)", () => {
       leafManager: { getLeaves: async () => onGetLeaves() },
       connectionManager: { createSparkClient: async () => ({}) },
       config: { getCoordinatorAddress: () => "coord" },
-      getBalance: async () => ({ balance }),
+      getBalance: async () => mkBalance(owned),
     };
   };
 

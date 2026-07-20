@@ -37,9 +37,6 @@ export function saveEncryptedMnemonic(
  */
 export function loadMnemonic(options: LoadMnemonicOptions): Promise<string>;
 
-/** Alias for loadMnemonic, symmetric with saveEncryptedMnemonic. */
-export const loadEncryptedMnemonic: typeof loadMnemonic;
-
 export interface LoadMnemonicFromEnvOptions {
   /**
    * If true (default), `process.env.SPARK_PASSPHRASE` is deleted immediately
@@ -52,8 +49,10 @@ export interface LoadMnemonicFromEnvOptions {
 
 /**
  * Convenience wrapper: reads SPARK_PASSPHRASE from env (and optional
- * SPARK_SEED_PATH override) and decrypts the seed. Throws if SPARK_PASSPHRASE
- * is unset.
+ * SPARK_SEED_PATH override) and decrypts the seed.
+ * Throws { code: "NO_PASSPHRASE" } if SPARK_PASSPHRASE is unset — including
+ * when a previous call in this process already read and (by default) cleared
+ * it; the message distinguishes the two.
  */
 export function loadMnemonicFromEnv(
   options?: LoadMnemonicFromEnvOptions,

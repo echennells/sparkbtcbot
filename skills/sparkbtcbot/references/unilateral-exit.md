@@ -42,7 +42,10 @@ a written bundle is a recoverable one.
 
 Point Blink's tool at your bundle plus a destination address, and fund its CPFP fee
 inputs; follow its `docs/recovery-runbook.md` and withdraw guide. Verify your bundle
-any time with `node skills/sparkbtcbot/scripts/leaf-vault.js verify`.
+any time with `npm run leaf-vault -- verify` (exit codes: 0 = ok or nothing to back
+up, 1 = broken bundle or funded wallet with no backup, 2 = indeterminate). If
+snapshots fail persistently — or the SDK reach-in breaks — a `BROKEN` file is
+written beside `current.json`; treat its presence as "no fresh backup".
 
 ## What to expect (from Blink's real mainnet exit)
 

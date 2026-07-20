@@ -13,7 +13,7 @@ The `SparkAgent` class exposes these (all `async` unless noted); full signatures
 - **Spark invoices** — `createSparkInvoice(amountSats, memo)`
 - **L402 paywalls** — `fetchL402(url, options)`, `previewL402(url)`
 - **Message signing** — `signMessage(text)`, `verifyOwnSignature(text, signature)`
-- **Events & lifecycle** (sync) — `onTransferReceived(cb)`, `onDepositConfirmed(cb)`, `cleanup()`
+- **Events & lifecycle** — `onTransferReceived(cb)` (sync), `onDepositConfirmed(cb)` (sync), `vaultHealth()` (sync), `await cleanup()`
 - **Static factory** — `SparkAgent.create(mnemonic, network)` → `{ agent, mnemonic }`
 
 ```javascript
@@ -47,7 +47,7 @@ function invoiceAmountSats(bolt11) {
 export class SparkAgent {
   #wallet;
   #network;
-  #vaultDisposer = null;
+  #vault = null;
 
   constructor(wallet, network) {
     this.#wallet = wallet;
@@ -56,9 +56,10 @@ export class SparkAgent {
     // if the Spark operators go offline — snapshots on boot and on every leaf
     // change (send/receive/deposit) plus a refresh safety timer. Reaches the SDK's
     // protected leaf internals; fails loud (logged, non-fatal) if they move.
-    // Opt out with SPARK_LEAF_VAULT=off. See references/unilateral-exit.md.
-    if (process.env.SPARK_LEAF_VAULT !== "off") {
-      this.#vaultDisposer = enableLeafVault(wallet, { networkLabel: network }); // from ./leaf-vault.js
+    // Opt out with SPARK_LEAF_VAULT set to off/false/0/no. See references/unilateral-exit.md.
+    const flag = String(process.env.SPARK_LEAF_VAULT ?? "").trim().toLowerCase();
+    if (!["off", "false", "0", "no"].includes(flag)) {
+      this.#vault = enableLeafVault(wallet, { networkLabel: network }); // from ./leaf-vault.js
     }
   }
 
@@ -67,7 +68,18 @@ export class SparkAgent {
       mnemonicOrSeed: mnemonic,
       options: { network },
     });
-    return { agent: new SparkAgent(wallet, network), mnemonic: generated };
+    const agent = new SparkAgent(wallet, network);
+    // Surface a broken recovery backup LOUDLY at startup instead of the silent
+    // console.error default — the wallet still works, but the operator is told.
+    const vaultReady = await agent.#vault?.ready;
+    if (vaultReady && !vaultReady.ok) {
+      console.warn(
+        `⚠️  leaf-vault backup is NOT active: ${vaultReady.error}\n` +
+        `   The wallet works, but UNILATERAL EXIT may be impossible until this is fixed.\n` +
+        `   Set SPARK_LEAF_VAULT=off to silence, or see references/unilateral-exit.md.`,
+      );
+    }
+    return { agent, mnemonic: generated };
   }
 
   // Outbound allowlist gate. Reads ~/.spark/recipients.allow on every send.
@@ -254,13 +266,18 @@ export class SparkAgent {
     });
     // Total exit fee = userFee + l1BroadcastFee for the speed. Ceiling: reject an
     // exit whose fee exceeds maxFeePct (default 10%) of the amount or an absolute
-    // maxFeeSats — legibly refusing uneconomical small withdrawals. Unreadable
-    // quote => proceed (defer to the SDK) rather than block a valid withdrawal.
+    // maxFeeSats — legibly refusing uneconomical small withdrawals.
     const fee = withdrawalTotalFee(quote, speed);
     const pctCap = Number.isFinite(Number(maxFeePct)) ? Math.ceil((Number(amount) * Number(maxFeePct)) / 100) : Infinity;
     const absCap = Number.isFinite(Number(maxFeeSats)) ? Number(maxFeeSats) : Infinity;
     const cap = Math.min(pctCap, absCap);
-    const check = checkFeeAgainstCap(fee, cap);
+    // Unlike the Lightning/L402/claim paths — which hand the SDK a SERVER-enforced
+    // maxFee — the executed withdraw binds to `feeQuote` below. So an UNREADABLE quote
+    // means we cannot confirm the fee is within the ceiling; fail CLOSED rather than
+    // defer to an SDK cap that does not exist for this path.
+    const check = (fee == null && Number.isFinite(cap))
+      ? { ok: false, fee: null, cap, reason: `fee quote is unreadable — cannot verify it is within the ${cap}-sat ceiling` }
+      : checkFeeAgainstCap(fee, cap);
     if (dryRun) {
       return {
         dryRun: true,
@@ -279,13 +296,19 @@ export class SparkAgent {
       };
     }
     if (!check.ok) {
-      const pct = ((check.fee / Number(amount)) * 100).toFixed(1);
-      throw new Error(`Withdrawal blocked: ${check.reason} (${pct}% of the ${amount}-sat exit). Raise maxFeeSats/maxFeePct to override.`);
+      const detail = check.fee != null
+        ? ` (${((check.fee / Number(amount)) * 100).toFixed(1)}% of the ${amount}-sat exit). Raise maxFeeSats/maxFeePct to override.`
+        : `. Re-fetch the quote or check the SDK CoopExitFeeQuote shape.`;
+      throw new Error(`Withdrawal blocked: ${check.reason}${detail}`);
     }
+    // Bind the executed exit to the SAME quote we just vetted: the SDK derives
+    // feeAmountSats + feeQuoteId from `feeQuote`, so the operator charges the quoted
+    // fee we checked rather than re-pricing at broadcast (closes the TOCTOU gap).
     return await this.#wallet.withdraw({
       onchainAddress: to,
       exitSpeed: speed,
       amountSats: amount,
+      feeQuote: quote,
     });
   }
 
@@ -385,9 +408,15 @@ export class SparkAgent {
     this.#wallet.on("deposit:confirmed", callback);
   }
 
-  cleanup() {
-    this.#vaultDisposer?.(); // stop the leaf-vault snapshotter
-    this.#wallet.cleanup();
+  // Recovery-backup health: { healthy, lastSuccessAt, consecutiveFailures,
+  // consecutiveTransientSkips, lastError }, or { disabled: true } when opted out.
+  vaultHealth() {
+    return this.#vault?.health?.() ?? { disabled: true };
+  }
+
+  async cleanup() {
+    await this.#vault?.dispose?.(); // first: flushes a final snapshot if a leaf change is uncaptured
+    await this.#wallet.cleanup();
   }
 }
 
@@ -403,7 +432,7 @@ console.log("Address:", identity.address);
 const { sats } = await agent.getBalance();
 console.log("Balance:", sats.toString(), "sats");
 
-agent.cleanup();
+await agent.cleanup(); // flushes a final recovery-bundle snapshot if needed
 ```
 
 A working file lives at `skills/sparkbtcbot/scripts/spark-agent.js` — runnable via `npm run example:agent`.
