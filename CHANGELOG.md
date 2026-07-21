@@ -35,6 +35,8 @@
 - A second `loadMnemonicFromEnv()` call in one process threw a misleading "SPARK_PASSPHRASE not set" after the first call cleared the env var; both cases now throw `code: "NO_PASSPHRASE"` with an explanatory message.
 - `references/agent-class.md` shipped a pre-review vault integration whose `cleanup()` threw a `TypeError` at runtime and a `withdraw()` missing the fee-quote binding/fail-closed fixes; the reference now mirrors the shipped `SparkAgent`.
 
+- **Phantom `dryRun` on the raw SDK — incident-driven fix.** A deployed bot passed `dryRun: true` to raw `wallet.transfer()`; the SDK has no such option, JS silently dropped it, and the "preview" call **sent real sats** (both calls sent; funds reached the intended address). Three-layer fix: SKILL.md scopes `dryRun` to the `SparkAgent` wrapper and warns that raw `wallet.*` money calls silently ignore unknown keys AND bypass the allowlist/fee guards; `references/wallet.md`'s transfer section carries the same warning inline; and `SparkAgent`'s money-moving methods (`transfer`, `transferTokens`, `withdraw`, `claimDeposit`, `payLightningInvoice`) now **throw on unknown option keys**, so a mistyped flag fails loudly instead of silently spending. New skill eval (id 9) pins the behavior.
+
 ### Removed
 
 - `loadEncryptedMnemonic` (unused alias of `loadMnemonic`) and the dead `operatorSet`/`appVersion` snapshot options.

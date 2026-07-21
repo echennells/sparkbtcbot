@@ -23,6 +23,40 @@ describe("SparkAgent SPARK_LEAF_VAULT opt-out normalization (L-3)", () => {
   }
 });
 
+// A phantom/mistyped option on a money-moving call must THROW, not silently
+// vanish — the failure class behind a real double-send (dryRun passed to the
+// raw SDK, which has no such option). Wrapper strictness makes it loud.
+describe("SparkAgent rejects unknown options on money-moving calls", () => {
+  const agent = () => {
+    process.env.SPARK_LEAF_VAULT = "off"; // vault not under test here
+    return new SparkAgent({ getSparkAddress: async () => "sp1from" }, "LOCAL");
+  };
+  const orig = process.env.SPARK_LEAF_VAULT;
+  afterEach(() => { if (orig === undefined) delete process.env.SPARK_LEAF_VAULT; else process.env.SPARK_LEAF_VAULT = orig; });
+
+  it("throws on a mistyped dryRun (e.g. lowercase 'dryrun') instead of sending", async () => {
+    await expect(agent().transfer({ to: "sp1dest", amount: 1000n, dryrun: true }))
+      .rejects.toThrow(/unknown option.*dryrun/i);
+  });
+
+  for (const [method, args] of [
+    ["transfer", [{ to: "sp1dest", amount: 1n, bogus: 1 }]],
+    ["transferTokens", [{ tokenIdentifier: "btkn1x", amount: 1n, to: "sp1dest", bogus: 1 }]],
+    ["withdraw", [{ to: "bc1qdest", amount: 30000, bogus: 1 }]],
+    ["claimDeposit", [{ txid: "ab".repeat(32), bogus: 1 }]],
+    ["payLightningInvoice", ["lnbc1...", { maxFeeSats: 10, bogus: 1 }]],
+  ]) {
+    it(`${method} rejects unknown option keys`, async () => {
+      await expect(agent()[method](...args)).rejects.toThrow(/unknown option.*bogus/i);
+    });
+  }
+
+  it("still accepts the REAL dryRun spelling (preview returns without sending)", async () => {
+    const preview = await agent().transfer({ to: "sp1dest", amount: 1000n, dryRun: true });
+    expect(preview).toMatchObject({ dryRun: true, operation: "spark_transfer", amount: "1000" });
+  });
+});
+
 describe("SparkAgent enabled path (auto-vault through the agent surface)", () => {
   const origFlag = process.env.SPARK_LEAF_VAULT;
   const origPath = process.env.SPARK_LEAF_VAULT_PATH;

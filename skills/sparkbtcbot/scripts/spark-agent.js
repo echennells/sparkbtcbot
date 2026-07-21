@@ -29,6 +29,21 @@ function invoiceAmountSats(bolt11) {
   }
 }
 
+// A mistyped or phantom option on a money-moving call must THROW, not vanish:
+// JS silently drops unknown destructured keys, so a flag that reads as a guard
+// in review can be a no-op at runtime (a bot double-sent real sats by passing
+// `dryRun` to the raw SDK, which has no such option). Strictness here makes
+// that whole failure class loud at the wrapper layer.
+function rejectUnknownOptions(method, rest) {
+  const unknown = Object.keys(rest);
+  if (unknown.length) {
+    throw new Error(
+      `SparkAgent.${method}: unknown option(s) [${unknown.join(", ")}] — refusing a money-moving call ` +
+      `with options that would be silently ignored. Check the spelling against references/agent-class.md.`,
+    );
+  }
+}
+
 export class SparkAgent {
   #wallet;
   #network;
@@ -127,7 +142,8 @@ export class SparkAgent {
   // Allowlist enforcement applies in BOTH modes (so dry-runs can't be used
   // to silently confirm a send to a disallowed address).
 
-  async transfer({ to, amount, dryRun = false }) {
+  async transfer({ to, amount, dryRun = false, ...rest }) {
+    rejectUnknownOptions("transfer", rest);
     await this.#assertAllowed(to);
     if (dryRun) {
       return {
@@ -168,7 +184,8 @@ export class SparkAgent {
   // so the allowlist (which targets Spark/L1 addresses) does not apply here
   // — confirm the invoice's amount and decoded payee with the operator
   // before paying when stakes warrant it.
-  async payLightningInvoice(bolt11, { maxFeeSats, amountSats, maxAmountSats = 10_000, dryRun = false } = {}) {
+  async payLightningInvoice(bolt11, { maxFeeSats, amountSats, maxAmountSats = 10_000, dryRun = false, ...rest } = {}) {
+    rejectUnknownOptions("payLightningInvoice", rest);
     const est = await this.#wallet.getLightningSendFeeEstimate({
       encodedInvoice: bolt11,
       amountSats,
@@ -243,7 +260,8 @@ export class SparkAgent {
 
   // --- Tokens ---
 
-  async transferTokens({ tokenIdentifier, amount, to, dryRun = false }) {
+  async transferTokens({ tokenIdentifier, amount, to, dryRun = false, ...rest }) {
+    rejectUnknownOptions("transferTokens", rest);
     await this.#assertAllowed(to);
     if (dryRun) {
       return {
@@ -283,7 +301,8 @@ export class SparkAgent {
   // SDK's own guardrail — no client-side gross-amount lookup needed (and none is
   // possible: getUtxosForDepositAddress returns only { txid, vout }). dryRun
   // previews the credited amount from the quote without claiming.
-  async claimDeposit({ txid, vout = 0, maxFeeSats = 5000, dryRun = false }) {
+  async claimDeposit({ txid, vout = 0, maxFeeSats = 5000, dryRun = false, ...rest }) {
+    rejectUnknownOptions("claimDeposit", rest);
     if (dryRun) {
       const quote = await this.#wallet.getClaimStaticDepositQuote(txid, vout);
       const credit = Number(quote?.creditAmountSats);
@@ -315,7 +334,8 @@ export class SparkAgent {
 
   // Cooperative exit back to L1 Bitcoin. Allowlist applies to `to` (L1 BTC
   // address). dryRun returns the fee quote without broadcasting.
-  async withdraw({ to, amount, speed = "MEDIUM", maxFeeSats, maxFeePct = 10, dryRun = false }) {
+  async withdraw({ to, amount, speed = "MEDIUM", maxFeeSats, maxFeePct = 10, dryRun = false, ...rest }) {
+    rejectUnknownOptions("withdraw", rest);
     await this.#assertAllowed(to);
     const quote = await this.#wallet.getWithdrawalFeeQuote({
       amountSats: amount,
