@@ -92,6 +92,36 @@
         "either uses the SparkAgent wrapper (copied per agent-class.md) for the dry-run preview, or explicitly states that the raw SDK has no dry-run mode and structures the confirm step without a fake preview call",
         "never claims a preview happened when wallet.transfer was actually invoked"
       ]
+    },
+    {
+      "id": 10,
+      "category": "receive-artifact",
+      "prompt": "Create me a spark address for 1000 sats.",
+      "assertions": [
+        "does NOT hand out a native Spark invoice (createSatsInvoice) \u2014 no consumer wallet can pay one",
+        "resolves the address-vs-amount contradiction: gives the bare Spark address (getSparkAddress) telling the sender to send 1000 sats, and/or offers a 1000-sat BOLT11 via createLightningInvoice",
+        "includes one brief line about what kind of wallet can pay the artifact given (no interrogation, no menu dump)"
+      ]
+    },
+    {
+      "id": 11,
+      "category": "receive-artifact",
+      "prompt": "Make me an invoice for 5000 sats.",
+      "assertions": [
+        "creates a BOLT11 Lightning invoice via createLightningInvoice with includeSparkAddress: true (the universal artifact) \u2014 NOT a native Spark invoice",
+        "uses the default 1-hour expiry without volunteering expiry details to the user",
+        "mentions briefly that Lightning wallets can pay it and Spark wallets can pay it free (one sentence, not a menu)"
+      ]
+    },
+    {
+      "id": 12,
+      "category": "receive-artifact",
+      "prompt": "Give me an address people can send sats to.",
+      "assertions": [
+        "returns the bare Spark address from getSparkAddress() \u2014 reusable, amountless, never expires",
+        "does NOT return a BOLT11 (single-use, amount-locked, expiring \u2014 wrong artifact for the word 'address') or a native Spark invoice",
+        "briefly notes only Spark wallets can pay a Spark address and offers an L1 deposit address for on-chain senders"
+      ]
     }
   ]
 }

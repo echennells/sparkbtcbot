@@ -66,6 +66,24 @@ These rules apply whenever this skill is active. They are not optional — the m
 - **DO NOT silently embed a generated mnemonic in code.** When `SparkWallet.initialize()` or the setup script returns a fresh mnemonic, surface it to the user once with explicit instructions to save it offline, then drop it from working context.
 - **If you think a mnemonic or passphrase has been exposed in this conversation,** stop and tell the user before doing anything else. Do not attempt to "clean up" by generating a new wallet or sweeping funds without explicit user instruction.
 
+## Receiving: which artifact to hand out
+
+A Spark wallet can be paid five different ways, and most payers can only use some of them. When the user asks to "receive", "get an invoice", "make an address", etc., pick by these rules — do NOT open with a questionnaire; hand out the right default plus one sentence of alternatives.
+
+| User's word / situation | Give them | Who can pay it |
+|---|---|---|
+| "invoice", "payment request", or any amount-bearing ask | **BOLT11 Lightning invoice** via `createLightningInvoice` with `includeSparkAddress: true` | Any Lightning wallet (fees on the sender, ~0.15%); Spark wallets pay it free via the embedded fallback |
+| "address" (no amount semantics) | **Bare Spark address** from `getSparkAddress()` | Spark wallets only (incl. Xverse); reusable, amountless, never expires |
+| Payer is known to be another Spark-SDK agent | Native Spark invoice (`createSatsInvoice`) is fine | Only code calling `fulfillSparkInvoice` |
+| Payer is on-chain / amount is large | L1 static deposit address | Any Bitcoin wallet; small amounts are fee-dominated |
+
+Rules:
+
+- **Never hand out a native Spark invoice by default.** It is address-*shaped* (same `spark1…` prefix as a bare address, ~3× longer) but **no consumer wallet can pay it** — only Spark-SDK code via `fulfillSparkInvoice`. Handing one to a human whose wallet is Xverse/Lightning/on-chain produces an unpayable string. This is a real incident, not a hypothetical.
+- "Address **for N sats**" is self-contradictory (addresses are amountless). Give the bare address plus "have the sender send N sats to it", or a BOLT11 for N sats if the payer uses Lightning — never the native invoice.
+- Attach ONE compact alternatives line to whatever you hand out (e.g. "any Lightning wallet can pay this; if the payer is on Spark they can instead send free to your address, and I can give an L1 address for on-chain"). No menu dumps, no interrogation.
+- **Lightning invoice expiry: default 1 hour** (`expirySeconds: 3600`, the wrapper's default). Don't mention the expiry unprompted — but when the user's ask implies a different lifetime ("for my tip page", "valid for a week") or they ask directly, set `expirySeconds` accordingly.
+
 ## What is Spark
 
 Spark is a recently launched Bitcoin Layer 2 that lets you send and receive Bitcoin instantly with low fees. Spark-to-Spark transfers are free; Lightning interop costs 0.15–0.25%. Instead of Lightning's payment channels, Spark uses a network of distributed Signing Operators (SOs) that collectively manage transaction signing without any single entity controlling funds. Fully self-custodial (you hold your own keys), fully interoperable with Lightning. It is **not** fully trustless, though — the trust and withdrawal caveats are in the next section.
