@@ -198,12 +198,13 @@ export class SparkAgent {
   // an estimated routing fee without paying.
   async payLightningInvoice(bolt11, { maxFeeSats, amountSats, maxAmountSats = 10_000, dryRun = false, ...rest } = {}) {
     rejectUnknownOptions("payLightningInvoice", rest);
+    const invoiceAmt = invoiceAmountSats(bolt11); // embedded amount; undefined for amountless/undecodable
     const est = await this.#wallet.getLightningSendFeeEstimate({
       encodedInvoice: bolt11,
       amountSats,
     });
     const estimatedFee = lightningEstimateSats(est);
-    const amt = amountSats ?? invoiceAmountSats(bolt11);
+    const amt = amountSats ?? invoiceAmt;
     // Fee cap: amount-aware (0.5% of amount, min 10 sats) — replaces the old flat
     // 10 that silently rejected sends over ~4,000 sats. Explicit maxFeeSats wins.
     const cap = maxFeeSats ?? lightningFeeCap({ amountSats: amt, estimatedFeeSats: estimatedFee });
@@ -234,10 +235,14 @@ export class SparkAgent {
       const hint = !amtCheck.ok ? "Raise maxAmountSats" : "Raise maxFeeSats";
       throw new Error(`Lightning send blocked: ${reason}. ${hint} to override.`);
     }
+    // The SDK REQUIRES amountSatsToSend for a zero-amount invoice and REJECTS it
+    // for an invoice that carries one — forward the caller's amount only in the
+    // amountless case.
     return await this.#wallet.payLightningInvoice({
       invoice: bolt11,
       maxFeeSats: cap,
       preferSpark: true,
+      ...(invoiceAmt === undefined && amountSats !== undefined ? { amountSatsToSend: amountSats } : {}),
     });
   }
 
