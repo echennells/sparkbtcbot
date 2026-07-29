@@ -125,7 +125,7 @@ export function lightningEstimateSats(
 export interface LightningFeeCapOptions {
   amountSats?: number;
   estimatedFeeSats?: number;
-  /** Minimum cap in sats (default 10). */
+  /** Minimum cap in sats (default 25 — Spark's flat fee component alone can hit 25 on small sends). */
   floorSats?: number;
   /** Cap as basis points of the amount (default 50 = 0.50%). */
   rateBps?: number;
@@ -162,6 +162,56 @@ export interface L402AmountCheck {
 
 /** Bound an inbound-invoice payment amount (distinct from the routing-fee cap). */
 export function checkL402Amount(options: L402AmountCheckOptions): L402AmountCheck;
+
+export interface InvoiceQuoteCheckOptions {
+  /** Decoded invoice amount in sats. */
+  amountSats?: number | null;
+  /** The price the merchant quoted, in sats. */
+  quotedSats?: number | null;
+  /** Absolute ceiling on the invoice amount, enforced on top of the quote. */
+  maxAmountSats?: number;
+  /** Allowed |invoice - quote| drift in basis points (default 200 = 2%). */
+  toleranceBps?: number;
+}
+
+export interface InvoiceQuoteCheck {
+  ok: boolean;
+  amountSats: number | null;
+  quotedSats: number | null;
+  cap: number | null;
+  reason: string;
+}
+
+/**
+ * Pin a checkout invoice to the merchant's quoted price before paying (the
+ * commerce counterpart of checkL402Amount). `ok:false` => do not pay.
+ */
+export function checkInvoiceAgainstQuote(
+  options: InvoiceQuoteCheckOptions,
+): InvoiceQuoteCheck;
+
+/**
+ * Operator-present fee cap: the amount-scaled cap, but never below the live
+ * estimate plus headroom. Unattended agents should prefer the wrapper's
+ * refuse-legibly behavior instead.
+ */
+export function estimateFirstFeeCap(options: {
+  amountSats?: number | null;
+  estimatedFeeSats?: number | null;
+  headroomSats?: number;
+}): number;
+
+/** Invoice's embedded amount in whole sats; null for amountless/undecodable. */
+export function decodeInvoiceSats(bolt11: string): number | null;
+
+/** Invoice's payment hash (lowercase hex); null when undecodable. */
+export function invoicePaymentHash(bolt11: string): string | null;
+
+/** True when the invoice's payment hash equals the checkout's echoed one. */
+export function paymentHashMatches(
+  bolt11: string,
+  expectedPaymentHash: string | null | undefined,
+): boolean;
 
 /** Total cooperative-exit fee (userFee + l1BroadcastFee) for a speed; null if unreadable. */
 export function withdrawalTotalFee(

@@ -1,10 +1,12 @@
 import { describe, it, expect } from "vitest";
 import {
   satsFromCurrencyAmount,
+  estimateFirstFeeCap,
   lightningEstimateSats,
   lightningFeeCap,
   checkFeeAgainstCap,
   checkL402Amount,
+  checkInvoiceAgainstQuote,
   withdrawalTotalFee,
 } from "../../lib/fee-guards.js";
 
@@ -39,22 +41,25 @@ describe("satsFromCurrencyAmount", () => {
 });
 
 describe("lightningFeeCap", () => {
-  it("scales with amount (0.5% default) so large sends are NOT capped at 10", () => {
+  it("scales with amount (0.5% default) so large sends are NOT capped at the floor", () => {
     // The old flat-10 default rejected anything over ~4,000 sats. Amount-aware
     // fixes exactly that: a 100k-sat send gets a 500-sat cap, not 10.
     expect(lightningFeeCap({ amountSats: 100_000 })).toBe(500);
     expect(lightningFeeCap({ amountSats: 10_000 })).toBe(50);
   });
-  it("floors at 10 sats for tiny payments", () => {
-    expect(lightningFeeCap({ amountSats: 100 })).toBe(10);
-    expect(lightningFeeCap({ amountSats: 1 })).toBe(10);
+  it("floors at 25 sats so Spark's flat fee component clears on small/mid sends", () => {
+    // Live regression: a 4,464-sat payment carried a 25-sat SDK fee estimate;
+    // the pure 0.5% cap (23) under-capped it and the SDK refused the send.
+    expect(lightningFeeCap({ amountSats: 4_464 })).toBe(25);
+    expect(lightningFeeCap({ amountSats: 100 })).toBe(25);
+    expect(lightningFeeCap({ amountSats: 1 })).toBe(25);
   });
   it("falls back to estimate + 50% when the amount is unknown", () => {
     expect(lightningFeeCap({ estimatedFeeSats: 40 })).toBe(60);
   });
   it("drops to the floor only when amount AND estimate are both unknown", () => {
-    expect(lightningFeeCap({})).toBe(10);
-    expect(lightningFeeCap({ amountSats: 0 })).toBe(10);
+    expect(lightningFeeCap({})).toBe(25);
+    expect(lightningFeeCap({ amountSats: 0 })).toBe(25);
   });
   it("honors custom floor/rate", () => {
     expect(lightningFeeCap({ amountSats: 100_000, rateBps: 25 })).toBe(250);
@@ -98,6 +103,77 @@ describe("checkL402Amount", () => {
   });
   it("defers when no cap is set", () => {
     expect(checkL402Amount({ amountSats: 999_999 })).toMatchObject({ ok: true, cap: null });
+  });
+});
+
+describe("estimateFirstFeeCap", () => {
+  it("returns the amount-scaled cap when the estimate fits under it", () => {
+    expect(estimateFirstFeeCap({ amountSats: 100_000, estimatedFeeSats: 300 })).toBe(500);
+  });
+  it("adopts estimate + headroom when the live estimate exceeds the cap (operator-present posture)", () => {
+    // The live eSIM case: 4,464-sat send, 25-sat estimate, cap floor 25 -> 30.
+    expect(estimateFirstFeeCap({ amountSats: 4_464, estimatedFeeSats: 25 })).toBe(30);
+    expect(estimateFirstFeeCap({ amountSats: 4_464, estimatedFeeSats: 25, headroomSats: 10 })).toBe(35);
+  });
+  it("falls back to the plain cap when the estimate is unreadable", () => {
+    expect(estimateFirstFeeCap({ amountSats: 4_464 })).toBe(25);
+    expect(estimateFirstFeeCap({ amountSats: 4_464, estimatedFeeSats: NaN })).toBe(25);
+  });
+});
+
+describe("checkInvoiceAgainstQuote", () => {
+  it("passes an invoice that exactly matches the quote", () => {
+    expect(
+      checkInvoiceAgainstQuote({ amountSats: 7_150, quotedSats: 7_150 }),
+    ).toMatchObject({ ok: true, reason: "matches quote" });
+  });
+  it("absorbs fiat->sats drift inside the default 2% tolerance", () => {
+    expect(
+      checkInvoiceAgainstQuote({ amountSats: 7_250, quotedSats: 7_150 }),
+    ).toMatchObject({ ok: true });
+  });
+  it("blocks a tampered invoice beyond tolerance, with both numbers in the reason", () => {
+    const r = checkInvoiceAgainstQuote({ amountSats: 71_500, quotedSats: 7_150 });
+    expect(r.ok).toBe(false);
+    expect(r.reason).toContain("71500");
+    expect(r.reason).toContain("7150");
+  });
+  it("blocks drift in BOTH directions (an underpaying invoice buys a failed order)", () => {
+    expect(
+      checkInvoiceAgainstQuote({ amountSats: 5_000, quotedSats: 7_150 }).ok,
+    ).toBe(false);
+  });
+  it("enforces the absolute cap even when the invoice matches the quote", () => {
+    // A bad/inflated quote must not authorize an unbounded invoice.
+    const r = checkInvoiceAgainstQuote({
+      amountSats: 900_000,
+      quotedSats: 900_000,
+      maxAmountSats: 50_000,
+    });
+    expect(r.ok).toBe(false);
+    expect(r.reason).toContain("exceeds cap");
+  });
+  it("FAILS CLOSED on an amountless invoice when there is a quote or cap to enforce", () => {
+    expect(
+      checkInvoiceAgainstQuote({ amountSats: null, quotedSats: 7_150 }).ok,
+    ).toBe(false);
+    expect(
+      checkInvoiceAgainstQuote({ amountSats: null, maxAmountSats: 10_000 }).ok,
+    ).toBe(false);
+  });
+  it("defers only when there is neither quote nor cap (nothing to enforce)", () => {
+    expect(checkInvoiceAgainstQuote({ amountSats: 7_150 })).toMatchObject({ ok: true });
+    expect(checkInvoiceAgainstQuote({})).toMatchObject({ ok: true });
+  });
+  it("treats a zero/garbage quote as no quote, not division-by-zero", () => {
+    expect(
+      checkInvoiceAgainstQuote({ amountSats: 500, quotedSats: 0, maxAmountSats: 1_000 }),
+    ).toMatchObject({ ok: true, quotedSats: null, reason: "within cap; no quote to compare" });
+  });
+  it("honors a custom tolerance", () => {
+    expect(
+      checkInvoiceAgainstQuote({ amountSats: 7_250, quotedSats: 7_150, toleranceBps: 100 }).ok,
+    ).toBe(false);
   });
 });
 
