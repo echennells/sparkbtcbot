@@ -35,9 +35,11 @@ For zero-amount invoices, also pass `amountSats`.
 ```javascript
 const result = await wallet.payLightningInvoice({
   invoice: "lnbc...",
-  maxFeeSats: 25,     // size to the payment — Spark→Lightning is ~0.25%, so a
-                      // flat 10 silently rejects any send over ~4,000 sats.
-                      // Rule of thumb: max(10, ceil(amountSats * 0.005)).
+  maxFeeSats: 30,     // size to the payment — Spark→Lightning is ~0.25% PLUS a
+                      // flat component (a live 4,464-sat send estimated 25 sats),
+                      // so a flat 10 rejects mid-size sends and a pure 0.5% can
+                      // too. Rule of thumb: max(25, ceil(amountSats * 0.005)),
+                      // or better, estimate first and cap at estimate + headroom.
   preferSpark: true,  // route via Spark when invoice has embedded Spark address
 });
 ```

@@ -1,6 +1,6 @@
 ---
 name: sparkbtcbot
-description: Give an AI agent a self-custodial Bitcoin wallet on the Spark L2. Covers wallet init from a BIP39 mnemonic, zero-fee Spark and BTKN/LRC20 token transfers, Lightning invoices (create and pay), Spark native invoices, L402 paywall payment, L1 deposits and cooperative withdrawals, and message signing. Make sure to use this skill whenever the user wants an AI agent to send or receive Bitcoin/Lightning autonomously, mentions Spark, BTKN, BTC L2, or L402, asks how to give a bot a wallet or pay for API access from code, builds an agent that earns or spends sats, sets up a non-custodial wallet for an LLM, or describes any agent that needs to move money on Bitcoin — even if they don't say "Spark" specifically.
+description: Give an AI agent a self-custodial Bitcoin wallet on the Spark L2. Covers wallet init from a BIP39 mnemonic, zero-fee Spark and BTKN/LRC20 token transfers, Lightning invoices (create and pay), Spark native invoices, L402 paywall payment, L1 deposits and cooperative withdrawals, and message signing. Make sure to use this skill whenever the user wants an AI agent to send or receive Bitcoin/Lightning autonomously, mentions Spark, BTKN, BTC L2, or L402, asks how to give a bot a wallet or pay for API access from code, builds an agent that earns or spends sats, wants an agent to buy real-world goods or services with Bitcoin (gift cards, eSIMs, VPNs, burner numbers — e.g. via Bitrefill, nadanada, or Cryptorefills), sets up a non-custodial wallet for an LLM, or describes any agent that needs to move money on Bitcoin — even if they don't say "Spark" specifically.
 argument-hint: "[Optional: specify what to set up - wallet, payments, tokens, lightning, l402, or full]"
 requires:
   env:
@@ -20,7 +20,7 @@ model-invocation-reason: This skill enables agents to autonomously send and rece
 
 # Spark Bitcoin L2 for AI Agents
 
-You are an expert in setting up Spark Bitcoin L2 wallet capabilities for AI agents using `@buildonspark/spark-sdk`.
+You are an expert in setting up Spark Bitcoin L2 wallet capabilities for AI agents using `@buildonspark/spark-sdk` — and in spending those sats safely at Bitcoin-accepting merchants (see the merchant references and their shared payment policy in the navigator below).
 
 Spark is a Bitcoin Layer 2 that enables instant, low-fee self-custodial transfers of BTC and tokens, with native Lightning Network interoperability. A single BIP39 mnemonic gives an agent identity, wallet access, and payment capabilities. (Fees, the trust model, and the Spark-vs-Lightning-vs-onchain comparison are covered under **What is Spark** below and in `references/architecture.md`.)
 
@@ -229,6 +229,10 @@ Load only what's needed for the user's task. Each reference is a self-contained 
 | `references/spark-invoices.md` | Spark native invoice format (sats and tokens), `fulfillSparkInvoice` |
 | `references/agent-class.md` | Drop-in `SparkAgent` class wrapping the SDK |
 | `references/l402.md` | L402 / LSAT paywalls — paying for HTTP APIs over Lightning |
+| `references/merchant-spending.md` | The shared payment policy for ALL merchant purchases — invoice-vs-quote guard, confirm-before-buy, bearer-secret deliverables, what actually bounds spend. Load alongside any merchant doc below |
+| `references/bitrefill.md` | Spending sats on real-world goods (gift cards, eSIMs, top-ups) via Bitrefill's agent MCP/CLI — Bitrefill-specific deltas on the shared policy (live-validated) |
+| `references/nadanada.md` | Spending sats at nadanada — anonymous VPNs, travel eSIMs, disposable/rental phone numbers, all Lightning-default with no accounts; hold-invoice semantics and the discount-aware quote guard |
+| `references/cryptorefills.md` | Spending sats at Cryptorefills — 10,500+ gift-card/top-up/eSIM brands via their keyless MCP purchase wizard; the one merchant returning the raw card secret through the API (full-loop validated) |
 | `references/extras.md` | Message signing, event listeners, error handling, token *issuance* (`IssuerSparkWallet`) |
 | `references/encrypted-seed.md` | Canonical guide to the encrypted-seed file (`~/.spark/seed.enc`): threat model, setup modes, file format, recovery scenarios. Load when configuring a new wallet or troubleshooting load errors. |
 | `references/security.md` | Full operational-security guide: full-custody threat model, protecting the seed/passphrase, sweeping, monitoring, and what the recipient allowlist does and does not bound. |

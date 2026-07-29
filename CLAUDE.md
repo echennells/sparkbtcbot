@@ -17,7 +17,8 @@ Teaches Claude Code how to give AI agents Bitcoin capabilities using the Spark L
 7. **Token Operations** — Transfer BTKN/LRC20 tokens natively
 8. **Withdraw to L1** — Cooperative exit back to on-chain Bitcoin
 9. **Message Signing** — Sign and verify messages for identity proof
-10. **Unilateral-Exit Backup** — Continuously-fresh `spark.unilateral-exit-bundle.v1` recovery bundle (the "leaf-vault"), consumed by Blink's [spark-unilateral-exit](https://github.com/blinkbitcoin/spark-unilateral-exit) tool if the operators ever vanish
+10. **Merchant Purchases** — Buy real-world goods/services with sats (Bitrefill, nadanada) under a shared payment policy (`references/merchant-spending.md`): invoice-vs-quote guard, confirm-before-buy, PII consent, bearer-secret deliverables
+11. **Unilateral-Exit Backup** — Continuously-fresh `spark.unilateral-exit-bundle.v1` recovery bundle (the "leaf-vault"), consumed by Blink's [spark-unilateral-exit](https://github.com/blinkbitcoin/spark-unilateral-exit) tool if the operators ever vanish
 
 ## Structure
 
@@ -62,7 +63,7 @@ baseline. The evals are run by subagents from a Claude Code session, not by
 
 ## Trigger Phrases
 
-Activates when user mentions: "Spark wallet", "Spark Bitcoin", "Spark L2", "BTKN tokens", "Spark SDK", "Spark payment", "Spark transfer", "Spark invoice", "Bitcoin L2 wallet", "agent wallet on Spark"
+Activates when user mentions: "Spark wallet", "Spark Bitcoin", "Spark L2", "BTKN tokens", "Spark SDK", "Spark payment", "Spark transfer", "Spark invoice", "Bitcoin L2 wallet", "agent wallet on Spark", "buy with sats/bitcoin", "gift card with sats", "Bitrefill", "nadanada"
 
 ## Dependencies
 
