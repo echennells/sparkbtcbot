@@ -33,9 +33,13 @@ const check = checkInvoiceAgainstQuote({
 });
 ```
 
-## eSIM catalog vs purchasable SKUs — they disagree (verified 2026-07-27)
+## eSIM SKU namespaces — merchant FIXED this 2026-07-29 (re-verify before trusting)
 
-Every catalog surface (`/esim/portfolio`, `/esim/bundles`, the website's regional pages) advertises `fixed_*` bundle names — and `POST /api/v2/esim/purchase` rejects ALL of them with `Bundle not available`. The purchasable namespace is **country-level `esim_<data>GB_<days>D_<ISO>_V2`** (e.g. `esim_1GB_7D_US_V2` + slug `united-states`), which no catalog endpoint returns — you must construct the name from the pattern and verify with a purchase-request probe (creating a checkout is free; unpaid invoices expire). **Regional bundles are phantoms**: their price table still points at the dead `fixed_*` SKUs (`bundle_slug_mismatch` on the `_V2` region names), so nothing regional can be bought at all despite being advertised (e.g. "North America $1.19"). Catalog prices for countries did match the `_V2` `originalPrice` in tested cases. Bug reported to the merchant 2026-07; re-probe before trusting any of this in either direction.
+**History worth knowing, because it will recur:** on 2026-07-27 the entire advertised catalog (`fixed_*` names, from `/esim/portfolio`, `/esim/bundles`, and the website) was rejected by `/api/v2/esim/purchase`; only undocumented country-level `esim_*_V2` SKUs worked, and regional bundles were unbuyable. Reported to the merchant; they replied "already aware, now fixed."
+
+**Re-probed 2026-07-29 — mostly true:** advertised `fixed_*` names now purchase successfully, including regional ones (`fixed_1GB_7D_NORTHAMERICA` / `north-america` → $1.19, the deal that didn't exist two days earlier). The `esim_*_V2` names still work too, so both namespaces are live. **But it is not uniform:** `fixed_1GB_7D_EUROPE` / `europe` still returns `bundle_slug_mismatch` while `fixed_2GB_15D_EUROPE` on the same slug succeeds, and the `esim_*_V2` region names still fail.
+
+**So the operating rule stands regardless of who fixed what:** a catalog listing is not proof of purchasability at this merchant. Probe the exact `bundleName` + `slug` pair with a purchase request before quoting a price to the user (creating a checkout is free — unpaid invoices expire), and be ready for either namespace.
 
 ## VPN completion is ONE-SHOT — prepare before you pay
 

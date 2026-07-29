@@ -207,3 +207,15 @@ tests (216 passing): `decodeInvoiceSats` / `invoicePaymentHash` /
 posture, documented vs the wrapper's refuse-legibly posture), and
 `SparkAgent.payAndSettle` (pay + preimage poll; timeout = settled:false, never
 retry-pay). merchant-spending.md §1 now imports instead of inlining.
+
+## Merchant fixed a documented bug (2026-07-29)
+
+nadanada replied to the bug report: "already aware, now fixed." Re-probed:
+advertised fixed_* SKUs now purchase, INCLUDING regional bundles (the $1.19
+North America deal that didn't exist on the 27th); esim_*_V2 still works too.
+Not uniform though — fixed_1GB_7D_EUROPE still fails bundle_slug_mismatch
+while fixed_2GB_15D_EUROPE on the same slug succeeds. nadanada.md rewritten to
+keep the operating rule (probe before quoting) rather than the now-stale
+snapshot, and eval 14's SKU assertion de-hardcoded to reward probing over
+memorizing a namespace. Lesson for merchant docs generally: pin the RULE, date
+the SNAPSHOT — merchant-side facts have a half-life measured in days.
