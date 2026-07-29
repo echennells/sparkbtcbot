@@ -104,3 +104,97 @@ describe("payAndSettle", () => {
     expect(pollCount()).toBe(3);
   });
 });
+
+// --- Audit regressions (2026-07-29 Trail of Bits pass) ---------------------
+// Each test below fails against the code as it shipped that morning.
+
+describe("amount-ceiling precedence (the guarded number must be the paid number)", () => {
+  const mk = () => {
+    process.env.SPARK_LEAF_VAULT = "off";
+    const calls = { pay: null };
+    const wallet = {
+      getSparkAddress: async () => "sp1from",
+      getLightningSendFeeEstimate: async () => 5,
+      payLightningInvoice: async (p) => { calls.pay = p; return { id: "pay-1" }; },
+    };
+    return { agent: new SparkAgent(wallet, "MAINNET"), calls };
+  };
+
+  it("BLOCKS an over-ceiling invoice even when the caller passes a small amountSats", async () => {
+    // The bypass: caller says 100, the SDK pays the invoice's 2,000. Guarding
+    // the caller's number would let an induced/injected parameter walk past the
+    // ceiling; the invoice amount is authoritative.
+    const { agent, calls } = mk();
+    await expect(
+      agent.payLightningInvoice(INVOICE_2000_SATS, { amountSats: 100, maxAmountSats: 500 }),
+    ).rejects.toThrow(/disagrees with the invoice/i);
+    expect(calls.pay).toBeNull(); // never reached the SDK
+  });
+
+  it("previews the INVOICE amount, not the caller's (the human gate must see the truth)", async () => {
+    const { agent } = mk();
+    const preview = await agent.payLightningInvoice(INVOICE_2000_SATS, { dryRun: true, maxAmountSats: 5_000 });
+    expect(preview.amount).toBe("2000");
+  });
+
+  it("still accepts a matching amountSats and amountless invoices", async () => {
+    const { agent } = mk();
+    await agent.payLightningInvoice(INVOICE_2000_SATS, { amountSats: 2000, maxAmountSats: 5_000 });
+    const { agent: a2, calls } = mk();
+    await a2.payLightningInvoice(AMOUNTLESS, { amountSats: 500 });
+    expect(calls.pay).toMatchObject({ amountSatsToSend: 500 });
+  });
+});
+
+describe("payAndSettle terminal statuses", () => {
+  const mkStatus = (status) => {
+    process.env.SPARK_LEAF_VAULT = "off";
+    const wallet = {
+      getSparkAddress: async () => "sp1from",
+      getLightningSendFeeEstimate: async () => 5,
+      payLightningInvoice: async () => ({ id: "pay-1" }),
+      getLightningSendRequest: async () => ({ status }),
+    };
+    return new SparkAgent(wallet, "MAINNET");
+  };
+
+  // A refunded/failed payment that merely "times out" collides with the
+  // never-retry-on-timeout rule and deadlocks the caller forever.
+  it.each([
+    "TRANSFER_FAILED",
+    "USER_TRANSFER_VALIDATION_FAILED",
+    "PREIMAGE_PROVIDING_FAILED",
+    "USER_SWAP_RETURN_FAILED",
+    "USER_SWAP_RETURNED",
+  ])("throws on %s instead of reporting a pending timeout", async (status) => {
+    const agent = mkStatus(status);
+    await expect(agent.payAndSettle(AMOUNTLESS, { amountSats: 500, pollMs: 1 })).rejects.toThrow(/failed/i);
+  });
+
+  it("reports lastStatus so a genuine pending is legible", async () => {
+    const agent = mkStatus("LIGHTNING_PAYMENT_INITIATED");
+    const r = await agent.payAndSettle(AMOUNTLESS, { amountSats: 500, pollMs: 1, maxPolls: 2 });
+    expect(r).toMatchObject({ settled: false, lastStatus: "LIGHTNING_PAYMENT_INITIATED" });
+  });
+});
+
+describe("fetchL402 strictness", () => {
+  const agent = () => {
+    process.env.SPARK_LEAF_VAULT = "off";
+    return new SparkAgent({ getSparkAddress: async () => "sp1from" }, "MAINNET");
+  };
+
+  it("REFUSES an unknown option instead of silently ignoring it (dryRun used to pay)", async () => {
+    await expect(agent().fetchL402("https://example.com/x", { dryRun: true })).rejects.toThrow(/unknown option/i);
+  });
+
+  it("refuses plaintext http (bearer credential + invoice over the wire)", async () => {
+    await expect(agent().fetchL402("http://example.com/x")).rejects.toThrow(/https/i);
+    await expect(agent().previewL402("http://example.com/x")).rejects.toThrow(/https/i);
+  });
+
+  it("allows localhost for testing", async () => {
+    // Reaches the network layer (fetch fails), proving the scheme gate passed.
+    await expect(agent().fetchL402("http://localhost:9/x")).rejects.not.toThrow(/https/i);
+  });
+});

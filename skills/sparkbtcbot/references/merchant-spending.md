@@ -9,14 +9,33 @@ Every agent-ready merchant converges on the same shape: catalog → checkout →
 Whatever returns the invoice — REST response, MCP tool result, CLI output — can be wrong, stale, tampered with, or malicious. Never pay an invoice solely because a checkout handed it to you. Pin it to the price you were quoted *before* checkout, with an absolute ceiling the quote cannot override:
 
 ```javascript
-// All four helpers ship in the npm package (or ../../../lib/ in this repo) —
+// The helpers ship in the npm package (or ../../../lib/ in this repo) —
 // import them, don't re-implement them; the inlined versions rot.
 import { decodeInvoiceSats, paymentHashMatches, checkInvoiceAgainstQuote } from "sparkbtcbot";
 
-async function payMerchantCheckout(agent, bolt11, quotedSats, { maxAmountSats = 50_000, toleranceBps, expectedPaymentHash } = {}) {
+// `confirm` is REQUIRED, not optional: an async callback that shows the preview
+// and returns true only on an explicit human yes. It is a parameter rather than
+// a comment because a confirmation step written as a comment is not a step —
+// an earlier version of this example assigned `preview` and never read it, and
+// would have shipped an unattended auto-payer to anyone who copied it.
+async function payMerchantCheckout(agent, bolt11, quotedSats, {
+  confirm,
+  maxAmountSats = 50_000,
+  toleranceBps,
+  expectedPaymentHash,   // pass the merchant's echoed hash, or an explicit null
+} = {}) {
+  if (typeof confirm !== "function") {
+    throw new Error("payMerchantCheckout: a confirm() callback is required (policy §3)");
+  }
+
   // Binding check: when the checkout echoed a paymentHash, the invoice must
   // commit to it — a swapped invoice fails even if its amount matches the quote.
-  if (expectedPaymentHash && !paymentHashMatches(bolt11, expectedPaymentHash)) {
+  // `undefined` is refused: skipping the bind must be a deliberate, visible
+  // choice (explicit null) rather than a field the merchant can omit its way out of.
+  if (expectedPaymentHash === undefined) {
+    throw new Error("payMerchantCheckout: pass expectedPaymentHash, or null to acknowledge this merchant offers no binding");
+  }
+  if (expectedPaymentHash !== null && !paymentHashMatches(bolt11, expectedPaymentHash)) {
     throw new Error("Payment blocked: invoice payment_hash does not match the checkout's paymentHash");
   }
 
@@ -25,18 +44,22 @@ async function payMerchantCheckout(agent, bolt11, quotedSats, { maxAmountSats = 
   const check = checkInvoiceAgainstQuote({ amountSats: decodeInvoiceSats(bolt11), quotedSats, maxAmountSats, toleranceBps });
   if (!check.ok) throw new Error(`Payment blocked: ${check.reason}`);
 
-  // Preview first (SparkAgent only — the raw SDK has NO dryRun and would
-  // sign-and-send; see SKILL.md), confirm with the operator, then pay.
-  const preview = await agent.payLightningInvoice(bolt11, { dryRun: true });
-  // ...show preview, get confirmation (see §3)...
+  // Preview with the SAME ceiling the payment will use, or the operator
+  // approves a verdict that doesn't describe the payment made. (SparkAgent
+  // only — the raw SDK has NO dryRun and would sign-and-send; see SKILL.md.)
+  const preview = await agent.payLightningInvoice(bolt11, { dryRun: true, maxAmountSats });
+  if (!(await confirm(preview))) throw new Error("Payment cancelled by the operator");
 
-  // payAndSettle = pay + wait for the preimage (§4's proof of payment).
-  // Its timeout returns { settled: false } — NEVER retry-pay on a timeout.
+  // payAndSettle = pay + wait for the preimage (§4's proof of payment). It
+  // throws on terminal failure; a timeout returns { settled: false } and you
+  // must NOT retry-pay — poll getLightningSendRequest(id) instead.
   return agent.payAndSettle(bolt11, { maxAmountSats });
 }
 ```
 
 Default `toleranceBps` is 200 (2%); a merchant doc may widen it with a reason (e.g. fiat→sats conversion drift) but the `maxAmountSats` ceiling always stands. For operator-present one-shot scripts, `estimateFirstFeeCap` sizes `maxFeeSats` from the live estimate; unattended agents should keep the wrapper's default refuse-legibly behavior instead.
+
+**How strong this guard actually is.** Against a single tampered response it is strong. Against a **compromised channel** it is not: `quotedSats` and the invoice arrive from the same host, so an attacker who controls the merchant endpoint (or TLS/DNS) quotes and invoices consistently, and the hash binding proves only self-consistency. What survives channel compromise is `maxAmountSats` alone — so set it from the user's actual budget on every call and never leave it at a default you didn't choose.
 
 ## 2. Know what actually bounds this spend (mostly: nothing)
 

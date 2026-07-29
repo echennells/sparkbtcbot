@@ -6,7 +6,7 @@ import {
   loadRecipientsAllowlist,
   assertRecipientAllowed,
 } from "../../../lib/recipients-allowlist.js";
-import { decode as decodeBolt11 } from "light-bolt11-decoder";
+import { decodeInvoiceSats } from "../../../lib/bolt11.js";
 import {
   lightningEstimateSats,
   lightningFeeCap,
@@ -17,16 +17,11 @@ import {
 import { enableLeafVault } from "./leaf-vault.js";
 
 // Best-effort BOLT11 amount in sats (undefined for amountless invoices or on a
-// decode error) — used to size the amount-aware Lightning fee cap.
+// decode error) — used to size the amount-aware Lightning fee cap. Delegates to
+// the library decoder so the wrapper and the merchant guards can never disagree
+// by a rounding sat (they used to: round here vs ceil there).
 function invoiceAmountSats(bolt11) {
-  try {
-    const section = decodeBolt11(bolt11)?.sections?.find((s) => s.name === "amount");
-    if (!section?.value) return undefined;
-    const sats = Number(section.value) / 1000; // section.value is millisats
-    return Number.isFinite(sats) && sats > 0 ? Math.round(sats) : undefined;
-  } catch {
-    return undefined;
-  }
+  return decodeInvoiceSats(bolt11) ?? undefined;
 }
 
 // A mistyped or phantom option on a money-moving call must THROW, not vanish:
@@ -40,6 +35,36 @@ function rejectUnknownOptions(method, rest) {
     throw new Error(
       `SparkAgent.${method}: unknown option(s) [${unknown.join(", ")}] — refusing a money-moving call ` +
       `with options that would be silently ignored. Check the spelling against references/agent-class.md.`,
+    );
+  }
+}
+
+// Terminal failure statuses from the SDK's LightningSendRequestStatus enum —
+// every one means this payment will never settle. USER_SWAP_RETURNED is the
+// subtle one: the payment failed and the funds were already returned.
+// FUTURE_VALUE exists because the SDK warns new statuses can appear without
+// notice, so match the _FAILED suffix rather than an exhaustive list.
+export function isTerminalLightningFailure(status) {
+  if (typeof status !== "string") return false;
+  return status.endsWith("_FAILED") || status === "USER_SWAP_RETURNED";
+}
+
+// L402 exchanges a bearer credential (macaroon:preimage) and pays an invoice
+// carried in the challenge. Over plaintext http a MITM can swap the invoice or
+// capture the credential, so require TLS unless the caller is explicitly
+// testing against localhost.
+function assertHttpsUrl(method, url) {
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error(`SparkAgent.${method}: invalid URL: ${url}`);
+  }
+  const local = parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1" || parsed.hostname === "::1";
+  if (parsed.protocol !== "https:" && !local) {
+    throw new Error(
+      `SparkAgent.${method}: refusing a paid request over ${parsed.protocol}// — an L402 exchange ` +
+      `sends a bearer credential and pays an invoice from the response; use https (localhost is exempt).`,
     );
   }
 }
@@ -192,7 +217,21 @@ export class SparkAgent {
       amountSats,
     });
     const estimatedFee = lightningEstimateSats(est);
-    const amt = amountSats ?? invoiceAmt;
+    // The INVOICE wins over the caller's number. For an amount-bearing invoice
+    // the SDK pays the embedded amount (it rejects amountSatsToSend for those,
+    // see below), so checking a caller-supplied figure would guard a number
+    // nobody pays: pass amountSats: 100 with a 20,000-sat invoice and the
+    // ceiling validates 100 while 20,000 leaves the wallet — and the dry-run
+    // preview would show the operator the wrong number too. Disagreement is a
+    // bug or an injected parameter, so refuse rather than silently pick one.
+    if (invoiceAmt !== undefined && amountSats !== undefined && Number(amountSats) !== invoiceAmt) {
+      throw new Error(
+        `SparkAgent.payLightningInvoice: amountSats (${amountSats}) disagrees with the invoice's ` +
+        `embedded amount (${invoiceAmt} sats). The invoice amount is what gets paid — omit amountSats ` +
+        `for amount-bearing invoices.`,
+      );
+    }
+    const amt = invoiceAmt ?? amountSats;
     // Fee cap: amount-aware (0.5% of amount, min 25 sats — Spark's flat fee
     // component alone hit 25 on a live 4.5k-sat send). Explicit maxFeeSats wins.
     const cap = maxFeeSats ?? lightningFeeCap({ amountSats: amt, estimatedFeeSats: estimatedFee });
@@ -260,15 +299,21 @@ export class SparkAgent {
     const result = await this.payLightningInvoice(bolt11, payOptions);
     if (payOptions.dryRun) return result;
     let preimage = result.paymentPreimage ?? null;
+    let lastStatus = result.status ?? null;
     for (let i = 0; !preimage && result.id && i < maxPolls; i++) {
       await new Promise((r) => setTimeout(r, pollMs));
       const status = await this.#wallet.getLightningSendRequest(result.id);
+      lastStatus = status?.status ?? lastStatus;
       if (status?.paymentPreimage) preimage = status.paymentPreimage;
-      else if (status?.status === "LIGHTNING_PAYMENT_FAILED") {
-        throw new Error("Lightning payment failed");
+      else if (isTerminalLightningFailure(status?.status)) {
+        // Distinguishing a DEFINITIVE failure from a slow settle is what makes
+        // the never-retry-on-timeout rule safe: a failed-and-refunded payment
+        // that merely timed out would otherwise look pending forever, and the
+        // rule would forbid the retry that is actually correct.
+        throw new Error(`Lightning payment failed (${status.status})`);
       }
     }
-    return { ...result, paymentPreimage: preimage, settled: Boolean(preimage) };
+    return { ...result, paymentPreimage: preimage, settled: Boolean(preimage), lastStatus };
   }
 
   // --- Spark Invoices ---
@@ -442,7 +487,12 @@ export class SparkAgent {
 
   async fetchL402(url, options = {}) {
     const { decode } = await import("light-bolt11-decoder");
-    const { method = "GET", headers = {}, body, maxFeeSats, maxAmountSats = 10_000 } = options;
+    const { method = "GET", headers = {}, body, maxFeeSats, maxAmountSats = 10_000, ...rest } = options;
+    // Same strictness as every other money-moving method: an ignored option
+    // here is not cosmetic. `fetchL402(url, { dryRun: true })` used to PAY —
+    // the exact phantom-dryRun failure the wrapper exists to prevent.
+    rejectUnknownOptions("fetchL402", rest);
+    assertHttpsUrl("fetchL402", url);
 
     const initialResponse = await fetch(url, {
       method,
@@ -474,22 +524,29 @@ export class SparkAgent {
 
     // Route through the guarded wrapper so the payment also gets the amount-aware
     // routing-fee cap (maxFeeSats undefined => sized from the invoice amount).
-    const payResult = await this.payLightningInvoice(invoice, { maxFeeSats, amountSats });
-    let preimage = payResult.paymentPreimage;
-
-    if (!preimage && payResult.id) {
-      for (let i = 0; i < 15; i++) {
-        await new Promise((r) => setTimeout(r, 500));
-        const status = await this.#wallet.getLightningSendRequest(payResult.id);
-        if (status?.paymentPreimage) { preimage = status.paymentPreimage; break; }
-        if (status?.status === "LIGHTNING_PAYMENT_FAILED") throw new Error("Payment failed");
-      }
+    // payAndSettle owns the poll loop: it throws on every terminal failure
+    // status and reports { settled: false } on timeout instead of throwing —
+    // because after this line the money is GONE. A thrown timeout invites a
+    // retry that pays the invoice a second time.
+    const payResult = await this.payAndSettle(invoice, { maxFeeSats });
+    const preimage = payResult.paymentPreimage;
+    if (!preimage) {
+      const err = new Error(
+        `L402 invoice PAID but no preimage yet (status ${payResult.lastStatus ?? "unknown"}). ` +
+        `DO NOT retry this request — that would pay again. Poll ` +
+        `agent.getLightningSendRequest("${payResult.id}") for the preimage, then retry with it.`,
+      );
+      err.paid = true;
+      err.sendId = payResult.id;
+      err.macaroon = macaroon;
+      throw err;
     }
-    if (!preimage) throw new Error("No preimage received");
 
     const finalResponse = await fetch(url, {
       method,
-      headers: { "Authorization": `L402 ${macaroon}:${preimage}`, ...headers },
+      // Authorization last: a caller-supplied header must not clobber the L402
+      // proof we just paid for (that would pay and then not present the proof).
+      headers: { ...headers, "Authorization": `L402 ${macaroon}:${preimage}` },
       body: body ? JSON.stringify(body) : undefined,
     });
 
@@ -499,6 +556,7 @@ export class SparkAgent {
   }
 
   async previewL402(url) {
+    assertHttpsUrl("previewL402", url);
     const response = await fetch(url);
     if (response.status !== 402) return { requiresPayment: false };
 
