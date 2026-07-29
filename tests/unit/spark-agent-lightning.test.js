@@ -50,3 +50,57 @@ describe("payLightningInvoice amountSatsToSend forwarding", () => {
     expect(calls.pay).toBeNull(); // never reached the SDK
   });
 });
+
+// payLightningInvoice can return LIGHTNING_PAYMENT_INITIATED with no preimage;
+// callers poll getLightningSendRequest(id) until it appears. The wrapper keeps
+// the wallet private, so it must expose the passthrough itself — a live
+// Bitrefill purchase had to drop to the raw SDK because it was missing.
+describe("getLightningSendRequest passthrough", () => {
+  it("forwards the send-request id to the wallet and returns its answer", async () => {
+    process.env.SPARK_LEAF_VAULT = "off";
+    let asked = null;
+    const wallet = {
+      getLightningSendRequest: async (id) => { asked = id; return { id, paymentPreimage: "aa".repeat(32) }; },
+    };
+    const agent = new SparkAgent(wallet, "MAINNET");
+    const status = await agent.getLightningSendRequest("pay-1");
+    expect(asked).toBe("pay-1");
+    expect(status.paymentPreimage).toBe("aa".repeat(32));
+  });
+});
+
+// payAndSettle wraps the initiated->preimage poll loop; its timeout contract is
+// "report unsettled, never retry-pay" (hold invoices stay pending legitimately).
+describe("payAndSettle", () => {
+  const mk = (sendRequestScript) => {
+    process.env.SPARK_LEAF_VAULT = "off";
+    let polls = 0;
+    const wallet = {
+      getSparkAddress: async () => "sp1from",
+      getLightningSendFeeEstimate: async () => 5,
+      payLightningInvoice: async () => ({ id: "pay-1" }),
+      getLightningSendRequest: async () => sendRequestScript(polls++),
+    };
+    return { agent: new SparkAgent(wallet, "MAINNET"), pollCount: () => polls };
+  };
+
+  it("polls until the preimage appears and reports settled", async () => {
+    const { agent } = mk((n) => (n < 2 ? { status: "LIGHTNING_PAYMENT_INITIATED" } : { paymentPreimage: "aa".repeat(32) }));
+    const r = await agent.payAndSettle(AMOUNTLESS, { amountSats: 500, pollMs: 1 });
+    expect(r.settled).toBe(true);
+    expect(r.paymentPreimage).toBe("aa".repeat(32));
+  });
+
+  it("throws on LIGHTNING_PAYMENT_FAILED", async () => {
+    const { agent } = mk(() => ({ status: "LIGHTNING_PAYMENT_FAILED" }));
+    await expect(agent.payAndSettle(AMOUNTLESS, { amountSats: 500, pollMs: 1 })).rejects.toThrow(/failed/i);
+  });
+
+  it("reports settled:false on poll exhaustion instead of throwing (never retry-pay)", async () => {
+    const { agent, pollCount } = mk(() => ({ status: "LIGHTNING_PAYMENT_INITIATED" }));
+    const r = await agent.payAndSettle(AMOUNTLESS, { amountSats: 500, pollMs: 1, maxPolls: 3 });
+    expect(r.settled).toBe(false);
+    expect(r.paymentPreimage).toBe(null);
+    expect(pollCount()).toBe(3);
+  });
+});

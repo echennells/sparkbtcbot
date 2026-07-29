@@ -9,7 +9,7 @@ The `SparkAgent` class exposes these (all `async` unless noted); full signatures
 - **Identity & balance** — `getIdentity()`, `getBalance()`
 - **Deposits** — `getDepositAddress()`, `getSingleUseDepositAddress()`, `claimDeposit(...)`
 - **Send** — `transfer(...)`, `transferTokens(...)`, `batchTransferTokens(transfers)`, `withdraw(...)` (L1 cooperative exit), `getWithdrawalFeeQuote(amountSats, address)`, `getTransfers(limit, offset)`
-- **Lightning** — `createLightningInvoice(amountSats, memo, options)`, `payLightningInvoice(bolt11, ...)`, `estimateLightningFee(bolt11, amountSats)`
+- **Lightning** — `createLightningInvoice(amountSats, memo, options)`, `payLightningInvoice(bolt11, ...)`, `estimateLightningFee(bolt11, amountSats)`, `getLightningSendRequest(id)` (poll an initiated send for its preimage), `payAndSettle(bolt11, ...)` (pay + wait for the preimage; never retry-pay on its timeout)
 - **Spark invoices** — `createSatsInvoice(amountSats, memo)`, `createTokenInvoice(tokenIdentifier, amount, memo)`, `fulfillInvoice(invoices)`
 - **L402 paywalls** — `fetchL402(url, options)`, `previewL402(url)`
 - **Message signing** — `signMessage(text)`, `verifyOwnSignature(text, signature)`
@@ -210,8 +210,8 @@ export class SparkAgent {
     });
     const estimatedFee = lightningEstimateSats(est);
     const amt = amountSats ?? invoiceAmt;
-    // Fee cap: amount-aware (0.5% of amount, min 10 sats) — replaces the old flat
-    // 10 that silently rejected sends over ~4,000 sats. Explicit maxFeeSats wins.
+    // Fee cap: amount-aware (0.5% of amount, min 25 sats — Spark's flat fee
+    // component alone hit 25 on a live 4.5k-sat send). Explicit maxFeeSats wins.
     const cap = maxFeeSats ?? lightningFeeCap({ amountSats: amt, estimatedFeeSats: estimatedFee });
     const feeCheck = checkFeeAgainstCap(estimatedFee, cap);
     // Amount ceiling: the fee cap alone CANNOT stop an induced full-balance send
@@ -258,6 +258,34 @@ export class SparkAgent {
       encodedInvoice: bolt11,
       amountSats,
     });
+  }
+
+  // payLightningInvoice can return LIGHTNING_PAYMENT_INITIATED before the
+  // preimage exists; poll the send request by id until it appears or fails.
+  async getLightningSendRequest(id) {
+    return await this.#wallet.getLightningSendRequest(id);
+  }
+
+  // Pay a BOLT11 and wait for the settlement preimage — the proof-of-payment
+  // that merchant policy says to log. Wraps the LIGHTNING_PAYMENT_INITIATED
+  // poll loop every merchant purchase otherwise re-implements. Throws on
+  // LIGHTNING_PAYMENT_FAILED. On poll exhaustion returns { settled: false }:
+  // NEVER retry-pay after a timeout — the payment may still settle (hold
+  // invoices legitimately stay pending for many minutes); check again later
+  // with getLightningSendRequest(result.id) instead.
+  async payAndSettle(bolt11, { pollMs = 2000, maxPolls = 30, ...payOptions } = {}) {
+    const result = await this.payLightningInvoice(bolt11, payOptions);
+    if (payOptions.dryRun) return result;
+    let preimage = result.paymentPreimage ?? null;
+    for (let i = 0; !preimage && result.id && i < maxPolls; i++) {
+      await new Promise((r) => setTimeout(r, pollMs));
+      const status = await this.#wallet.getLightningSendRequest(result.id);
+      if (status?.paymentPreimage) preimage = status.paymentPreimage;
+      else if (status?.status === "LIGHTNING_PAYMENT_FAILED") {
+        throw new Error("Lightning payment failed");
+      }
+    }
+    return { ...result, paymentPreimage: preimage, settled: Boolean(preimage) };
   }
 
   // --- Spark Invoices ---
