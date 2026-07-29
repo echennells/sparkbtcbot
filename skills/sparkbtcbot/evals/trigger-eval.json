@@ -12,6 +12,10 @@
     "should_trigger": true
   },
   {
+    "query": "I need a burner number to receive one sms verification code, my agent can pay in sats",
+    "should_trigger": true
+  },
+  {
     "query": "I'm minting a BTKN with IssuerSparkWallet from @buildonspark/issuer-sdk — `createToken({ tokenName: 'AgentPoints', tokenTicker: 'AGNTP', maxSupply: 1_000_000n, decimals: 6, isFreezeable: false })` succeeds but `mintTokens(1000n)` errors with no detail. is there a setup step between create and mint?",
     "should_trigger": true
   },
@@ -37,6 +41,14 @@
   },
   {
     "query": "my agent gets paid in BTC via Lightning invoices and I want it to also be able to receive payments in stablecoins on the same wallet — does Spark BTKN cover this, and how does the BOLT11 vs Spark-native invoice flow differ for my receive code path?",
+    "should_trigger": true
+  },
+  {
+    "query": "I want to buy a gift card with sats",
+    "should_trigger": true
+  },
+  {
+    "query": "can my agent buy an anonymous eSIM for my Japan trip and pay in bitcoin",
     "should_trigger": true
   },
   {
@@ -77,6 +89,18 @@
   },
   {
     "query": "build a Lightning paywall in front of my chatbot's API using LNbits — generate per-user keys, gate routes by an `LNURL-pay` extension, and verify the preimage server-side",
+    "should_trigger": false
+  },
+  {
+    "query": "buy a Bitrefill gift card from my Alby wallet — their checkout gave me a BOLT11, how do I pay it over NWC with `pay_invoice`",
+    "should_trigger": false
+  },
+  {
+    "query": "cheapest eSIM for two weeks in Japan, I'll pay by credit card",
+    "should_trigger": false
+  },
+  {
+    "query": "best burner phone number app for iphone, want to pay with apple pay",
     "should_trigger": false
   }
 ]
