@@ -47,6 +47,19 @@ up, 1 = broken bundle or funded wallet with no backup, 2 = indeterminate). If
 snapshots fail persistently — or the SDK reach-in breaks — a `BROKEN` file is
 written beside `current.json`; treat its presence as "no fresh backup".
 
+## Every leaf has TWO exit routes, and the operators may use theirs
+
+A `TreeNode` carries two independently pre-signed paths to the same output:
+
+- the **CPFP route** (`nodeTx` → `refundTx`) — zero-fee transactions the recovery tool broadcasts with anchor fee-bumps, and
+- the **direct route** (`directTx` → `directRefundTx`) — self-fee-paying versions the operators' chainwatcher can broadcast on its own.
+
+They spend the same outputs, so **only one can win**. This matters because the realistic failure is rarely "operators vanish cleanly": it is operators degraded, censoring, or disappearing *partway*. If their chainwatcher completes an exit while your recovery is in flight, your bundle's CPFP chain becomes permanently invalid and every submission fails `bad-txns-inputs-missingorspent`.
+
+**That is not a loss.** The direct refund pays the same seed-derived P2TR address, so the funds still land where only your seed can spend them — you sweep from there instead. But a recovery tool that doesn't recognize the race will resubmit a dead package indefinitely and report nothing useful.
+
+**Use a version of Blink's tool that detects this** (the direct-path pivot, contributed after a live mainnet run hit it). If yours loops on "package disappeared from the mempool (likely evicted)" while the node is actually answering `missingorspent`, it predates the fix — check the node output's spender before assuming anything is stuck.
+
 ## What to expect (from Blink's real mainnet exit)
 
 - **Expensive and slow by construction.** A 100k-sat wallet across 22 leaves needed
@@ -57,5 +70,6 @@ written beside `current.json`; treat its presence as "no fresh backup".
 - **Consolidate while you can.** Fewer, larger leaves exit far more cheaply; dust
   from routine payments is often not worth exiting at all.
 
-See Blink's `docs/mainnet-exit-case-study.md` for the full numbers, and
-`references/recovery-scenarios.md` for the recovery properties (staleness, justice).
+See Blink's `docs/mainnet-exit-case-study.md` for their full numbers, and
+`references/recovery-scenarios.md` for the recovery properties (staleness, justice)
+plus measurements from an independent $10 mainnet exit run end to end in 2026-07.
