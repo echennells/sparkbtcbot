@@ -200,3 +200,43 @@ describe("withdrawalTotalFee", () => {
     expect(withdrawalTotalFee({ fee: 77 }, "MEDIUM")).toBe(77);
   });
 });
+
+// A misspelled cap option used to silently mean "no cap" — the exact keystroke
+// that feels like setting a ceiling removed it (`maxAmountSat: 500` → ok:true,
+// "no amount cap set"). Unknown keys must throw for every option-taking guard.
+describe("unknown-option rejection (typo-proofing)", () => {
+  it("checkL402Amount throws on a misspelled cap instead of dropping it", () => {
+    expect(() => checkL402Amount({ amountSats: 9_999, maxAmountSat: 500 })).toThrow(/unknown option/);
+  });
+  it("checkInvoiceAgainstQuote throws on a misspelled tolerance", () => {
+    expect(() => checkInvoiceAgainstQuote({ amountSats: 100, quotedSats: 100, toleranceBsp: 0 })).toThrow(/unknown option/);
+  });
+  it("lightningFeeCap throws on a misspelled floor", () => {
+    expect(() => lightningFeeCap({ amountSats: 1_000, floorSat: 1 })).toThrow(/unknown option/);
+  });
+  it("estimateFirstFeeCap throws on a misspelled headroom", () => {
+    expect(() => estimateFirstFeeCap({ amountSats: 1_000, headroomSat: 50 })).toThrow(/unknown option/);
+  });
+  it("correctly-spelled options are unaffected", () => {
+    expect(checkL402Amount({ amountSats: 9_999, maxAmountSats: 500 }).ok).toBe(false);
+  });
+});
+
+// The estimate could previously raise its own cap WITHOUT BOUND — an inflated
+// estimate from a hostile counterparty grew the cap instead of tripping it.
+describe("estimateFirstFeeCap growth bound", () => {
+  it("caps estimate-driven growth at 3x the amount-scaled cap by default", () => {
+    // amount 10,000 → base 50; inflated estimate 10,000 must not become the cap
+    expect(estimateFirstFeeCap({ amountSats: 10_000, estimatedFeeSats: 10_000 })).toBe(150);
+  });
+  it("still honors a modest estimate under the bound", () => {
+    expect(estimateFirstFeeCap({ amountSats: 10_000, estimatedFeeSats: 60 })).toBe(65);
+  });
+  it("an explicit maxCapSats overrides the default bound", () => {
+    expect(estimateFirstFeeCap({ amountSats: 10_000, estimatedFeeSats: 10_000, maxCapSats: 400 })).toBe(400);
+    expect(estimateFirstFeeCap({ amountSats: 10_000, estimatedFeeSats: 10_000, maxCapSats: 200_000 })).toBe(10_005);
+  });
+  it("the bound never drops the cap below the amount-scaled base", () => {
+    expect(estimateFirstFeeCap({ amountSats: 10_000, estimatedFeeSats: 10_000, maxCapSats: 1 })).toBe(50);
+  });
+});

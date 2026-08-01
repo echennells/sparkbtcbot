@@ -6,7 +6,7 @@ import { SparkWallet } from "@buildonspark/spark-sdk";
 // for payment, so a malicious decoder can mislead pricing but cannot redirect
 // funds. Re-audit on version bump.
 import { decode } from "light-bolt11-decoder";
-import { checkL402Amount } from "../../../lib/fee-guards.js";
+import { checkL402Amount, lightningFeeCap } from "../../../lib/fee-guards.js";
 import { loadMnemonicFromEnv } from "../../../lib/encrypted-seed.js";
 
 const network = process.env.SPARK_NETWORK || "MAINNET";
@@ -126,9 +126,11 @@ async function fetchWithL402(wallet, url, options = {}) {
   const amtCheck = checkL402Amount({ amountSats, maxAmountSats });
   if (!amtCheck.ok) throw new Error(`L402 payment blocked: ${amtCheck.reason}. Raise maxAmountSats to override.`);
 
-  // Step 4: Pay the invoice. Size the fee cap to the amount (Spark→Lightning is
-  // ~0.25%, so a flat 10 rejects any send over ~4,000 sats). Explicit override wins.
-  const feeCap = maxFeeSats ?? Math.max(10, Math.ceil(amountSats * 0.005));
+  // Step 4: Pay the invoice. Fee cap comes from the LIBRARY, not an inline
+  // formula — the lib's floor is 25 because a live 4,464-sat payment carried a
+  // 25-sat estimate that an inlined max(10, 0.5%) under-capped and the SDK
+  // refused. Copy-pasting this script must inherit that lesson, not re-lose it.
+  const feeCap = maxFeeSats ?? lightningFeeCap({ amountSats });
   console.log(`Paying invoice (max fee ${feeCap} sats)...`);
   const payResult = await wallet.payLightningInvoice({
     invoice,

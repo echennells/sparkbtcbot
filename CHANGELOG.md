@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Cumulative spend budget (`lib/spend-ledger.js`).** Every prior guard was per-call — a fee cap, an amount ceiling, a quote match — and none of them stops a *loop*: an agent paying 100 invoices, each individually under its cap, drained a wallet while every check passed. Setting `SPARK_DAILY_BUDGET_SATS` now enforces a rolling 24-hour sats budget across Spark transfers, Lightning pays, Spark-invoice fulfillment, and L1 withdrawals, persisted atomically at `~/.spark/spend-ledger.json` (`SPARK_SPEND_LEDGER_PATH` to relocate; `agent.spendStatus()` to inspect). Fail-closed postures throughout: a corrupt ledger refuses to count as a fresh one, an uncountable spend refuses to pass a budget, and a malformed budget value refuses to boot rather than being silently ignored. Exported from the npm package (`createSpendLedger`, `checkSpendBudget`, `spentInWindow`). Stated honestly: this is an in-process guardrail against runaway loops and prompt-injected sprees — server-enforced limits still require sparkbtcbot-proxy.
+
+### Security
+
+- **`fulfillInvoice` now enforces the recipient allowlist.** Paying a native Spark invoice sends sats/tokens to whoever created it, and this was the one outbound path that skipped the allowlist entirely — a bare SDK passthrough, while SKILL.md promised every Spark transfer was gated. The receiver is now decoded from each invoice (`decodeSparkAddress`) and held to `~/.spark/recipients.allow` before the SDK is called, with identity-key comparison so an entry in either address encoding matches, one disallowed receiver blocking the whole batch, `dryRun` parity (preview shows WHO gets paid), unknown-option rejection, and a refuse-on-disagreement guard when a caller amount contradicts the invoice's embedded amount.
+- **`SparkAgent.create()` refuses a missing mnemonic instead of minting a wallet.** The SDK generates a fresh wallet for an undefined `mnemonicOrSeed`, so a typo'd env var or failed seed decrypt silently booted a brand-new MAINNET wallet — and deposits landed on a wallet whose seed nobody backed up. Deliberate creation remains `npm run setup`.
+- **Misspelled guard options now throw instead of meaning "no cap".** `checkL402Amount({ maxAmountSat: 500 })` used to return ok — the keystroke that feels like setting a ceiling silently removed it. All option-taking guards in `lib/fee-guards.js` reject unknown keys, matching the wrapper's existing strictness.
+- **`claimDeposit`'s fee ceiling is size-aware.** The flat 5,000-sat default authorized the SSP to take 83% of a 6,000-sat deposit. The default is now `maxFeePct` (10%) of the quoted credit — the same posture as `withdraw` — with explicit `maxFeeSats` still winning and an unreadable quote failing closed.
+- **`estimateFirstFeeCap`'s estimate-driven growth is bounded.** The live estimate could raise its own cap without limit, so an inflated estimate from a hostile counterparty grew the cap instead of tripping it. Growth is now capped at 3× the amount-scaled cap (override with `maxCapSats`).
+- **`l402-paywalls.js` uses the library fee cap.** The example script inlined `max(10, 0.5%)` — re-inheriting the exact under-cap failure (`floor 25`) already fixed in `lib/fee-guards.js` for anyone who copy-pasted it.
+
 ## 0.4.0 — 2026-07-07
 
 ### Added

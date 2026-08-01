@@ -199,6 +199,8 @@ export function estimateFirstFeeCap(options: {
   amountSats?: number | null;
   estimatedFeeSats?: number | null;
   headroomSats?: number;
+  /** Absolute ceiling on estimate-driven growth (default 3× the amount-scaled cap). */
+  maxCapSats?: number;
 }): number;
 
 /** Invoice's embedded amount in whole sats; null for amountless/undecodable. */
@@ -218,6 +220,79 @@ export function withdrawalTotalFee(
   quote: unknown,
   speed?: "FAST" | "MEDIUM" | "SLOW" | string,
 ): number | null;
+
+// --- Spend ledger (cumulative rolling-window budget) ---
+
+/** Default ledger location: ~/.spark/spend-ledger.json */
+export const DEFAULT_SPEND_LEDGER_PATH: string;
+
+/** One day in milliseconds — the default budget window. */
+export const DAY_MS: number;
+
+export interface SpendLedgerEntry {
+  id: string;
+  ts: number;
+  sats: number;
+  operation: string;
+}
+
+export interface SpendBudgetCheck {
+  ok: boolean;
+  sats: number | null;
+  spentSats: number;
+  budgetSats: number | null;
+  remainingSats: number | null;
+  reason: string;
+}
+
+/** Sats spent inside the window ending at `now`. */
+export function spentInWindow(
+  entries: SpendLedgerEntry[],
+  options?: { windowMs?: number; now?: number },
+): number;
+
+/**
+ * Pure budget decision. No budget => ok (opt-in guard); an unreadable amount
+ * WITH a budget fails closed. `ok:false` => do not proceed.
+ */
+export function checkSpendBudget(options?: {
+  entries?: SpendLedgerEntry[];
+  sats?: number | bigint | null;
+  budgetSats?: number | null;
+  windowMs?: number;
+  now?: number;
+}): SpendBudgetCheck;
+
+export interface SpendLedger {
+  path: string;
+  budgetSats: number | null;
+  windowMs: number;
+  status(): Promise<{
+    spentSats: number;
+    budgetSats: number | null;
+    remainingSats: number | null;
+    windowMs: number;
+    entries: SpendLedgerEntry[];
+  }>;
+  /** Throws (code SPEND_BUDGET_EXCEEDED) when the spend would bust the budget. */
+  assertCanSpend(sats: number | bigint, operation?: string): Promise<SpendBudgetCheck>;
+  /** Append a spend and persist atomically; prunes aged-out entries. */
+  record(sats: number | bigint, operation?: string): Promise<SpendLedgerEntry>;
+  /** Best-effort refund for a send that provably never happened. */
+  unrecord(id: string): Promise<void>;
+}
+
+/**
+ * Persistent cumulative-spend ledger on the shared atomic writer. A corrupt
+ * ledger file fails CLOSED (code SPEND_LEDGER_UNREADABLE) — delete the file
+ * to reset. Single-agent-per-ledger; give concurrent agents separate paths.
+ */
+export function createSpendLedger(options?: {
+  path?: string;
+  budgetSats?: number | null;
+  windowMs?: number;
+  clock?: () => number;
+}): SpendLedger;
 
 // --- Skill-content helpers (for non-Claude LLM frameworks) ---
 

@@ -28,6 +28,7 @@ lib/
   encrypted-seed.js                   # scrypt + AES-256-GCM seed file helper
   leaf-vault.js                       # SDK-free recovery-bundle persistence + shape validation
   fee-guards.js                       # fee/amount ceilings for sends, claims, withdrawals
+  spend-ledger.js                     # rolling-window cumulative budget (bounds send LOOPS)
   recipients-allowlist.js             # opt-in outbound allowlist guardrail
   index.js / index.d.ts               # npm entry (also exports ./leaf-vault subpaths)
 skills/
@@ -79,6 +80,8 @@ SPARK_NETWORK=MAINNET
 # SPARK_SEED_PATH=/custom/path/seed.enc   # optional override
 # SPARK_LEAF_VAULT=off                    # opt out of the automatic recovery-bundle backup
 # SPARK_LEAF_VAULT_PATH=/custom/path.json # recovery-bundle location (default ~/.spark/leaf-vault/current.json)
+# SPARK_DAILY_BUDGET_SATS=50000           # opt-in rolling-24h cumulative spend budget (bounds send loops)
+# SPARK_SPEND_LEDGER_PATH=/custom/path    # spend-ledger location (default ~/.spark/spend-ledger.json)
 ```
 
 ## Security Note
