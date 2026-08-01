@@ -47,6 +47,17 @@ up, 1 = broken bundle or funded wallet with no backup, 2 = indeterminate). If
 snapshots fail persistently — or the SDK reach-in breaks — a `BROKEN` file is
 written beside `current.json`; treat its presence as "no fresh backup".
 
+## Tokens are NOT covered by this
+
+Unilateral exit recovers **BTC only**. The bundle records token balances as
+`usdb: { status: "not-covered-by-bitcoin-unilateral-exit" }` — an honest marker, not
+an oversight: BTKN/LRC20 balances have no pre-signed L1 exit path, so if the
+operators vanish there is no equivalent escape hatch for them.
+
+Say this plainly to anyone holding tokens on Spark. The leaf-vault protects their
+sats; it does not protect their tokens, and no backup this skill can make will.
+Treat token balances as operator-dependent, and size them accordingly.
+
 ## Every leaf has TWO exit routes, and the operators may use theirs
 
 A `TreeNode` carries two independently pre-signed paths to the same output:
