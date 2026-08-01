@@ -63,8 +63,10 @@ They spend the same outputs, so **only one can win**. This matters because the r
 ## What to expect (from Blink's real mainnet exit)
 
 - **Expensive and slow by construction.** A 100k-sat wallet across 22 leaves needed
-  253 packages; exiting everything at 1 sat/vB would have cost ~79% of the balance
-  in fees. With economic triage (skip dust leaves), ~90% reached the destination.
+  253 packages; exiting everything would have cost ~79% of the balance in fees at
+  the rate that run faced. With economic triage (skip dust leaves), ~90% reached the
+  destination. Treat the ratio, not the rate, as the lesson: it scales with the fee
+  market, so price any real exit against the mempool of the day.
 - **~2-week timelock.** Each refund carries a ~2,000-block CSV: broadcast the exit
   chains, wait out the timelock, then broadcast the refunds and sweep.
 - **Consolidate while you can.** Fewer, larger leaves exit far more cheaply; dust

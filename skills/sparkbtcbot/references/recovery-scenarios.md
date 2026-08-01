@@ -34,16 +34,17 @@ no prior owner**, so nobody can mount this attack on them.
 
 A deliberate end-to-end test of this whole recovery path — a 16,000-sat wallet across 19 leaves, exited with Blink's tool and swept to L1. What it added to the numbers above:
 
-- **Fee rates, measured against real miners.** 0.5 sat/vB confirmed within hours. **0.1 sat/vB relayed fine and was never mined in 14 days**, then expired from the mempool and the inputs became spendable again. Bitcoin Core v30 lowered the *relay* floor to 0.1 sat/vB, but relay is not mining — size an exit well above the relay floor or it simply never happens. (Nothing is lost when it doesn't: expiry returns the funds.)
+- **Being accepted by the network is not the same as being mined.** Bitcoin Core v30 lowered the *relay* floor (to 0.1 sat/vB), so an exit package can propagate perfectly and still sit unmined indefinitely, because miners apply their own, higher threshold. We confirmed both halves of this live: one run relayed fine and was never mined in 14 days before expiring, while a run at a higher rate confirmed within hours. **Do not size an exit from any fixed sat/vB figure — including the ones in this paragraph.** Quote against the mempool at the time (`/api/v1/fees/recommended` or your own node's `estimatesmartfee`) and price to land in a near-term block. Nothing is lost if you undershoot: an unmined package expires from the mempool after ~14 days and its inputs become spendable again, so the failure mode is delay, not loss.
 - **Dust dominates.** 11 of 19 leaves were uneconomical and skipped automatically; only the largest few were worth exiting at all. The consolidate-first advice is not theoretical.
-- **Timelocks are shorter than "a fresh leaf" implies, because they decrement.** The refunds here carried **550** and **1,450** block CSVs, not ~2,000 — the decrementing-timelock scheme in action, since these leaves had prior owners. Plan for weeks regardless: first broadcast to swept funds was **20 days**.
+- **Timelocks are shorter than "a fresh leaf" implies, because they decrement.** The refunds here carried **550** and **1,450** block CSVs, not ~2,000 — the decrementing-timelock scheme in action, since these leaves had prior owners. Plan for weeks regardless: first broadcast to swept funds was **20 days** in this run.
 - **The operators finished it, not us.** Their chainwatcher completed both leaves via the direct route (see `unilateral-exit.md`) and later broadcast both direct refunds within minutes of maturity. The recovery still succeeded — the direct refunds paid the seed-derived addresses and were swept normally — but every broadcast race with a live operator is one you lose. Expect your role to be **detect, track, and sweep** unless the operators are genuinely gone.
-- **Direct refunds are self-paying.** Their fee is baked in (~8.6 sat/vB here), so that path needs no CPFP funding UTXO at all — only the CPFP route does.
+- **Direct refunds are self-paying.** The operator signs them with the fee already inside the transaction, so that path needs no CPFP funding UTXO at all — only the CPFP route does. You take whatever rate they baked in, which is fixed at signing time and may be under- or over-priced for the mempool you meet.
 - **Fund one UTXO per leaf.** Without `--fan-out`, a multi-leaf run consumes one funding UTXO per leaf; a second run can quietly eat the reserve you set aside for the first one's refunds.
 
 ## Exits are expensive and slow
 From Blink's real mainnet exit: a dusty 100k-sat / 22-leaf wallet needed 253 packages,
-and exiting everything at 1 sat/vB would have paid ~79% of the balance in fees;
+and exiting everything would have paid ~79% of the balance in fees at the rate that
+run faced; the ratio moves with the fee market, so re-derive it from current rates;
 economic triage (skip dust) recovered ~90%. Each refund then waits a ~2,000-block
 (~2-week) CSV. **Consolidate leaves while operators are cooperative**, and treat the
 exit path as a fire escape, not a door. Full numbers: Blink's
