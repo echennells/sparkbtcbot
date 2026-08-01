@@ -102,12 +102,12 @@ The full trust model (moment-in-time / forward-security detail, what operators c
 ## Required Libraries
 
 ```bash
-npm install @buildonspark/spark-sdk@^0.8.8 dotenv
+npm install @buildonspark/spark-sdk@^0.9.0 dotenv
 ```
 
 For token issuance (minting new tokens), additionally:
 ```bash
-npm install @buildonspark/issuer-sdk@^0.1.44
+npm install @buildonspark/issuer-sdk@^0.1.45
 ```
 
 The SDK bundles BIP39 mnemonic generation, cooperative signing, and gRPC communication internally.
