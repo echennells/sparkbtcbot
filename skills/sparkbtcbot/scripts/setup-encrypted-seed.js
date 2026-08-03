@@ -1,7 +1,7 @@
 // Interactive one-time setup: encrypts a BIP39 mnemonic at rest.
 //
 // Mode selection (first match wins):
-//   1. --import flag → prompt for mnemonic on stderr (no shell-history exposure)
+//   1. --import flag → prompt for mnemonic on stderr (hidden input, no echo, no shell-history exposure)
 //   2. SPARK_MNEMONIC env set → encrypt that mnemonic (one-time migration path)
 //   3. default → generate a fresh mnemonic via @buildonspark/spark-sdk
 //
@@ -17,8 +17,9 @@
 import "dotenv/config";
 import { stdin, stdout, stderr, exit, env } from "node:process";
 import { saveEncryptedMnemonic, writeMnemonicBackupFile, DEFAULT_SEED_PATH } from "../../../lib/encrypted-seed.js";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { dirname } from "node:path";
+import { pathToFileURL } from "node:url";
 
 const SEED_PATH = env.SPARK_SEED_PATH || DEFAULT_SEED_PATH;
 const NETWORK = env.SPARK_NETWORK || "MAINNET";
@@ -37,12 +38,16 @@ async function promptStderr(question, { hidden = false } = {}) {
   return new Promise((resolve, reject) => {
     stderr.write(question);
     let input = "";
+    const cleanup = () => {
+      stdin.pause();
+      stdin.removeListener("data", onData);
+      stdin.removeListener("end", onEnd);
+    };
     const onData = (chunk) => {
       const data = chunk.toString();
       for (const ch of data) {
         if (ch === "\n" || ch === "\r") {
-          stdin.pause();
-          stdin.removeListener("data", onData);
+          cleanup();
           stderr.write("\n");
           resolve(input);
           return;
@@ -51,9 +56,16 @@ async function promptStderr(question, { hidden = false } = {}) {
         if (!hidden) stderr.write(ch);
       }
     };
+    // Without this, a closed/empty stdin leaves the promise pending and Node
+    // exits 0 with no error and no seed written — a silent false success.
+    const onEnd = () => {
+      cleanup();
+      reject(new Error("stdin closed without input"));
+    };
     stdin.resume();
     stdin.setEncoding("utf8");
     stdin.on("data", onData);
+    stdin.once("end", onEnd);
     stdin.once("error", reject);
   });
 }
@@ -87,7 +99,11 @@ async function getMnemonicSource() {
   // Order: explicit --import flag, then SPARK_MNEMONIC env, then generate fresh.
   const args = process.argv.slice(2);
   if (args.includes("--import")) {
-    const m = await promptStderr("Paste your existing 12 or 24 word mnemonic: ");
+    // Hidden: stderr (and anything capturing it, e.g. an agent transcript)
+    // must not get a verbatim copy of the mnemonic. Paste corruption is
+    // still caught — the SDK verifies the mnemonic below and the printed
+    // Spark address lets the user confirm the right wallet loaded.
+    const m = await promptStderr("Paste your existing 12 or 24 word mnemonic: ", { hidden: true });
     return { mnemonic: normalizeMnemonic(m), source: "imported" };
   }
   if (env.SPARK_MNEMONIC) {
@@ -184,7 +200,16 @@ async function main() {
   stdout.write("  const { wallet } = await SparkWallet.initialize({ mnemonicOrSeed: mnemonic, ... });\n");
 }
 
-main().catch((e) => {
-  err(`setup failed: ${e.message}`);
-  exit(1);
-});
+// Run main() only when executed directly (node script.js), not when this
+// file is imported as a module. realpathSync handles symlinked invocations
+// (e.g. via ~/.claude/skills).
+const isMainModule =
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href;
+
+if (isMainModule) {
+  main().catch((e) => {
+    err(`setup failed: ${e.message}`);
+    exit(1);
+  });
+}

@@ -5,6 +5,8 @@ import {
   loadRecipientsAllowlist,
   assertRecipientAllowed,
 } from "../../../lib/recipients-allowlist.js";
+import { realpathSync } from "node:fs";
+import { pathToFileURL } from "node:url";
 
 export class SparkAgent {
   #wallet;
@@ -318,7 +320,16 @@ async function main() {
   agent.cleanup();
 }
 
-main().catch((err) => {
-  console.error("Error:", err.message);
-  process.exit(1);
-});
+// Run main() only when executed directly (node script.js), not when this
+// file is imported as a module (e.g. `import { SparkAgent } from ...`).
+// realpathSync handles symlinked invocations (e.g. via ~/.claude/skills).
+const isMainModule =
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href;
+
+if (isMainModule) {
+  main().catch((err) => {
+    console.error("Error:", err.message);
+    process.exit(1);
+  });
+}

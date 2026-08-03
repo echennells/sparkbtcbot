@@ -1,6 +1,8 @@
 import "dotenv/config";
 import { SparkWallet } from "@buildonspark/spark-sdk";
 import { loadMnemonicFromEnv } from "../../../lib/encrypted-seed.js";
+import { realpathSync } from "node:fs";
+import { pathToFileURL } from "node:url";
 
 const network = process.env.SPARK_NETWORK || "MAINNET";
 
@@ -75,7 +77,16 @@ async function main() {
   wallet.cleanup();
 }
 
-main().catch((err) => {
-  console.error("Error:", err.message);
-  process.exit(1);
-});
+// Run main() only when executed directly (node script.js), not when this
+// file is imported as a module. realpathSync handles symlinked invocations
+// (e.g. via ~/.claude/skills).
+const isMainModule =
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href;
+
+if (isMainModule) {
+  main().catch((err) => {
+    console.error("Error:", err.message);
+    process.exit(1);
+  });
+}
