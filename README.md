@@ -54,13 +54,13 @@ Native plugin install. Updates flow through `claude plugin update sparkbtcbot`. 
 ### Any other LLM agent framework (Cursor, LangChain, OpenAI Agents SDK, Aider, etc.)
 
 ```bash
-npm install sparkbtcbot
+npm install sparkbtcbot-skill
 ```
 
 The package ships both the skill content (so you can load it into your LLM's context) and the encryption library (so generated code can import the helpers). Minimal use:
 
 ```javascript
-import { getSkillContent, getReference, listReferences } from "sparkbtcbot";
+import { getSkillContent, getReference, listReferences } from "sparkbtcbot-skill";
 
 // Always-loaded skill body — pass to your framework's system-prompt mechanism
 const instructions = await getSkillContent();
@@ -76,7 +76,7 @@ const l402Doc = await getReference("l402");
 Generated code (or your own glue) can also import the encryption helpers:
 
 ```javascript
-import { saveEncryptedMnemonic, loadMnemonicFromEnv } from "sparkbtcbot";
+import { saveEncryptedMnemonic, loadMnemonicFromEnv } from "sparkbtcbot-skill";
 
 await saveEncryptedMnemonic({ mnemonic, passphrase, path: "./seed.enc" });
 const decrypted = await loadMnemonicFromEnv(); // reads SPARK_PASSPHRASE
@@ -85,7 +85,7 @@ const decrypted = await loadMnemonicFromEnv(); // reads SPARK_PASSPHRASE
 And the unilateral-exit backup (the "leaf-vault") via its subpath export:
 
 ```javascript
-import { enableLeafVault, snapshotLeafVault, verifyVault } from "sparkbtcbot/leaf-vault";
+import { enableLeafVault, snapshotLeafVault, verifyVault } from "sparkbtcbot-skill/leaf-vault";
 
 const vault = enableLeafVault(wallet); // auto-refreshing recovery bundle
 // ... later: await vault.dispose();   // flushes a final snapshot if needed

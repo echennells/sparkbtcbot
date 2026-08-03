@@ -11,7 +11,7 @@ Whatever returns the invoice — REST response, MCP tool result, CLI output — 
 ```javascript
 // The helpers ship in the npm package (or ../../../lib/ in this repo) —
 // import them, don't re-implement them; the inlined versions rot.
-import { decodeInvoiceSats, paymentHashMatches, checkInvoiceAgainstQuote } from "sparkbtcbot";
+import { decodeInvoiceSats, paymentHashMatches, checkInvoiceAgainstQuote } from "sparkbtcbot-skill";
 
 // `confirm` is REQUIRED, not optional: an async callback that shows the preview
 // and returns true only on an explicit human yes. It is a parameter rather than

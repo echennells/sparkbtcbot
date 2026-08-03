@@ -358,12 +358,12 @@ describe("judgeMissingVault (CLI exit-code contract: 0 ok / 1 critical / 2 indet
 });
 
 describe("npm subpath exports", () => {
-  it("sparkbtcbot/leaf-vault and /leaf-vault/core resolve via the package exports map", async () => {
-    const vault = await import("sparkbtcbot/leaf-vault");
+  it("sparkbtcbot-skill/leaf-vault and /leaf-vault/core resolve via the package exports map", async () => {
+    const vault = await import("sparkbtcbot-skill/leaf-vault");
     expect(typeof vault.enableLeafVault).toBe("function");
     expect(typeof vault.snapshotLeafVault).toBe("function");
     expect(typeof vault.verifyVault).toBe("function");
-    const core = await import("sparkbtcbot/leaf-vault/core");
+    const core = await import("sparkbtcbot-skill/leaf-vault/core");
     expect(typeof core.validateSnapshotShape).toBe("function");
     expect(typeof core.atomicWriteJson).toBe("function");
   });
