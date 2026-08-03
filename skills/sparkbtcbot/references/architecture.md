@@ -28,10 +28,10 @@ Load when the user wants to understand how Spark works, weigh it against Lightni
 | Operation | Fee |
 |-----------|-----|
 | **Spark-to-Spark transfer** | Free (small flat fee coming in 6-12 months) |
-| **Lightning to Spark** (receive) | 0.15% (charged via route hints) |
-| **Spark to Lightning** (send) | 0.25% + Lightning routing fees |
-| **L1 deposit to Spark** | On-chain tx fee (paid by user) **plus an SSP claim spread** at claim time — see below |
-| **Cooperative exit to L1** | On-chain broadcast fee + SSP fee: `sats_per_vbyte × (111 × 2 + tx_vbytes)` |
+| **Lightning to Spark** (receive) | 0.15% (charged via route hints; a live 2026-08 receive was credited in full — treat as worst case) |
+| **Spark to Lightning** (send) | 0.25% + Lightning routing fees (live-measured 0.32% all-in; **free** when the payee is Spark-backed — see `references/lightning.md`) |
+| **L1 deposit to Spark** | On-chain tx fee (paid by user) **plus an SSP claim spread** at claim time — see below (live-measured: 297 sats on a 10,350-sat deposit) |
+| **Cooperative exit to L1** | Flat per exit, not per sat: operator fee + feerate-tracking L1 broadcast fee, deducted from the amount (live 2026-08: ~2,000–2,700 sats at MEDIUM). Always quote first — `references/wallet.md` |
 | **Unilateral exit to L1** | On-chain tx fee (paid by user) |
 
 Cooperative exit fees don't scale with withdrawal amount, so they're proportionally higher for smaller withdrawals. Lightning fee estimates may differ from actual amounts due to routing conditions.
@@ -80,7 +80,7 @@ Exiting Spark to L1 Bitcoin carries **unpredictable costs** that agents and user
 4. **Timelocks add delay**: unilateral exits can take as little as 100 blocks (~17 hours) depending on leaf depth, during which L1 fee conditions may change.
 5. **Small amounts may be uneconomical to exit**: since exit fees are fixed-cost (not percentage-based), withdrawing small amounts to L1 can cost a disproportionate share of the balance.
 
-**Bottom line**: While Spark lets you exit to L1 unilaterally — *provided your leaf material is backed up locally* (a seed phrase alone cannot exit; see `references/unilateral-exit.md`) — the cost of doing so is not fixed or predictable. Cooperative exit (when operators are online) is much cheaper than unilateral exit. **Prefer [Boltz](https://boltz.exchange) for L1 withdrawals** (Spark → Lightning → L1 via submarine swap, minimum 25,000 sats), and discourage any L1 withdrawal under 25,000 sats — fixed fees eat a disproportionate share.
+**Bottom line**: While Spark lets you exit to L1 unilaterally — *provided your leaf material is backed up locally* (a seed phrase alone cannot exit; see `references/unilateral-exit.md`) — the cost of doing so is not fixed or predictable. Cooperative exit (when operators are online) is much cheaper: a **flat per-exit fee** (operator fee + feerate-tracking L1 broadcast fee; live 2026-08 quotes ~2,000–2,700 sats at MEDIUM), deducted from the amount. Discourage any L1 withdrawal under 25,000 sats — the flat fee eats ≥ ~10% — and batch small balances into one exit. Do **not** route users through third-party swap services by default: Boltz, previously recommended here, disabled all swaps indefinitely in August 2026; the native exit depends only on the Spark operators.
 
 ## Limitations
 

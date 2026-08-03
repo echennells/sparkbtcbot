@@ -31,11 +31,11 @@ const staticAddr = await wallet.getStaticDepositAddress();
 const singleAddr = await wallet.getSingleUseDepositAddress();
 ```
 
-Both are P2TR (`bc1p...` on mainnet, `bcrt1p...` on regtest). Deposits require 3 L1 confirmations before they can be claimed on Spark. The wallet's background loop auto-claims static deposits once confirmed.
+Both are P2TR (`bc1p...` on mainnet, `bcrt1p...` on regtest). Deposits require 3 L1 confirmations before they can be claimed on Spark (the SSP refuses to even quote before then). **Claiming is manual — there is no auto-claim.** Deposit and forget, and the funds sit unclaimed at the address.
 
 ## Claim a Deposit
 
-If auto-claim is disabled or you want explicit control. **Bound the fee** — the SSP charges a spread for sweeping the deposit UTXO on-chain, and you don't want an over-priced claim accepted blind. The SDK enforces this server-side: `claimStaticDepositWithMaxFee` rejects the claim if the fee exceeds `maxFee`.
+**Bound the fee** — the SSP charges a spread for sweeping the deposit UTXO on-chain, and you don't want an over-priced claim accepted blind. The SDK enforces this server-side: `claimStaticDepositWithMaxFee` rejects the claim if the fee exceeds `maxFee`. Live-measured 2026-08-04: a 10,350-sat deposit quoted a **297-sat spread**, honored exactly at claim (~150 vB at the moment's feerate — consistent with the SSP pricing its future sweep, i.e. flat-ish and feerate-tracking, not a percentage). The claim credit is **asynchronous**: the call returns a transferId and the balance lands ~30 seconds later — an unchanged balance right after claiming is not a failure, so never re-claim on sight of it.
 
 ```javascript
 // Optional preview: how much will be credited?
@@ -113,17 +113,35 @@ console.log("slow:  ", totalFee("Slow"), "sats");
 
 The `SparkAgent` wrapper and `lib/fee-guards.js` → `withdrawalTotalFee(quote, speed)` do this sum for you.
 
+Two caveats about quoting: it is **not read-only** — if the wallet's leaves don't exactly match the requested amount, the quote call triggers an SSP swap that permanently restructures the leaf set (no fee, but not side-effect-free). And quotes **expire** (`quote.expiresAt`) — execute promptly after showing the user.
+
 ### Execute Withdrawal
 
 ```javascript
+const feeSats = withdrawalTotalFee(quote, "MEDIUM");
 const result = await wallet.withdraw({
   onchainAddress: "bc1q...",
   exitSpeed: "MEDIUM",  // "FAST" | "MEDIUM" | "SLOW"
   amountSats: 50000,
+  feeQuoteId: quote.id,   // bind the exit to the quote you just showed...
+  feeAmountSats: feeSats, // ...and the exact fee you previewed
 });
 ```
 
-Unilateral exit (without operator cooperation) is also possible as a safety mechanism, but cooperative exit is the standard path. **Discourage withdrawals under 25,000 sats** — fixed fees eat a disproportionate share. For smaller amounts route through Boltz (Spark → Lightning → L1).
+Binding `feeQuoteId` + `feeAmountSats` pins the executed exit to the previewed fee instead of letting it be re-priced at broadcast (the older `feeQuote` object param does the same but is deprecated). The `SparkAgent` wrapper does this for you.
+
+### Fee structure (why size matters)
+
+The total fee is **flat with respect to amount**: `userFee` (operator's fee — 750 sats flat on every live 2026-08 quote) + `l1BroadcastFee` (tracks the current feerate). And it is **deducted from `amountSats`, not charged on top**: the L1 address receives `amount − fee` (live-validated: an 8,000-sat exit with a 1,950-sat quote delivered exactly 6,050 on-chain). That's the SDK default — `deductFeeFromWithdrawalAmount: true`; pass `false` to charge the fee on top instead. Tell the user the *net* they'll receive before executing.
+
+| Amount | Fee (MEDIUM, calm-mempool snapshot) | Share |
+|---|---|---|
+| 5,000 sats | ~2,430 | ~49% |
+| 25,000 | ~2,430 | ~10% |
+| 100,000 | ~2,430 | ~2.4% |
+| 1,000,000 | ~2,430 | ~0.24% |
+
+Unilateral exit (without operator cooperation) is also possible as a safety mechanism — see `references/unilateral-exit.md` — but cooperative exit is the standard path. **Discourage withdrawals under 25,000 sats** and batch small balances into one larger exit. Third-party swap routes (Boltz) are no longer a dependable alternative — Boltz disabled all swaps indefinitely in August 2026.
 
 ## Cleanup
 
