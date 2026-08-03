@@ -109,4 +109,29 @@ describe("SparkAgent spend budget (SPARK_DAILY_BUDGET_SATS)", () => {
     process.env.SPARK_DAILY_BUDGET_SATS = "-100";
     expect(() => new SparkAgent(mkWallet(), "MAINNET")).toThrow(/positive number of sats/);
   });
+
+  // ToB audit F2: the ledger's check-then-record was two unlocked awaits, so a
+  // PARALLEL burst (Promise.all) passed every budget check against the same
+  // pre-burst ledger and clobbered each other's append — defeating the exact
+  // "prompt-injected spree" the budget exists to stop. #recordSpend now
+  // serializes the critical section per instance.
+  it("bounds a PARALLEL send burst to the budget (not just a serial loop)", async () => {
+    process.env.SPARK_DAILY_BUDGET_SATS = "1000";
+    const wallet = mkWallet();
+    const agent = new SparkAgent(wallet, "MAINNET");
+    // Fire five 300-sat transfers at once: 3 fit (900), the rest must be refused.
+    const results = await Promise.allSettled(
+      Array.from({ length: 5 }, () => agent.transfer({ to: "sp1x", amount: 300 })),
+    );
+    const ok = results.filter((r) => r.status === "fulfilled").length;
+    const blocked = results.filter(
+      (r) => r.status === "rejected" && /SPEND_BUDGET_EXCEEDED/.test(r.reason?.code ?? r.reason?.message ?? ""),
+    ).length;
+    expect(ok).toBe(3);              // exactly floor(1000/300) fit
+    expect(blocked).toBe(2);
+    expect(wallet.calls.transfers).toBe(3); // only the funded sends reached the SDK
+    const status = await agent.spendStatus();
+    expect(status.spentSats).toBe(900);     // ledger did not undercount
+    expect(status.spentSats).toBeLessThanOrEqual(1000);
+  });
 });

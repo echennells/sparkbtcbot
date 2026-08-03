@@ -158,6 +158,9 @@ export class SparkAgent {
   #network;
   #vault = null;
   #ledger = null;
+  // Serializes the ledger's check-then-record critical section across
+  // concurrent sends on this instance (see #recordSpend).
+  #spendChain = Promise.resolve();
 
   constructor(wallet, network) {
     this.#wallet = wallet;
@@ -230,8 +233,22 @@ export class SparkAgent {
   // accounting system, so that trade is taken knowingly.)
   async #recordSpend(sats, operation) {
     if (!this.#ledger) return { undo: async () => {} };
-    await this.#ledger.assertCanSpend(sats, operation);
-    const entry = await this.#ledger.record(sats, operation);
+    // Serialize check-then-record: without this, N concurrent sends
+    // (Promise.all(invoices.map(pay))) each pass assertCanSpend against the
+    // same pre-burst ledger, then each record() does load→append→atomic-
+    // rename with last-writer-wins — so the appends clobber each other, the
+    // ledger UNDERCOUNTS, and the parallel spree the budget exists to stop
+    // walks straight through. Chaining onto #spendChain makes the critical
+    // section atomic per instance. (Cross-PROCESS concurrency is still
+    // last-writer-wins by design — one ledger file per agent; see
+    // lib/spend-ledger.js.) A rejected send must not poison the queue for
+    // the next caller, so the stored chain swallows outcomes.
+    const run = this.#spendChain.then(async () => {
+      await this.#ledger.assertCanSpend(sats, operation);
+      return this.#ledger.record(sats, operation);
+    });
+    this.#spendChain = run.then(() => {}, () => {});
+    const entry = await run;
     return { undo: () => this.#ledger.unrecord(entry.id) };
   }
 
