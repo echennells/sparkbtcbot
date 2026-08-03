@@ -32,6 +32,11 @@ function info(msg) {
   stderr.write(`${msg}\n`);
 }
 
+// Piped input can deliver several lines in a single data event; the stream
+// has no concept of lines. Leftovers are kept here so the next prompt sees
+// them instead of the chars being silently swallowed with the chunk.
+let stdinCarry = "";
+
 async function promptStderr(question, { hidden = false } = {}) {
   // readline writes prompts to stdout by default, which is wrong for secrets.
   // Manual loop on stderr.
@@ -42,11 +47,25 @@ async function promptStderr(question, { hidden = false } = {}) {
       stdin.pause();
       stdin.removeListener("data", onData);
       stdin.removeListener("end", onEnd);
+      stdin.removeListener("error", onError);
     };
-    const onData = (chunk) => {
-      const data = chunk.toString();
-      for (const ch of data) {
+    const onError = (e) => {
+      cleanup();
+      reject(e);
+    };
+    // Without this, a closed/empty stdin leaves the promise pending and Node
+    // exits 0 with no error and no seed written — a silent false success.
+    const onEnd = () => {
+      cleanup();
+      reject(new Error("stdin closed without input"));
+    };
+    // Consume chars up to the first line break; stash the rest for the next
+    // prompt. Treat \r\n as a single line break.
+    const feed = (data) => {
+      for (let i = 0; i < data.length; i++) {
+        const ch = data[i];
         if (ch === "\n" || ch === "\r") {
+          stdinCarry = data.slice(ch === "\r" && data[i + 1] === "\n" ? i + 2 : i + 1);
           cleanup();
           stderr.write("\n");
           resolve(input);
@@ -55,18 +74,16 @@ async function promptStderr(question, { hidden = false } = {}) {
         input += ch;
         if (!hidden) stderr.write(ch);
       }
+      stdinCarry = "";
     };
-    // Without this, a closed/empty stdin leaves the promise pending and Node
-    // exits 0 with no error and no seed written — a silent false success.
-    const onEnd = () => {
-      cleanup();
-      reject(new Error("stdin closed without input"));
-    };
+    const onData = (chunk) => feed(chunk.toString());
     stdin.resume();
     stdin.setEncoding("utf8");
     stdin.on("data", onData);
     stdin.once("end", onEnd);
-    stdin.once("error", reject);
+    stdin.once("error", onError);
+    // Drain anything carried over from a previous prompt first.
+    if (stdinCarry) feed(stdinCarry);
   });
 }
 
@@ -202,10 +219,16 @@ async function main() {
 
 // Run main() only when executed directly (node script.js), not when this
 // file is imported as a module. realpathSync handles symlinked invocations
-// (e.g. via ~/.claude/skills).
-const isMainModule =
-  process.argv[1] &&
-  import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href;
+// (e.g. via ~/.claude/skills); if argv[1] doesn't resolve to a real file it
+// can't be this script.
+const isMainModule = (() => {
+  if (!process.argv[1]) return false;
+  try {
+    return import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href;
+  } catch {
+    return false;
+  }
+})();
 
 if (isMainModule) {
   main().catch((e) => {
