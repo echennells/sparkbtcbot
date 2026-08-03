@@ -98,7 +98,7 @@ Passing `feeQuote` matters: it pins the executed exit to the fee you previewed i
 
 The reverse direction — on-chain sats becoming Lightning spending power without opening a channel (the other job swap services used to do). Two legs: deposit L1 into Spark, then pay out over Lightning.
 
-1. **L1 → Spark**: send to the wallet's static deposit address (`getStaticDepositAddress()`), wait for confirmations, then claim. Costs: your miner fee **plus an SSP claim spread** taken at claim time. The spread cannot be computed in advance — **always preview with `getClaimStaticDepositQuote(txid, vout)` and claim with an explicit `maxFee` you accept**; small deposits are fee-dominated.
+1. **L1 → Spark**: send to the wallet's static deposit address (`getStaticDepositAddress()`), wait for **3 confirmations** (the SSP refuses to quote before then), then claim. Costs: your miner fee **plus an SSP claim spread** taken at claim time. The spread cannot be computed in advance — **always preview with `getClaimStaticDepositQuote(txid, vout)` and claim with an explicit `maxFee` you accept**; small deposits are fee-dominated. Live-measured 2026-08-04: a 10,350-sat deposit quoted a **297-sat spread** (~150 vB at the moment's ~2 sat/vB — consistent with the SSP pricing its future sweep of your UTXO, i.e. flat-ish and feerate-tracking, not a percentage), quote honored exactly at claim. The claim credit is **asynchronous** — the claim call returns a transferId and the balance lands ~30 seconds later.
 2. **Spark → Lightning**: pay any BOLT11. Cost: 0.25% + routing fees.
 
 ```javascript
