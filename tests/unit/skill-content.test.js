@@ -71,4 +71,19 @@ describe("skill-content helpers", () => {
       code: "ENOENT",
     });
   });
+
+  it("getReference rejects path-traversal names", async () => {
+    // Names come from LLM output — a crafted name must not escape referencesDir.
+    const malicious = [
+      "../../../package",
+      "../../../../../../etc/hosts",
+      "..\\..\\secret",
+      "l402.md", // suffix is added by the helper; dots are not allowed
+      "l402/extras",
+      "",
+    ];
+    for (const name of malicious) {
+      await expect(getReference(name)).rejects.toThrow(/Invalid reference name/);
+    }
+  });
 });

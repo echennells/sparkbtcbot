@@ -196,73 +196,10 @@ export class SparkAgent {
     return await this.#wallet.validateMessageWithIdentityKey(text, signature);
   }
 
-  // L402 helpers (see references/l402.md for details)
-  async fetchL402(url, options = {}) {
-    const { decode } = await import("light-bolt11-decoder");
-    const { method = "GET", headers = {}, body, maxFeeSats = 10 } = options;
-
-    const initialResponse = await fetch(url, {
-      method,
-      headers: { "Content-Type": "application/json", ...headers },
-      body: body ? JSON.stringify(body) : undefined,
-    });
-
-    if (initialResponse.status !== 402) {
-      const ct = initialResponse.headers.get("content-type") || "";
-      const data = ct.includes("json") ? await initialResponse.json() : await initialResponse.text();
-      return { paid: false, data };
-    }
-
-    const challenge = await initialResponse.json();
-    const invoice = challenge.invoice || challenge.payment_request || challenge.pr;
-    const macaroon = challenge.macaroon || challenge.token;
-    if (!invoice || !macaroon) throw new Error("Invalid L402 challenge");
-
-    const decoded = decode(invoice);
-    const amountSection = decoded.sections.find((s) => s.name === "amount");
-    const amountSats = Math.ceil(Number(amountSection.value) / 1000);
-
-    const payResult = await this.#wallet.payLightningInvoice({ invoice, maxFeeSats });
-    let preimage = payResult.paymentPreimage;
-
-    if (!preimage && payResult.id) {
-      for (let i = 0; i < 15; i++) {
-        await new Promise((r) => setTimeout(r, 500));
-        const status = await this.#wallet.getLightningSendRequest(payResult.id);
-        if (status?.paymentPreimage) { preimage = status.paymentPreimage; break; }
-        if (status?.status === "LIGHTNING_PAYMENT_FAILED") throw new Error("Payment failed");
-      }
-    }
-    if (!preimage) throw new Error("No preimage received");
-
-    const finalResponse = await fetch(url, {
-      method,
-      headers: { "Authorization": `L402 ${macaroon}:${preimage}`, ...headers },
-      body: body ? JSON.stringify(body) : undefined,
-    });
-
-    const ct = finalResponse.headers.get("content-type") || "";
-    const data = ct.includes("json") ? await finalResponse.json() : await finalResponse.text();
-    return { paid: true, amountSats, preimage, data };
-  }
-
-  async previewL402(url) {
-    const response = await fetch(url);
-    if (response.status !== 402) return { requiresPayment: false };
-
-    const { decode } = await import("light-bolt11-decoder");
-    const challenge = await response.json();
-    const invoice = challenge.invoice || challenge.payment_request;
-    const decoded = decode(invoice);
-    const amountSection = decoded.sections.find((s) => s.name === "amount");
-
-    return {
-      requiresPayment: true,
-      amountSats: Math.ceil(Number(amountSection.value) / 1000),
-      invoice,
-      macaroon: challenge.macaroon,
-    };
-  }
+  // L402 paywall payments are deliberately not part of this class. See
+  // scripts/l402-paywalls.js for the runnable fetchWithL402/previewL402
+  // implementation (pass your wallet as the first argument) and
+  // references/l402.md for the protocol details.
 
   onTransferReceived(callback) {
     this.#wallet.on("transfer:claimed", callback);
