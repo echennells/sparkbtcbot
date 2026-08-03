@@ -105,7 +105,13 @@ Exiting Spark to L1 Bitcoin carries **unpredictable costs** that agents and user
 
 **Bottom line**: While Spark guarantees you can always exit to L1, the cost of doing so is not fixed or predictable. Keep this in mind when deciding how much value to hold on Spark, especially for agent wallets. Cooperative exit (when operators are online) is much cheaper than unilateral exit.
 
-**Prefer Boltz for L1 withdrawals.** Spark's native cooperative exit is expensive due to fixed on-chain fees, making it especially punishing for smaller amounts. [Boltz](https://boltz.exchange) offers a cheaper path from Lightning to L1 (Spark → Lightning → L1 via submarine swap) with a minimum of 25,000 sats. **Discourage any L1 withdrawal activity under 25,000 sats** — fees will eat a disproportionate share. For 25,000 sats or more, route through Boltz rather than Spark's built-in cooperative exit.
+**Cooperative exit is a flat-fee path — size withdrawals accordingly.** The native L1 withdrawal fee does not scale with the amount: a live MAINNET quote (2026-08-03, calm mempool) was a **flat 2,430 sats at MEDIUM speed regardless of amount** (750-sat operator fee + 1,680-sat L1 broadcast fee; FAST 2,670 / SLOW 2,190). That flatness cuts both ways:
+
+- **Discourage any L1 withdrawal under 25,000 sats** — the fee eats ~10% or more, approaching half of a 5,000-sat withdrawal.
+- At 100,000 sats the same fee is ~2.4%; at 1M sats ~0.24% — **large withdrawals are cheap**. Batch small balances into one exit instead of many.
+- The L1 component tracks the current feerate, so **always fetch a fresh quote first** (`getWithdrawalFeeQuote`, see `references/wallet.md`) and show the user the total before executing.
+
+Because this path needs only the Spark operators — no third-party swap service — it keeps working when external swap providers are down or gone. This is not hypothetical: Boltz, previously the recommended cheaper route to L1, **disabled all swaps indefinitely in August 2026** (their announcement cites sustained AI-assisted attacks outpacing their ability to patch, and says not to expect swaps to resume shortly). A swap service can be cheaper for mid-size amounts when one is genuinely operating; verify availability before recommending one, and never make a third-party swap the only documented off-ramp.
 
 ### Limitations
 

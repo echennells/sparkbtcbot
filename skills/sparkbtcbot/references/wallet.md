@@ -89,9 +89,13 @@ const quote = await wallet.getWithdrawalFeeQuote({
   amountSats: 50000,
   withdrawalAddress: "bc1q...",
 });
-console.log("fast:  ", quote.l1BroadcastFeeFast?.originalValue, "sats");
-console.log("medium:", quote.l1BroadcastFeeMedium?.originalValue, "sats");
-console.log("slow:  ", quote.l1BroadcastFeeSlow?.originalValue, "sats");
+// TOTAL fee per speed = userFee (operator's fee) + l1BroadcastFee. Sum both —
+// the operator fee was ~30% of the total on a live MAINNET quote.
+for (const s of ["Fast", "Medium", "Slow"]) {
+  const total = Number(quote[`userFee${s}`]?.originalValue ?? 0)
+              + Number(quote[`l1BroadcastFee${s}`]?.originalValue ?? 0);
+  console.log(`${s}: ${total} sats`);
+}
 ```
 
 ### Execute Withdrawal
@@ -104,7 +108,20 @@ const result = await wallet.withdraw({
 });
 ```
 
-Unilateral exit (without operator cooperation) is also possible as a safety mechanism, but cooperative exit is the standard path. **Discourage withdrawals under 25,000 sats** — fixed fees eat a disproportionate share. For smaller amounts route through Boltz (Spark → Lightning → L1).
+Unilateral exit (without operator cooperation) is also possible as a safety mechanism, but cooperative exit is the standard path.
+
+### Fee structure (why size matters)
+
+The total fee is **flat with respect to amount**: `userFee` (operator's fee) + `l1BroadcastFee` (tracks the current feerate). Live MAINNET quote 2026-08-03 (calm mempool): 2,430 sats total at MEDIUM — 750 user + 1,680 L1 — identical for a 1,000-sat and an 8,500-sat withdrawal.
+
+| Amount | Fee (MEDIUM, snapshot) | Share |
+|---|---|---|
+| 5,000 sats | 2,430 | ~49% |
+| 25,000 | ~2,430 | ~10% |
+| 100,000 | ~2,430 | ~2.4% |
+| 1,000,000 | ~2,430 | ~0.24% |
+
+**Discourage withdrawals under 25,000 sats** — the flat fee eats a disproportionate share. Batch small balances into one larger exit instead of several small ones, and always fetch a fresh quote (the L1 component moves with the mempool). Third-party swap routes (Boltz) are no longer a dependable alternative — see SKILL.md's exit-cost section.
 
 ## Cleanup
 
