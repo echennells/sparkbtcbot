@@ -1,8 +1,8 @@
 # Changelog
 
-## 0.3.1 — 2026-08-03
+## 0.3.1 — 2026-08-04
 
-Docs-only release, prompted by Boltz disabling all swaps indefinitely (August 2026): this skill's standing advice to prefer Boltz for L1 withdrawals pointed at a service that no longer operates.
+Docs-only release, prompted by Boltz disabling all swaps indefinitely (August 2026): this skill's standing advice to prefer Boltz for L1 withdrawals pointed at a service that no longer operates. Every leg of both bridge directions was live-validated on MAINNET (2026-08-02 → 08-04) before release: Lightning receive (credited in full — the documented 0.15% was not charged; claim retained as worst case), cooperative exit (flat fee, quote honored to the sat, deducted from the amount), deposit + claim (297-sat spread on a 10,350-sat deposit, 3 confirmations required, async credit), and Lightning send (0.32% all-in to an ordinary node; **free and instant when the payee is Spark-backed** — where the payment completes as a Spark transfer with no send-request record, now documented so agents don't misread it as a failure).
 
 ### Changed
 

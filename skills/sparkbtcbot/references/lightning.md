@@ -2,7 +2,7 @@
 
 Load for any task involving Lightning Network — creating BOLT11 invoices, paying BOLT11 invoices, fee estimation. Spark wallets are fully BOLT11-compatible, so they interoperate with the entire Lightning Network.
 
-Receiving from Lightning costs **0.15%** (charged via route hints). Sending to Lightning costs **0.25% + routing fees**.
+Receiving from Lightning costs **0.15%** (charged via route hints) — though a live 6,500-sat mainnet receive (2026-08-03) was credited in full with no fee taken; treat 0.15% as the worst case, not a guarantee of the charge. Sending to Lightning costs **0.25% + routing fees** (live-measured 0.32% all-in on a 5,000-sat send).
 
 ## Create Lightning Invoice (Receive)
 
