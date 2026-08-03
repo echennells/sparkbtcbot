@@ -83,16 +83,19 @@ const quote = await wallet.getWithdrawalFeeQuote({
   withdrawalAddress: "bc1q...",
 });
 // Sum userFee + l1BroadcastFee for the chosen speed and SHOW THE USER
-// the total before executing. Then:
+// the total (and the net they'll receive) before executing:
+const feeSats = Number(quote.userFeeMedium.originalValue)
+              + Number(quote.l1BroadcastFeeMedium.originalValue);
 const result = await wallet.withdraw({
   onchainAddress: "bc1q...",
   exitSpeed: "MEDIUM",
   amountSats: 100_000,
-  feeQuote: quote, // bind the exit to the quote you just showed
+  feeQuoteId: quote.id,   // bind the exit to the quote you just showed...
+  feeAmountSats: feeSats, // ...and to the exact fee you previewed
 });
 ```
 
-Passing `feeQuote` matters: it pins the executed exit to the fee you previewed instead of letting it be re-priced at broadcast.
+Passing `feeQuoteId` + `feeAmountSats` matters: it pins the executed exit to the fee you previewed instead of letting it be re-priced at broadcast. (The older `feeQuote` object parameter does the same job but is deprecated in current SDKs.) Quotes expire (`quote.expiresAt`) — don't sit on one while waiting for user confirmation.
 
 ## L1 → Lightning On-Ramp (via Spark)
 

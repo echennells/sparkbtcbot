@@ -31,18 +31,18 @@ const staticAddr = await wallet.getStaticDepositAddress();
 const singleAddr = await wallet.getSingleUseDepositAddress();
 ```
 
-Both are P2TR (`bc1p...` on mainnet, `bcrt1p...` on regtest). Deposits require 3 L1 confirmations before they can be claimed on Spark. The wallet's background loop auto-claims static deposits once confirmed.
+Both are P2TR (`bc1p...` on mainnet, `bcrt1p...` on regtest). Deposits require 3 L1 confirmations before they can be claimed on Spark (the SSP refuses to quote before then). **Claiming is manual — there is no auto-claim.** Deposit and forget, and the funds sit unclaimed.
 
 ## Claim a Deposit
 
-If auto-claim is disabled or you want explicit control:
+The SSP takes a spread at claim time, so preview the quote and claim with an explicit fee ceiling. The spread is `deposit amount − creditAmountSats`; `claimStaticDepositWithMaxFee` aborts if the quoted spread exceeds your `maxFee`:
 
 ```javascript
 const quote = await wallet.getClaimStaticDepositQuote(txId, vout);
-const result = await wallet.claimStaticDeposit({
+// spread = depositSats - quote.creditAmountSats — show the user before claiming
+const result = await wallet.claimStaticDepositWithMaxFee({
   transactionId: txId,
-  creditAmountSats: quote.creditAmountSats,
-  sspSignature: quote.signature,
+  maxFee: 500, // ceiling you actually accept, from the quote
   outputIndex: vout,
 });
 ```
@@ -97,6 +97,8 @@ for (const s of ["Fast", "Medium", "Slow"]) {
   console.log(`${s}: ${total} sats`);
 }
 ```
+
+Two caveats about quoting: it is **not read-only** — if the wallet's leaves don't exactly match the requested amount, the quote call triggers an SSP swap that permanently restructures the leaf set (no fee, but not side-effect-free). And quotes **expire** (`quote.expiresAt`) — execute promptly after showing the user.
 
 ### Execute Withdrawal
 

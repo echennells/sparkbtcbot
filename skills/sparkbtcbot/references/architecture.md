@@ -31,7 +31,7 @@ Load when the user wants to understand how Spark works, weigh it against Lightni
 | **Lightning to Spark** (receive) | 0.15% (charged via route hints; a live 2026-08 receive was credited in full — treat as worst case) |
 | **Spark to Lightning** (send) | 0.25% + Lightning routing fees |
 | **L1 deposit to Spark** | On-chain tx fee (paid by user) **plus an SSP claim spread** at claim time — cannot be computed in advance; preview with `getClaimStaticDepositQuote` and claim with an explicit `maxFee` |
-| **Cooperative exit to L1** | On-chain broadcast fee + SSP fee: `sats_per_vbyte × (111 × 2 + tx_vbytes)` |
+| **Cooperative exit to L1** | Flat per exit, not per sat: operator fee + feerate-tracking L1 broadcast fee. Always quote first — see `references/wallet.md` |
 | **Unilateral exit to L1** | On-chain tx fee (paid by user) |
 
 Cooperative exit fees don't scale with withdrawal amount, so they're proportionally higher for smaller withdrawals. Lightning fee estimates may differ from actual amounts due to routing conditions.

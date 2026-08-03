@@ -104,6 +104,8 @@ The decrypt happens once at boot (~250ms scrypt). After that, performance is ide
 | Lose mnemonic backup | Have passphrase + `seed.enc` | Decrypt to recover mnemonic, save offline this time |
 | Lose all three | None | Funds gone |
 
+Restoring from the mnemonic recovers **cooperative** access (operators online). The unilateral-exit path additionally needs the wallet's local leaf material — the pre-signed transactions operators hand out at claim/transfer time — which is not derivable from the mnemonic. See SKILL.md's exit-cost section.
+
 The mnemonic remains the ultimate backup. Encryption defends the seed file at rest; it doesn't replace offline backup of the seed words.
 
 ## What this does not do

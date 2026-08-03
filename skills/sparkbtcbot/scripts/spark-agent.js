@@ -231,12 +231,14 @@ export class SparkAgent {
       amountSats: amount,
       withdrawalAddress: to,
     });
+    // Quote shape (0.8.x): userFee{Fast,Medium,Slow} + l1BroadcastFee{...},
+    // each a CurrencyAmount with originalValue. Total fee = userFee + l1BroadcastFee.
+    const cap = speed[0] + speed.slice(1).toLowerCase(); // "MEDIUM" -> "Medium"
+    const userFee = quote?.[`userFee${cap}`]?.originalValue;
+    const l1Fee = quote?.[`l1BroadcastFee${cap}`]?.originalValue;
+    const feeSats =
+      userFee != null && l1Fee != null ? Number(userFee) + Number(l1Fee) : null;
     if (dryRun) {
-      // The SDK's quote shape varies by SDK version (sometimes a single
-      // number, sometimes per-speed tiers). Surface the whole thing so the
-      // caller can inspect; keep estimatedFee a best-effort scalar.
-      const estimatedFee =
-        quote?.[speed.toLowerCase()] ?? quote?.fee ?? quote ?? "unknown";
       return {
         dryRun: true,
         operation: "l1_withdraw",
@@ -244,16 +246,22 @@ export class SparkAgent {
         to,
         amount: String(amount),
         unit: "sats",
-        estimatedFee: String(estimatedFee),
+        estimatedFee: feeSats != null ? String(feeSats) : "unknown",
         speed,
         network: "bitcoin",
         quote, // raw SDK quote, in case caller needs per-speed breakdown
       };
     }
+    // Bind the exit to the quote + fee just fetched (feeQuoteId/feeAmountSats;
+    // the older feeQuote object param is deprecated). Falls back to unbound
+    // if no quote was available.
     return await this.#wallet.withdraw({
       onchainAddress: to,
       exitSpeed: speed,
       amountSats: amount,
+      ...(quote && feeSats != null
+        ? { feeQuoteId: quote.id, feeAmountSats: feeSats }
+        : {}),
     });
   }
 
