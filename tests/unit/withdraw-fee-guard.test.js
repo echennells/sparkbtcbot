@@ -13,7 +13,7 @@ describe("withdraw fee ceiling binds the vetted quote (ToB fix)", () => {
   beforeEach(() => { process.env.SPARK_LEAF_VAULT = "off"; }); // no leaf-vault side effects
   afterEach(() => { if (orig === undefined) delete process.env.SPARK_LEAF_VAULT; else process.env.SPARK_LEAF_VAULT = orig; });
 
-  it("passes the vetted feeQuote into wallet.withdraw so the operator cannot re-price", async () => {
+  it("binds the executed withdraw to the vetted quote via feeQuoteId + feeAmountSats", async () => {
     let passed = null;
     const wallet = {
       getWithdrawalFeeQuote: async () => quote(100), // 100 sats on a 100k exit = 0.1% < 10%
@@ -23,8 +23,11 @@ describe("withdraw fee ceiling binds the vetted quote (ToB fix)", () => {
     const agent = new SparkAgent(wallet, "MAINNET");
     await agent.withdraw({ to: "bc1qexampledestination", amount: 100000, speed: "MEDIUM" });
     expect(passed).toBeTruthy();
-    expect(passed.feeQuote).toBeTruthy();
-    expect(passed.feeQuote.id).toBe("q1"); // execution bound to the exact quote we checked
+    // Non-deprecated binding: id + exact vetted fee (the feeQuote object param
+    // is @deprecated in the SDK and kept only as a fallback).
+    expect(passed.feeQuoteId).toBe("q1");
+    expect(passed.feeAmountSats).toBe(100);
+    expect(passed.feeQuote).toBeUndefined();
   });
 
   it("fails CLOSED (does not execute) when the quote fee is unreadable and a cap is set", async () => {

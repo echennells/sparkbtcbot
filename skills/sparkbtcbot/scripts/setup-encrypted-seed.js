@@ -2,6 +2,7 @@
 //
 // Mode selection (first match wins):
 //   1. --import flag → prompt for mnemonic on stderr (no shell-history exposure)
+import { pathToFileURL } from "node:url";
 //   2. SPARK_MNEMONIC env set → encrypt that mnemonic (one-time migration path)
 //   3. default → generate a fresh mnemonic via @buildonspark/spark-sdk
 //
@@ -17,7 +18,7 @@
 import "dotenv/config";
 import { stdin, stdout, stderr, exit, env } from "node:process";
 import { saveEncryptedMnemonic, writeMnemonicBackupFile, DEFAULT_SEED_PATH, MIN_PASSPHRASE_CHARS } from "../../../lib/encrypted-seed.js";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { dirname } from "node:path";
 
 const SEED_PATH = env.SPARK_SEED_PATH || DEFAULT_SEED_PATH;
@@ -258,7 +259,22 @@ async function main() {
   stdout.write("  const { wallet } = await SparkWallet.initialize({ mnemonicOrSeed: mnemonic, ... });\n");
 }
 
-main().catch((e) => {
-  err(`setup failed: ${e.message}`);
-  exit(1);
-});
+// Run main() only when executed directly (node script.js), not when this
+// file is imported as a module. realpathSync handles symlinked invocations
+// (e.g. via ~/.claude/skills); if argv[1] doesn't resolve to a real file it
+// can't be this script.
+const isMainModule = (() => {
+  if (!process.argv[1]) return false;
+  try {
+    return import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href;
+  } catch {
+    return false;
+  }
+})();
+
+if (isMainModule) {
+  main().catch((e) => {
+    err(`setup failed: ${e.message}`);
+    exit(1);
+  });
+}

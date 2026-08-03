@@ -668,14 +668,18 @@ export class SparkAgent {
     // Budget counts amount + the vetted fee — both leave the wallet on an exit.
     const spend = await this.#recordSpend(Number(amount) + (check.fee ?? 0), "l1_withdraw");
     try {
-      // Bind the executed exit to the SAME quote we just vetted: the SDK derives
-      // feeAmountSats + feeQuoteId from `feeQuote`, so the operator charges the quoted
-      // fee we checked rather than re-pricing at broadcast (closes the TOCTOU gap).
+      // Bind the executed exit to the SAME quote we just vetted, so the operator
+      // charges the quoted fee we checked rather than re-pricing at broadcast
+      // (closes the TOCTOU gap). feeQuoteId + feeAmountSats is the current SDK
+      // API; the `feeQuote` object param does the same but is @deprecated — kept
+      // only as the fallback when our reader couldn't extract a scalar fee.
       return await this.#wallet.withdraw({
         onchainAddress: to,
         exitSpeed: speed,
         amountSats: amount,
-        feeQuote: quote,
+        ...(check.fee != null && quote?.id
+          ? { feeQuoteId: quote.id, feeAmountSats: check.fee }
+          : { feeQuote: quote }),
       });
     } catch (err) {
       await spend.undo().catch(() => {});

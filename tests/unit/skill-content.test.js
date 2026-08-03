@@ -72,4 +72,12 @@ describe("skill-content helpers", () => {
       code: "ENOENT",
     });
   });
+
+  // A crafted (e.g. prompt-injected) name must not traverse out of
+  // referencesDir — "../SECURITY" previously read arbitrary .md files.
+  it("getReference rejects path-traversal and non-kebab names", async () => {
+    for (const bad of ["../SECURITY", "../../etc/passwd", "a/b", "A", "notes.md", ""]) {
+      await expect(getReference(bad)).rejects.toThrow(/Invalid reference name/);
+    }
+  });
 });

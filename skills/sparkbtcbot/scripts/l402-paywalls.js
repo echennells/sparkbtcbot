@@ -1,4 +1,6 @@
 import "dotenv/config";
+import { pathToFileURL } from "node:url";
+import { realpathSync } from "node:fs";
 import { SparkWallet } from "@buildonspark/spark-sdk";
 // light-bolt11-decoder is a single-maintainer package (fiatjaf). Pinned to an
 // exact version in package.json. Used here only to extract the amount field
@@ -252,7 +254,22 @@ async function main() {
   wallet.cleanup();
 }
 
-main().catch((err) => {
-  console.error("Error:", err.message);
-  process.exit(1);
-});
+// Run main() only when executed directly (node script.js), not when this
+// file is imported as a module. realpathSync handles symlinked invocations
+// (e.g. via ~/.claude/skills); if argv[1] doesn't resolve to a real file it
+// can't be this script.
+const isMainModule = (() => {
+  if (!process.argv[1]) return false;
+  try {
+    return import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href;
+  } catch {
+    return false;
+  }
+})();
+
+if (isMainModule) {
+  main().catch((err) => {
+    console.error("Error:", err.message);
+    process.exit(1);
+  });
+}
