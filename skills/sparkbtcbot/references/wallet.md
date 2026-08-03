@@ -114,6 +114,8 @@ Unilateral exit (without operator cooperation) is also possible as a safety mech
 
 The total fee is **flat with respect to amount**: `userFee` (operator's fee) + `l1BroadcastFee` (tracks the current feerate). Live MAINNET quote 2026-08-03 (calm mempool): 2,430 sats total at MEDIUM — 750 user + 1,680 L1 — identical for a 1,000-sat and an 8,500-sat withdrawal.
 
+**The fee is deducted from `amountSats`, not charged on top**: the L1 address receives `amount − fee`. Live-validated 2026-08-03: an 8,000-sat withdrawal with a 1,950-sat quote debited exactly 8,000 from Spark and delivered exactly 6,050 on-chain. Tell the user the *net* they'll receive before executing.
+
 | Amount | Fee (MEDIUM, snapshot) | Share |
 |---|---|---|
 | 5,000 sats | 2,430 | ~49% |
