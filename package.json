@@ -1,6 +1,6 @@
 {
   "name": "sparkbtcbot-skill",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Spark Bitcoin L2 wallet skill for AI agents — encrypted-at-rest seed storage, Lightning interop, L402 paywall payment, BTKN/LRC20 tokens. Works with Claude Code (via plugin marketplace) and any other LLM agent framework (via the npm package's getSkillContent helpers).",
   "keywords": [
     "claude",

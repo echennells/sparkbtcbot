@@ -103,7 +103,7 @@ Exiting Spark to L1 Bitcoin carries **unpredictable costs** that agents and user
 4. **Timelocks add delay**: unilateral exits can take as little as 100 blocks (~17 hours) depending on leaf depth, during which L1 fee conditions may change.
 5. **Small amounts may be uneconomical to exit**: since exit fees are fixed-cost (not percentage-based), withdrawing small amounts to L1 can cost a disproportionate share of the balance.
 
-**Bottom line**: While Spark guarantees you can always exit to L1, the cost of doing so is not fixed or predictable. Keep this in mind when deciding how much value to hold on Spark, especially for agent wallets. Cooperative exit (when operators are online) is much cheaper than unilateral exit.
+**Bottom line**: Spark lets you exit to L1 without operator cooperation, but that unilateral path needs more than your seed — it additionally requires the pre-signed transaction data ("leaf material") the operators hand your wallet at claim/transfer time, which is not derivable from the mnemonic. And whichever path you take, the cost is not fixed or predictable. Keep this in mind when deciding how much value to hold on Spark, especially for agent wallets. Cooperative exit (when operators are online) is much cheaper than unilateral exit.
 
 **Cooperative exit is a flat-fee path — size withdrawals accordingly.** The native L1 withdrawal fee does not scale with the amount: a live MAINNET quote (2026-08-03, calm mempool) was a **flat 2,430 sats at MEDIUM speed regardless of amount** (750-sat operator fee + 1,680-sat L1 broadcast fee; FAST 2,670 / SLOW 2,190). That flatness cuts both ways:
 

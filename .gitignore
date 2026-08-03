@@ -1,6 +1,20 @@
 node_modules/
 .env
 .env.local
+.env.old-*
 .devcontainer/
 sparkbtcbot-proxy/
 temp/
+
+# Mainnet unilateral-exit test artifacts: the seed controls real funds and the
+# recovery packages are needed to claim them. Never commit any of these.
+.mainnet-*
+recovery-packages-*
+*-seed.txt
+
+# Working checkouts and binary artifacts that live alongside this repo but do
+# not belong in it (nested repos, git bundles, harness tarballs).
+spark-unilateral-exit/
+wavelength/
+*.bundle
+*.tar.gz

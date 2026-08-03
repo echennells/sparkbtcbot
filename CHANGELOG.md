@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.1 — 2026-08-03
+
+Docs-only release, prompted by Boltz disabling all swaps indefinitely (August 2026): this skill's standing advice to prefer Boltz for L1 withdrawals pointed at a service that no longer operates.
+
+### Changed
+
+- **Removed the Boltz recommendation; documented the native routes instead.** L1 off/on-ramping is now documented as the two-leg paths that depend only on the Spark operators: **Lightning → L1** (receive over Lightning at 0.15%, then cooperative exit) and **L1 → Lightning** (deposit + claim with a previewed fee ceiling, then pay out at 0.25% + routing) — both new sections in `references/lightning.md`. Boltz remains mentioned only as factual context; no third-party swap is a documented dependency anymore.
+- **Real cooperative-exit fee numbers, from a live MAINNET quote (2026-08-03).** The exit fee is flat with respect to amount — 2,430 sats at MEDIUM (750 operator fee + 1,680 feerate-tracking L1 broadcast fee) for a 1,000-sat and an 8,500-sat withdrawal alike. Documented consequences in `SKILL.md` and `references/wallet.md`: withdrawals under 25,000 sats stay discouraged, large exits are cheap (~0.24% at 1M sats), batch small balances, always quote first, and sum **both** quote components — the old example printed only `l1BroadcastFee`, silently omitting the operator's `userFee` (~30% of the real cost).
+- **Corrected the unilateral-exit overstatement.** "Spark guarantees you can always exit to L1" implied the seed alone suffices; exiting without operator cooperation additionally requires the pre-signed leaf material operators hand the wallet at claim/transfer time, which is not derivable from the mnemonic.
+
 ## 0.3.0 — 2026-05-29
 
 ### Added

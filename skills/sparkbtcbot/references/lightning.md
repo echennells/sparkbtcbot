@@ -94,6 +94,31 @@ const result = await wallet.withdraw({
 
 Passing `feeQuote` matters: it pins the executed exit to the fee you previewed instead of letting it be re-priced at broadcast.
 
+## L1 → Lightning On-Ramp (via Spark)
+
+The reverse direction — on-chain sats becoming Lightning spending power without opening a channel (the other job swap services used to do). Two legs: deposit L1 into Spark, then pay out over Lightning.
+
+1. **L1 → Spark**: send to the wallet's static deposit address (`getStaticDepositAddress()`), wait for confirmations, then claim. Costs: your miner fee **plus an SSP claim spread** taken at claim time. The spread cannot be computed in advance — **always preview with `getClaimStaticDepositQuote(txid, vout)` and claim with an explicit `maxFee` you accept**; small deposits are fee-dominated.
+2. **Spark → Lightning**: pay any BOLT11. Cost: 0.25% + routing fees.
+
+```javascript
+// Leg 1 — deposit, then claim with a previewed fee ceiling
+const depositAddress = await wallet.getStaticDepositAddress();
+// ... send L1 funds to depositAddress, wait for confirmation ...
+const quote = await wallet.getClaimStaticDepositQuote(txid, 0);
+// Show the user creditAmountSats vs the deposit before claiming:
+const claimed = await wallet.claimStaticDepositWithMaxFee({
+  transactionId: txid,
+  outputIndex: 0,
+  maxFee: /* a ceiling you actually accept, from the quote */,
+});
+
+// Leg 2 — pay out over Lightning (0.25% + routing)
+await wallet.payLightningInvoice({ invoice: "lnbc...", maxFeeSats: 25 });
+```
+
+Slower than the off-ramp direction (leg 1 waits for on-chain confirmations) and its first-leg cost is variable where the off-ramp's is quotable — state both to the user up front.
+
 ## Receive on REGTEST
 
 REGTEST Lightning invoices have prefix `lnbcrt` (instead of `lnbc` for mainnet, `lntb` for testnet). The funded REGTEST test wallet can pay these via Spark's hosted REGTEST.
