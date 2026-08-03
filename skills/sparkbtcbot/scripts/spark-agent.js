@@ -46,6 +46,26 @@ function rejectUnknownOptions(method, rest) {
   }
 }
 
+// Same doctrine one level down: a numeric guard option that is PRESENT but
+// unreadable must throw, not degrade to "no cap". `maxFeePct: "10%"` produces
+// NaN — and NaN silently disables the ceiling it was meant to set (the SDK's
+// `feeCharged > maxFee` is false for NaN; the fee-guards treat a non-finite
+// cap as "no cap set" by design, since the lib's posture is lenient/defer).
+// Strictness about values lives here in the wrapper, next to strictness about
+// keys. undefined/null means "not provided" and is fine — absent is a choice,
+// garbage is a bug. Returns the finite number, or undefined when absent.
+function requireNumericOption(method, name, value) {
+  if (value === undefined || value === null) return undefined;
+  const n = Number(value);
+  if (!Number.isFinite(n)) {
+    throw new Error(
+      `SparkAgent.${method}: ${name} must be a number, got ${JSON.stringify(value)} — ` +
+      `an unreadable ceiling silently disables the guard it's meant to set.`,
+    );
+  }
+  return n;
+}
+
 // Terminal failure statuses from the SDK's LightningSendRequestStatus enum —
 // every one means this payment will never settle. USER_SWAP_RETURNED is the
 // subtle one: the payment failed and the funds were already returned.
@@ -321,6 +341,10 @@ export class SparkAgent {
   // before paying when stakes warrant it.
   async payLightningInvoice(bolt11, { maxFeeSats, amountSats, maxAmountSats = 10_000, dryRun = false, ...rest } = {}) {
     rejectUnknownOptions("payLightningInvoice", rest);
+    // Validate BEFORE any I/O: a garbage ceiling must throw here, not degrade
+    // to "no cap set" inside the guards (see requireNumericOption).
+    const maxFee = requireNumericOption("payLightningInvoice", "maxFeeSats", maxFeeSats);
+    const maxAmt = requireNumericOption("payLightningInvoice", "maxAmountSats", maxAmountSats) ?? 10_000;
     const invoiceAmt = invoiceAmountSats(bolt11); // embedded amount; undefined for amountless/undecodable
     const est = await this.#wallet.getLightningSendFeeEstimate({
       encodedInvoice: bolt11,
@@ -344,13 +368,13 @@ export class SparkAgent {
     const amt = invoiceAmt ?? amountSats;
     // Fee cap: amount-aware (0.5% of amount, min 25 sats — Spark's flat fee
     // component alone hit 25 on a live 4.5k-sat send). Explicit maxFeeSats wins.
-    const cap = maxFeeSats ?? lightningFeeCap({ amountSats: amt, estimatedFeeSats: estimatedFee });
+    const cap = maxFee ?? lightningFeeCap({ amountSats: amt, estimatedFeeSats: estimatedFee });
     const feeCheck = checkFeeAgainstCap(estimatedFee, cap);
     // Amount ceiling: the fee cap alone CANNOT stop an induced full-balance send
     // (routing ~0.25% always fits a 0.5% fee cap), so bound the AMOUNT too — the
     // same guard the L402 path uses. Fails closed on an amountless/undecodable
     // invoice. Raise maxAmountSats for a genuinely larger send.
-    const amtCheck = checkL402Amount({ amountSats: amt, maxAmountSats });
+    const amtCheck = checkL402Amount({ amountSats: amt, maxAmountSats: maxAmt });
     const ok = feeCheck.ok && amtCheck.ok;
     const reason = !amtCheck.ok ? amtCheck.reason : feeCheck.reason;
     if (dryRun) {
@@ -363,7 +387,7 @@ export class SparkAgent {
         unit: "sats",
         estimatedFee: estimatedFee != null ? String(estimatedFee) : "unknown",
         maxFeeSats: String(cap),
-        maxAmountSats: String(maxAmountSats),
+        maxAmountSats: String(maxAmt),
         withinCap: ok,
         capReason: ok ? "within caps" : reason,
         network: "lightning",
@@ -547,11 +571,19 @@ export class SparkAgent {
   }
 
   // Allowlist applies to every receiver in the batch. One disallowed
-  // recipient blocks the whole batch — that's the safer default.
+  // recipient blocks the whole batch — that's the safer default. An entry
+  // whose receiver can't be read can't be checked: fail CLOSED like
+  // fulfillInvoice, never skip the gate for that entry.
   async batchTransferTokens(transfers) {
     for (const t of transfers) {
       const to = t.receiverSparkAddress ?? t.to;
-      if (to) await this.#assertAllowed(to);
+      if (!to) {
+        throw new Error(
+          "SparkAgent.batchTransferTokens: every entry needs a recipient (receiverSparkAddress) — " +
+            "refusing to forward an entry whose receiver cannot be checked.",
+        );
+      }
+      await this.#assertAllowed(to);
     }
     return await this.#wallet.batchTransferTokens(transfers);
   }
@@ -571,7 +603,11 @@ export class SparkAgent {
   // credit and the ceiling that would be enforced, without claiming.
   async claimDeposit({ txid, vout = 0, maxFeeSats, maxFeePct = 10, dryRun = false, ...rest }) {
     rejectUnknownOptions("claimDeposit", rest);
-    const explicit = Number.isFinite(Number(maxFeeSats)) ? Number(maxFeeSats) : null;
+    // Garbage ceiling values throw here (requireNumericOption): a NaN maxFee
+    // passed to the SDK never trips its `feeCharged > maxFee` check, which
+    // would silently remove the ceiling entirely.
+    const explicit = requireNumericOption("claimDeposit", "maxFeeSats", maxFeeSats) ?? null;
+    const pct = requireNumericOption("claimDeposit", "maxFeePct", maxFeePct) ?? 10;
     let cap = explicit;
     let credit = null;
     if (cap === null || dryRun) {
@@ -587,7 +623,7 @@ export class SparkAgent {
               "cannot be derived — pass an explicit maxFeeSats to claim anyway.",
           );
         }
-        cap = Math.ceil((credit * Number(maxFeePct)) / 100);
+        cap = Math.ceil((credit * pct) / 100);
       }
     }
     if (dryRun) {
@@ -621,6 +657,11 @@ export class SparkAgent {
   // address). dryRun returns the fee quote without broadcasting.
   async withdraw({ to, amount, speed = "MEDIUM", maxFeeSats, maxFeePct = 10, dryRun = false, ...rest }) {
     rejectUnknownOptions("withdraw", rest);
+    // Garbage ceiling values throw BEFORE any I/O (requireNumericOption) — a
+    // non-finite cap would silently disable the ceiling below, and the quote
+    // fetch itself is not side-effect-free (it can restructure leaves).
+    const pct = requireNumericOption("withdraw", "maxFeePct", maxFeePct) ?? 10;
+    const abs = requireNumericOption("withdraw", "maxFeeSats", maxFeeSats);
     await this.#assertAllowed(to);
     const quote = await this.#wallet.getWithdrawalFeeQuote({
       amountSats: amount,
@@ -629,11 +670,10 @@ export class SparkAgent {
     // Total exit fee = userFee + l1BroadcastFee for the chosen speed. Ceiling:
     // reject an exit whose fee exceeds maxFeePct (default 10%) of the amount or an
     // absolute maxFeeSats — which legibly refuses uneconomical small withdrawals,
-    // consistent with "discourage sub-25k-sat exits". Unreadable quote => proceed
-    // (defer to the SDK) rather than block a valid withdrawal.
+    // consistent with "discourage sub-25k-sat exits".
     const fee = withdrawalTotalFee(quote, speed);
-    const pctCap = Number.isFinite(Number(maxFeePct)) ? Math.ceil((Number(amount) * Number(maxFeePct)) / 100) : Infinity;
-    const absCap = Number.isFinite(Number(maxFeeSats)) ? Number(maxFeeSats) : Infinity;
+    const pctCap = Number.isFinite(Number(amount)) ? Math.ceil((Number(amount) * pct) / 100) : Infinity;
+    const absCap = abs ?? Infinity;
     const cap = Math.min(pctCap, absCap);
     // Unlike the Lightning/L402/claim paths — which hand the SDK a SERVER-enforced
     // maxFee — the executed withdraw binds to `feeQuote` below. So an UNREADABLE quote
@@ -710,6 +750,9 @@ export class SparkAgent {
     // the exact phantom-dryRun failure the wrapper exists to prevent.
     rejectUnknownOptions("fetchL402", rest);
     assertHttpsUrl("fetchL402", url);
+    // Garbage ceiling values throw BEFORE any network I/O (requireNumericOption).
+    const maxFee = requireNumericOption("fetchL402", "maxFeeSats", maxFeeSats);
+    const maxAmt = requireNumericOption("fetchL402", "maxAmountSats", maxAmountSats) ?? 10_000;
 
     const initialResponse = await fetch(url, {
       method,
@@ -736,7 +779,7 @@ export class SparkAgent {
     // paywall can demand an arbitrarily large invoice, and fetchL402 re-fetches a
     // fresh 402 challenge (so previewL402's price is NOT authoritative). Also
     // refuses an amountless invoice. Raise maxAmountSats for pricier resources.
-    const amtCheck = checkL402Amount({ amountSats, maxAmountSats });
+    const amtCheck = checkL402Amount({ amountSats, maxAmountSats: maxAmt });
     if (!amtCheck.ok) throw new Error(`L402 payment blocked: ${amtCheck.reason}. Raise maxAmountSats to override.`);
 
     // Route through the guarded wrapper so the payment also gets the amount-aware
@@ -745,7 +788,7 @@ export class SparkAgent {
     // status and reports { settled: false } on timeout instead of throwing —
     // because after this line the money is GONE. A thrown timeout invites a
     // retry that pays the invoice a second time.
-    const payResult = await this.payAndSettle(invoice, { maxFeeSats });
+    const payResult = await this.payAndSettle(invoice, { maxFeeSats: maxFee });
     const preimage = payResult.paymentPreimage;
     if (!preimage) {
       const err = new Error(
