@@ -32,4 +32,14 @@ describe("reveal-mnemonic non-interactive refusal", () => {
     expect(r.code).toBe(3);
     expect(r.stderr).not.toMatch(/decrypt|No encrypted seed/i); // gate fires first
   });
+  // ToB F1: the gate must check stdin too — otherwise a piped `y\n` auto-answers
+  // the confirm. execFile pipes stdin, so feeding "y\n" must STILL refuse.
+  it("a piped `y\\n` cannot auto-answer the confirm (stdin-TTY also required)", async () => {
+    const r = await run("node", [SCRIPT], {
+      env: { ...process.env, SPARK_PASSPHRASE: "correcthorsebatterystaple" },
+      input: "y\n",
+    }).then((x) => ({ code: 0, ...x }), (e) => ({ code: e.code, stdout: e.stdout ?? "", stderr: e.stderr ?? "" }));
+    expect(r.code).toBe(3);
+    expect(r.stdout).toBe("");
+  });
 });

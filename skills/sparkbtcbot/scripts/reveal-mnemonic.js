@@ -2,17 +2,24 @@
 // user can back it up offline — WITHOUT ever writing a persistent plaintext file
 // (the old MNEMONIC_BACKUP_*.txt undercut encryption-at-rest until it was rm'd).
 //
-// This prints a seed phrase. Two protections keep it out of an agent's transcript:
-//   1. It REFUSES to run unless stdout is a real TTY. An AI agent running this
-//      over a Bash tool captures stdout into a pipe (isTTY=false) — so it aborts
-//      and prints nothing. Run it yourself, in your own terminal.
-//   2. It requires an explicit y/N confirmation before printing.
+// This prints a seed phrase. Protections, and their HONEST limits:
+//   1. It refuses unless BOTH stdout AND stdin are real TTYs. An agent running
+//      this over a plain Bash tool has piped stdio (isTTY=false) — it aborts and
+//      prints nothing. Requiring stdin-TTY also stops a piped `y\n` from
+//      auto-answering the confirm below.
+//   2. It requires an interactive y/N confirmation before printing.
 //
-// (This adds no attack surface a compromised process didn't already have: any
-// process with the passphrase + seed file can call loadMnemonic directly. The
-// TTY gate defends the *honest-agent-captures-stdout* mistake, not a compromise.)
+// LIMIT (do not oversell this): the TTY check is a backstop against the ACCIDENTAL
+// capture — an agent that helpfully runs the command with piped output. It is NOT
+// a defense against a determined agent that allocates a full pseudo-terminal
+// (under a PTY, isTTY is true and the PTY output is exactly what gets captured).
+// Nothing can make "print a secret to a terminal the caller controls" safe. The
+// real protection is the behavioral rule "the agent must not run this — the user
+// runs it themselves", plus: this adds no attack surface a compromised process
+// lacked, since anything with the passphrase + seed file can call loadMnemonic
+// directly. So: backstop against a mistake, not a security boundary.
 import "dotenv/config";
-import { stdout, stderr, exit, env } from "node:process";
+import { stdin, stdout, stderr, exit, env } from "node:process";
 import { pathToFileURL } from "node:url";
 import { realpathSync } from "node:fs";
 import { loadMnemonic, DEFAULT_SEED_PATH, MIN_PASSPHRASE_CHARS } from "../../../lib/encrypted-seed.js";
@@ -21,10 +28,12 @@ import { promptStderr } from "./prompt.js";
 const SEED_PATH = env.SPARK_SEED_PATH || DEFAULT_SEED_PATH;
 
 async function main() {
-  // Gate 1: only a real interactive terminal. A captured/piped stdout (an agent
-  // Bash tool, CI, a `| tee`) means the words would land somewhere durable —
-  // refuse and say why.
-  if (!stdout.isTTY) {
+  // Gate: require a real interactive terminal on BOTH ends. Piped/captured
+  // stdout (an agent Bash tool, CI, `| tee`) would land the words somewhere
+  // durable; piped stdin would let a canned `y\n` auto-answer the confirm below.
+  // (This does NOT stop an agent that allocates a full PTY — see the header; the
+  // real guard is "the user runs this, not the agent".)
+  if (!stdout.isTTY || !stdin.isTTY) {
     stderr.write(
       "reveal-mnemonic: refusing to print your seed phrase to a non-interactive session.\n" +
       "This is almost always an AI agent capturing output. Run it yourself, in your\n" +
