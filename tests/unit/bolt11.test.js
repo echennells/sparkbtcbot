@@ -73,4 +73,22 @@ describe("invoiceSecondsRemaining / invoiceIsExpired", () => {
     expect(invoiceIsExpired("lnbc1notreal")).toBe(true); // can't read the clock => don't pay
     expect(invoiceIsExpired(undefined)).toBe(true);
   });
+  // ToB F1: a non-finite clock (bad caller-supplied nowMs) must fail CLOSED,
+  // not read as "not expired" via NaN comparisons all being false.
+  it("fails closed on a non-finite nowMs (bad clock => expired, not open)", () => {
+    expect(invoiceSecondsRemaining(INVOICE_7D_EXPIRY, NaN)).toBe(null);
+    expect(invoiceSecondsRemaining(INVOICE_7D_EXPIRY, Number("not-a-date"))).toBe(null);
+    expect(invoiceIsExpired(INVOICE_7D_EXPIRY, NaN)).toBe(true);
+  });
+  // ToB F2: expiry is the RELATIVE tag value (seconds from timestamp), not an
+  // absolute epoch. At creation time, a 7-day invoice has ~604800s left — NOT
+  // ~604800 + timestamp. This pins the semantics against a decoder change that
+  // would flip the source to absolute and silently make every invoice look valid.
+  it("treats expiry as relative seconds, never absolute epoch (fail-open guard)", () => {
+    const atCreation = 1785852311 * 1000;
+    const rem = invoiceSecondsRemaining(INVOICE_7D_EXPIRY, atCreation);
+    expect(rem).toBeGreaterThan(604000);
+    expect(rem).toBeLessThanOrEqual(604800);
+    expect(rem).toBeLessThan(700000); // NOT ~1.79e9 (would be ts+expiry if absolute)
+  });
 });
