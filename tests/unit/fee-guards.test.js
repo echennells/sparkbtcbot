@@ -7,6 +7,7 @@ import {
   checkFeeAgainstCap,
   checkL402Amount,
   checkInvoiceAgainstQuote,
+  estimateOnrampDeposit,
   withdrawalTotalFee,
 } from "../../lib/fee-guards.js";
 
@@ -238,5 +239,45 @@ describe("estimateFirstFeeCap growth bound", () => {
   });
   it("the bound never drops the cap below the amount-scaled base", () => {
     expect(estimateFirstFeeCap({ amountSats: 10_000, estimatedFeeSats: 10_000, maxCapSats: 1 })).toBe(50);
+  });
+});
+
+// The on-ramp under-funding bug: an agent quoted "deposit 5,019" to pay a
+// 5,000-sat invoice (invoice + Lightning fee only), forgetting the SSP claim
+// spread. After the ~300-sat spread, ~4,719 credited -> payment failed.
+describe("estimateOnrampDeposit (fee composition across both legs)", () => {
+  it("includes the claim spread the naive sum omits (the 5k-invoice bug)", () => {
+    const { depositSats, breakdown } = estimateOnrampDeposit({
+      invoiceSats: 5000, lightningFeeSats: 19, claimSpreadBufferSats: 500, slackSats: 0,
+    });
+    expect(depositSats).toBe(5519);              // NOT the buggy 5019
+    expect(depositSats).toBeGreaterThan(5019);   // covers the claim leg
+    expect(breakdown).toEqual({ invoiceSats: 5000, lightningFeeSats: 19, claimSpreadBufferSats: 500, slackSats: 0 });
+  });
+  it("a 5,019 deposit would leave the invoice UNFUNDED after a 300-sat spread", () => {
+    // sanity anchor for the failure mode: credited = deposit - spread
+    const credited = 5019 - 300;
+    expect(credited).toBeLessThan(5000 + 19); // < invoice + fee -> can't pay
+    // the helper's answer, minus the same spread, DOES cover it:
+    const { depositSats } = estimateOnrampDeposit({ invoiceSats: 5000, lightningFeeSats: 19 });
+    expect(depositSats - 300).toBeGreaterThanOrEqual(5000 + 19);
+  });
+  it("defaults: 500-sat spread buffer, 0 lightning/slack", () => {
+    expect(estimateOnrampDeposit({ invoiceSats: 1000 }).depositSats).toBe(1500);
+  });
+  it("ceils fractional inputs and sums slack", () => {
+    expect(estimateOnrampDeposit({ invoiceSats: 1000.4, lightningFeeSats: 5, claimSpreadBufferSats: 300, slackSats: 100 }).depositSats).toBe(1406);
+  });
+  it("throws on a non-positive or unreadable invoice amount", () => {
+    expect(() => estimateOnrampDeposit({ invoiceSats: 0 })).toThrow(/positive number/);
+    expect(() => estimateOnrampDeposit({ invoiceSats: "5k" })).toThrow(/positive number/);
+    expect(() => estimateOnrampDeposit({})).toThrow(/positive number/);
+  });
+  it("throws on negative/garbage fee components (no silent under-buffer)", () => {
+    expect(() => estimateOnrampDeposit({ invoiceSats: 5000, claimSpreadBufferSats: -100 })).toThrow(/non-negative/);
+    expect(() => estimateOnrampDeposit({ invoiceSats: 5000, lightningFeeSats: "free" })).toThrow(/non-negative/);
+  });
+  it("rejects misspelled options instead of dropping them", () => {
+    expect(() => estimateOnrampDeposit({ invoiceSats: 5000, claimSpreadBuffer: 500 })).toThrow(/unknown option/);
   });
 });

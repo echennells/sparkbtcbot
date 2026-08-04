@@ -191,6 +191,21 @@ export function checkInvoiceAgainstQuote(
 ): InvoiceQuoteCheck;
 
 /**
+ * How many sats to DEPOSIT on L1 to fund a downstream Lightning payment via the
+ * on-ramp. Accounts for BOTH fee legs — the Lightning fee AND the SSP claim
+ * spread (which "invoice + lightning fee" alone omits, under-funding every
+ * time). The result is a floor-with-margin, not exact: the claim spread isn't
+ * knowable until 3 confirmations, so pay from the real credited balance after.
+ */
+export function estimateOnrampDeposit(options: {
+  invoiceSats: number;
+  lightningFeeSats?: number;
+  /** Conservative buffer for the SSP claim spread; default 500 (measured ~297). */
+  claimSpreadBufferSats?: number;
+  slackSats?: number;
+}): { depositSats: number; breakdown: { invoiceSats: number; lightningFeeSats: number; claimSpreadBufferSats: number; slackSats: number } };
+
+/**
  * Operator-present fee cap: the amount-scaled cap, but never below the live
  * estimate plus headroom. Unattended agents should prefer the wrapper's
  * refuse-legibly behavior instead.

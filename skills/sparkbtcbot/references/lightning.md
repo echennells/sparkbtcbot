@@ -109,10 +109,27 @@ if (remaining == null || remaining < SAFE_BUFFER_SECONDS) {
 }
 ```
 
+**How much to deposit — sum BOTH fee legs, never just one.** The flow crosses two fee boundaries, so "deposit = invoice + Lightning fee" *under-funds every time*: the SSP takes a **claim spread** when the deposit is credited, so what lands on Spark is `deposit − spread`, not `deposit`. A 5,000-sat invoice is NOT funded by a 5,019-sat deposit — after a ~300-sat spread only ~4,719 credits, and the payment fails with the on-chain fee already spent. And the spread isn't knowable until 3 confirmations, so there is no exact figure to quote up front. Deposit with a buffer, then pay from what actually credited:
+
+```javascript
+import { estimateOnrampDeposit } from "sparkbtcbot-skill";
+
+const lnFee = /* agent.estimateLightningFee(bolt11) result in sats */;
+const { depositSats } = estimateOnrampDeposit({
+  invoiceSats: 5000,
+  lightningFeeSats: lnFee,     // the Spark→Lightning leg
+  claimSpreadBufferSats: 500,  // the SSP claim leg — conservative; real spread known only at claim
+  slackSats: 200,              // headroom for feerate drift in the spread
+});
+// Tell the user "send AT LEAST depositSats" — never a single exact number that
+// omits the claim leg. Then, after the claim, verify the REAL credited balance
+// (deposit − quote.creditAmountSats) covers invoice + Lightning fee before paying.
+```
+
 Only if the invoice comfortably outlasts the window do the two legs:
 
-1. **L1 → Spark**: send to `getStaticDepositAddress()`, wait **3 confirmations** (the SSP refuses to quote before then), then claim with a fee ceiling — `agent.claimDeposit({ txid, vout, dryRun })` previews the quoted credit, and the claim enforces a size-aware ceiling (`maxFeePct`, default 10% of the quoted credit). Costs: your miner fee plus the SSP claim spread (live-measured 297 sats on a 10,350-sat deposit; quote honored exactly). The credit is **asynchronous** (~30s after the claim returns).
-2. **Spark → Lightning**: pay any BOLT11 via `agent.payLightningInvoice` (0.25% + routing worst case; free if the payee is Spark-backed, see above). Re-check `invoiceIsExpired(bolt11)` right before paying — the clock kept running through leg 1.
+1. **L1 → Spark**: send **at least `depositSats`** (above) to `getStaticDepositAddress()` — note this is an **L1 `bc1p…`/`bcrt1p…` address, on-chain, NOT a Spark `sp1…` address**. Wait **3 confirmations** (the SSP refuses to quote before then), then claim with a fee ceiling — `agent.claimDeposit({ txid, vout, dryRun })` previews the quoted credit, and the claim enforces a size-aware ceiling (`maxFeePct`, default 10% of the quoted credit). Costs: your miner fee plus the SSP claim spread (live-measured 297 sats on a 10,350-sat deposit; quote honored exactly). The credit is **asynchronous** (~30s after the claim returns).
+2. **Spark → Lightning**: confirm the **actual credited balance** covers `invoiceSats + Lightning fee` (it will if the deposit had margin; if a fee spike ate the buffer, ask for a top-up rather than a failed pay), then pay via `agent.payLightningInvoice` (0.25% + routing worst case; free if the payee is Spark-backed). Re-check `invoiceIsExpired(bolt11)` right before paying — the clock kept running through leg 1.
 
 **The sustainable pattern is "fund the Spark wallet from L1 once, then pay invoices instantly from the balance"** — the two-step nature is correct there, and the balance sitting in Spark has no clock. Reserve one-shot "pay this invoice starting from on-chain" for invoices with generous (multi-hour) expiries; for genuinely time-critical invoices from cold L1, a submarine swap that fronts the Lightning payment is the right tool, not this. Tell the user up front: the on-ramp is slower than it looks, the claim spread is only knowable at quote time, and the invoice must outlive the confirmation wait.
 
