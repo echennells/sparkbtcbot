@@ -129,6 +129,8 @@ In that one case, **ask the user before installing** whether they want npm suppl
 
 **The settings themselves are NOT defined here — the source of truth is the [`echennells/supply-chain-hardening`](https://github.com/echennells/supply-chain-hardening) repo.** Read its npm config there and apply those keys/values (they are version-sensitive — e.g. npm's `min-release-age` package cooldown only enforces on npm ≥ 11.10.0; `ignore-scripts` can break native-build deps though it is fine for this skill's pure-JS tree). Do not hard-code or invent a recipe here; if the user already has their own `~/.npmrc` policy, follow it instead of overriding.
 
+**npm version is best-effort, not a gate.** Prefer npm 12+ (disables install scripts by default; needs Node `^22.22.2 || ^24.15.0 || >=26`), accept 11.10.0+ (the age-gate floor — fine when Node can't support 12, e.g. Node 20), and if only an older npm is available, **proceed anyway** — tell the user the cooldown won't enforce and lean on lockfile/pinned-version hardening instead. `npm install -g npm@latest` grabs the newest npm the current Node supports. Never block or refuse wallet setup over the npm version; it only hardens the dependency install, not the wallet.
+
 ## Setup
 
 The mnemonic is **never** stored in plaintext. The skill encrypts it at rest with a passphrase the user provides; the running app reads `SPARK_PASSPHRASE` from env and decrypts the seed file once at boot. There is no plaintext-mnemonic-in-`.env` mode.

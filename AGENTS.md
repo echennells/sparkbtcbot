@@ -47,6 +47,23 @@ repo. Read its npm config there and apply those keys/values; they are version-se
 npm's `min-release-age` package cooldown only enforces on npm ≥ 11.10.0). Do not hard-code or
 invent a recipe. If the user already has their own `~/.npmrc` policy, follow it instead.
 
+**Check the npm version** (`npm --version`) and upgrade if you reasonably can — but this is
+best-effort hardening, **not a gate**. Preference order, take the best you can actually get:
+- **npm 12+** (needs Node `^22.22.2 || ^24.15.0 || >=26`) — also disables package install/
+  lifecycle scripts by default, the biggest cut to the `postinstall` attack surface in years.
+- **npm 11.10.0–11.x** — the floor where the `min-release-age` package cooldown enforces at all.
+  Perfectly fine when the Node version can't support 12 (e.g. Node 20). This is a good outcome,
+  not a fallback to apologize for.
+- **older npm** — the age-gate silently no-ops. You may **still proceed**: tell the user the
+  cooldown won't enforce, lean on the other hardening (lockfile / `npm ci`, pinned versions),
+  and let them decide.
+
+`npm install -g npm@latest` installs the newest npm your Node supports, so it's a safe one-liner
+regardless of where you land. Distro-packaged npm (Ubuntu `apt` ships ~9.x even next to Node 22
+LTS) runs far behind, so prefer the upgrade over trusting the system npm. **Do not block or
+refuse wallet setup over the npm version** — it only hardens the dependency install; the wallet
+itself works on any supported Node/npm.
+
 ## Full guidance
 
 - `skills/sparkbtcbot/SKILL.md` — always-loaded skill body: security rules, setup, navigator.

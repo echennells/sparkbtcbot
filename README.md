@@ -10,6 +10,8 @@ Built on [Spark](https://docs.spark.money), a Bitcoin Layer 2 with instant, near
 
 > ⚠️ **Handles real Bitcoin.** Mainnet by default, full custody the moment the seed is decrypted, no built-in spending caps — treat the agent like a hot wallet. Use a dedicated wallet with limited funds, or run [sparkbtcbot-proxy](https://github.com/echennells/sparkbtcbot-proxy) for server-enforced per-transaction and daily limits.
 
+> 🤖 **If you are an AI agent, read [`AGENTS.md`](./AGENTS.md) before running any wallet code.** Non-negotiables: never print or echo the mnemonic **or** the passphrase (both control all funds); never run `npm run reveal-mnemonic` yourself; and if you `git clone`/`npm install` for the user, offer supply-chain hardening **first**. Full behavioral guidance is in [`SKILL.md`](./skills/sparkbtcbot/SKILL.md).
+
 **Best for:** autonomous agents that send/receive small amounts — pay per API call, get paid for a task, tip, settle up — plus dev/test on REGTEST and trusted agents you control.
 **Not for:** custody of large balances on the direct SDK path, or anything needing hard spending caps or revocable access (use the proxy for those).
 
@@ -163,6 +165,7 @@ npm install @buildonspark/spark-sdk dotenv light-bolt11-decoder
 Recommendations:
 - Never expose the mnemonic or passphrase in code, logs, or version control
 - Treat `SPARK_PASSPHRASE` like any production secret (deployment secret manager, `.env` in `.gitignore`, etc.)
+- **Use a current npm (`npm install -g npm@latest`).** Prefer **v12+** — it disables package install/lifecycle scripts by default, killing the `postinstall` supply-chain attack class (needs Node `^22.22.2 || ^24.15.0 || >=26`); otherwise **11.10.0+** is the floor where the package-cooldown age-gate (`min-release-age`) enforces at all (fine on Node 20, which can't run npm 12). Distro-packaged npm (Ubuntu `apt` ships ~9.x even alongside Node 22 LTS) runs years behind and silently ignores hardening keys, so upgrade rather than trust the system npm. The hardening config itself lives in the [`supply-chain-hardening`](https://github.com/echennells/supply-chain-hardening) repo.
 - Don't bundle `seed.enc` into container images that ship alongside the passphrase
 - Use a dedicated wallet with limited funds for each agent
 - Use separate `accountNumber` values for different funding tiers
