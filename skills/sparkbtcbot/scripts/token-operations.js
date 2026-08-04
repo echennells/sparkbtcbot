@@ -3,8 +3,6 @@ import { pathToFileURL } from "node:url";
 import { realpathSync } from "node:fs";
 import { SparkWallet } from "@buildonspark/spark-sdk";
 import { loadMnemonicFromEnv } from "../../../lib/encrypted-seed.js";
-import { realpathSync } from "node:fs";
-import { pathToFileURL } from "node:url";
 
 const network = process.env.SPARK_NETWORK || "MAINNET";
 
