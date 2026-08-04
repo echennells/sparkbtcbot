@@ -115,21 +115,20 @@ cp .env.example .env
 $EDITOR .env
 
 # One-time setup: generate a wallet, encrypt the mnemonic at ~/.spark/seed.enc.
-# This also writes a backup file (~/.spark/MNEMONIC_BACKUP_*.txt, mode 0600)
-# containing the 12 words; setup prints the path.
+# The 12 words are NOT printed and NOT written to disk in plaintext.
 npm run setup
 
-# Back up the mnemonic offline (paper / password manager / hardware backup),
-# then delete the backup file:
-cat ~/.spark/MNEMONIC_BACKUP_*.txt   # confirm path matches what setup printed
-rm  ~/.spark/MNEMONIC_BACKUP_*.txt   # AFTER you have a copy offline
+# Back up the mnemonic offline. Run this in YOUR OWN terminal (it refuses to run
+# non-interactively so it can't be captured into an agent's transcript):
+npm run reveal-mnemonic          # decrypts seed.enc, prints the 12 words once
+# copy them to paper / password manager / hardware backup. No file to delete.
 
 # Run the examples
 npm run example:balance
 npm run example:payments
 ```
 
-The mnemonic is **never** stored in plaintext anywhere the runtime reads. `npm run setup` writes an encrypted seed file (`~/.spark/seed.enc`, mode 0600); the runtime reads `SPARK_PASSPHRASE` from env and decrypts it once at boot. The backup file from setup is a one-time artifact for the user to copy from — it does not auto-delete; you `rm` it once you have an offline backup. See `skills/sparkbtcbot/references/encrypted-seed.md` for the threat model and recovery scenarios.
+The mnemonic is **never** stored in plaintext anywhere the runtime reads. `npm run setup` writes an encrypted seed file (`~/.spark/seed.enc`, mode 0600); the runtime reads `SPARK_PASSPHRASE` from env and decrypts it once at boot. To back up the words offline, run `npm run reveal-mnemonic` in your own terminal — it decrypts the seed and prints the mnemonic once, and **refuses to run non-interactively** so it can't be captured into an AI agent's transcript. See `skills/sparkbtcbot/references/encrypted-seed.md` for the threat model and recovery scenarios.
 
 ## Example Scripts
 
