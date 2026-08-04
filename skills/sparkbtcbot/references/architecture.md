@@ -7,7 +7,7 @@ Load when the user wants to understand how Spark works, weigh it against Lightni
 1. Users hold their own keys (BIP39 mnemonic) — fully self-custodial.
 2. Transactions are cooperatively signed by a threshold of Signing Operators (SOs).
 3. Funds live in Bitcoin UTXOs organized in hierarchical trees.
-4. Users can always exit to L1 unilaterally if operators go offline.
+4. Users can exit to L1 unilaterally if operators go offline — **but only with a local backup of their leaf material** (the pre-signed exit txs); a seed phrase alone is not sufficient. See `references/unilateral-exit.md`.
 
 ## Spark vs Lightning vs On-Chain
 
@@ -29,16 +29,63 @@ Load when the user wants to understand how Spark works, weigh it against Lightni
 |-----------|-----|
 | **Spark-to-Spark transfer** | Free (small flat fee coming in 6-12 months) |
 | **Lightning to Spark** (receive) | 0.15% (charged via route hints; a live 2026-08 receive was credited in full — treat as worst case) |
-| **Spark to Lightning** (send) | 0.25% + Lightning routing fees |
-| **L1 deposit to Spark** | On-chain tx fee (paid by user) **plus an SSP claim spread** at claim time — cannot be computed in advance; preview with `getClaimStaticDepositQuote` and claim with an explicit `maxFee` |
-| **Cooperative exit to L1** | Flat per exit, not per sat: operator fee + feerate-tracking L1 broadcast fee. Always quote first — see `references/wallet.md` |
+| **Spark to Lightning** (send) | 0.25% + Lightning routing fees (live-measured 0.32% all-in; **free** when the payee is Spark-backed — see `references/lightning.md`) |
+| **L1 deposit to Spark** | On-chain tx fee (paid by user) **plus an SSP claim spread** at claim time — see below (live-measured: 297 sats on a 10,350-sat deposit) |
+| **Cooperative exit to L1** | Flat per exit, not per sat: operator fee + feerate-tracking L1 broadcast fee, deducted from the amount (live 2026-08: ~2,000–2,700 sats at MEDIUM). Always quote first — `references/wallet.md` |
 | **Unilateral exit to L1** | On-chain tx fee (paid by user) |
 
 Cooperative exit fees don't scale with withdrawal amount, so they're proportionally higher for smaller withdrawals. Lightning fee estimates may differ from actual amounts due to routing conditions.
 
+**Deposits cost more than the miner fee.** Claiming a deposit pays the SSP a spread for sweeping that UTXO on chain, charged on top of the transaction the user already paid for, and it cannot be computed client-side before committing (`references/wallet.md`). So a deposit crosses two fee boundaries, not one, and small deposits are fee-dominated the same way small withdrawals are: **preview with `getClaimStaticDepositQuote` and claim with an explicit `maxFee` you would actually be happy to pay** — the illustrative `maxFee: 5000` in the docs is a placeholder, not a recommendation, and would be a large share of a small deposit.
+
+**Moving small balances in from L1 is usually not worth it.** Below roughly the same 25,000-sat scale that governs withdrawals, the miner fee plus the claim spread eat a meaningful percentage, and the balance is then effectively one-way (it can leave as Lightning payments, but not economically as an on-chain withdrawal). Prefer folding stray L1 UTXOs into a larger transaction you were making anyway, or funding Spark directly from an outside wallet.
+
 ## Key Advantage for Agents
 
 A single mnemonic provides identity, wallet, and payment capabilities — no separate identity system, no wallet provider accounts, no channel management. Spark-to-Spark transfers are free, making it significantly cheaper than Lightning routing fees, on-chain miner fees (200+ sats), or card processing (2-3%). For agents doing frequent microtransactions, zero fees mean no value lost to overhead.
+
+## Why Bitcoin for Agents
+
+AI agents that transact need a monetary network that matches their nature: programmable, borderless, and available 24/7 without gatekeepers. Bitcoin is that network.
+
+- **Hard-capped supply** — 21 million coins, protocol-enforced ceiling.
+- **No account required** — generate a key and you're on the network. Matters for autonomous agents that can't fill out forms.
+- **Irreversible settlement** — once confirmed, transactions cannot be reversed. Agents don't handle chargebacks.
+- **Open infrastructure** — public network, transparent fee market. Agents can audit their own costs and verify their own balances without trusting an intermediary.
+- **Proven reliability** — operating continuously since 2009, no successful base-protocol attack, ~$1T+ in secured value.
+
+## Trust Model — Important Tradeoffs
+
+Spark has **different trust assumptions than native Lightning**. Be upfront about these when advising users.
+
+**1-of-n operator trust**: Spark requires that at least 1 of n Signing Operators behaves honestly during a transfer. Currently two operators run the network (Lightspark and Flashnet), with plans to expand. Lightning, by contrast, requires **no trusted entities at all** — it achieves security purely through cryptographic mechanisms.
+
+**Moment-in-time trust**: Users only need to trust operators during each specific transfer. Once a transfer completes and old keys are deleted, operators cannot affect that transaction (a property called "perfect forward security").
+
+**What operators CAN do**: view transfer metadata, temporarily delay transactions by going offline, refuse to process new transfers (censorship).
+
+**What operators CANNOT do**: move funds without user signatures, steal Bitcoin (even with full collusion), reverse finalized transactions.
+
+**Core limitation**: Spark lacks provable finality. Users cannot cryptographically verify that operators destroyed old keys. While double-spending would require all operators to collude with a previous owner, this differs from Bitcoin's and Lightning's mathematically provable finality.
+
+**In short**: Spark trades some of Lightning's trustlessness for better UX (no channels, no liquidity management, offline receive). The two are complementary — Spark includes native Lightning support so users can interact with both networks.
+
+## Unpredictable L1 Exit Costs
+
+Exiting Spark to L1 Bitcoin carries **unpredictable costs** that agents and users must understand:
+
+1. **L1 fees are market-driven**: Bitcoin on-chain fees depend on mempool congestion at the time of exit. During high-fee periods, exit costs can spike significantly.
+2. **Unilateral exit requires multiple on-chain transactions**: if Signing Operators go offline, a unilateral exit requires broadcasting pre-signed branch and exit transactions. The number of transactions depends on the tree depth of your leaf — multiple on-chain fees can stack.
+3. **Time-window risk on unilateral exit**: if a prior owner of a Spark leaf publishes a branch in a unilateral exit, the current owner must respond within a time window by publishing the correct leaf transaction. Failure to respond means the attacker can claim the funds. Watchtower services exist to monitor for this; it's a real operational requirement.
+4. **Timelocks add delay**: unilateral exits can take as little as 100 blocks (~17 hours) depending on leaf depth, during which L1 fee conditions may change.
+5. **Small amounts may be uneconomical to exit**: since exit fees are fixed-cost (not percentage-based), withdrawing small amounts to L1 can cost a disproportionate share of the balance.
+
+**Bottom line**: While Spark lets you exit to L1 unilaterally — *provided your leaf material is backed up locally* (a seed phrase alone cannot exit; see `references/unilateral-exit.md`) — the cost of doing so is not fixed or predictable. Cooperative exit (when operators are online) is much cheaper: a **flat per-exit fee** (operator fee + feerate-tracking L1 broadcast fee; live 2026-08 quotes ~2,000–2,700 sats at MEDIUM), deducted from the amount. Discourage any L1 withdrawal under 25,000 sats — the flat fee eats ≥ ~10% — and batch small balances into one exit. Do **not** route users through third-party swap services by default: Boltz, previously recommended here, disabled all swaps indefinitely in August 2026; the native exit is performed by the Spark operators (the SSP) — one fewer external dependency to fail, but still a 1-of-n operator trust model (they can delay/censor, not steal), not a trustless or third-party-free path.
+
+## Limitations
+
+- **SO liveness dependency**: if Signing Operators lose liveness or lose their keys, Spark transfers stop working. Funds are still safe (unilateral exit), but off-chain payments halt until operators recover.
+- **Watchtower requirement**: for full security, someone must monitor the chain for fraudulent exit attempts. Can be delegated to a watchtower service but is an operational dependency.
 
 ## Tools
 

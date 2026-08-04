@@ -1,7 +1,7 @@
 {
   "name": "sparkbtcbot-skill",
-  "version": "0.3.1",
-  "description": "Spark Bitcoin L2 wallet skill for AI agents — encrypted-at-rest seed storage, Lightning interop, L402 paywall payment, BTKN/LRC20 tokens. Works with Claude Code (via plugin marketplace) and any other LLM agent framework (via the npm package's getSkillContent helpers).",
+  "version": "0.4.0",
+  "description": "Spark Bitcoin L2 wallet skill for AI agents \u2014 encrypted-at-rest seed storage, Lightning interop, L402 paywall payment, BTKN/LRC20 tokens, and guarded real-world purchases (Bitrefill gift cards, nadanada eSIMs/VPNs) with invoice-vs-quote verification. Works with Claude Code (via plugin marketplace) and any other LLM agent framework (via the npm package's getSkillContent helpers).",
   "keywords": [
     "claude",
     "claude-code",
@@ -24,12 +24,12 @@
     "mcp",
     "btc"
   ],
-  "homepage": "https://github.com/echennells/sparkbtcbot-skill",
+  "homepage": "https://github.com/echennells/sparkbtcbot",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/echennells/sparkbtcbot-skill.git"
+    "url": "git+https://github.com/echennells/sparkbtcbot.git"
   },
-  "bugs": "https://github.com/echennells/sparkbtcbot-skill/issues",
+  "bugs": "https://github.com/echennells/sparkbtcbot/issues",
   "license": "MIT",
   "author": "Eric Chennells",
   "type": "module",
@@ -39,6 +39,12 @@
     ".": {
       "types": "./lib/index.d.ts",
       "import": "./lib/index.js"
+    },
+    "./leaf-vault": {
+      "import": "./skills/sparkbtcbot/scripts/leaf-vault.js"
+    },
+    "./leaf-vault/core": {
+      "import": "./lib/leaf-vault.js"
     }
   },
   "files": [
@@ -59,19 +65,22 @@
     "example:tokens": "node skills/sparkbtcbot/scripts/token-operations.js",
     "example:agent": "node skills/sparkbtcbot/scripts/spark-agent.js",
     "example:l402": "node skills/sparkbtcbot/scripts/l402-paywalls.js",
+    "leaf-vault": "node skills/sparkbtcbot/scripts/leaf-vault-cli.js",
     "test": "vitest run tests/unit",
     "test:unit": "vitest run tests/unit",
     "test:integration": "vitest run tests/integration --exclude tests/integration/funded",
     "test:funded": "vitest run tests/integration/funded",
-    "test:all": "vitest run"
+    "test:all": "vitest run",
+    "reveal-mnemonic": "node skills/sparkbtcbot/scripts/reveal-mnemonic.js"
   },
   "dependencies": {
-    "@buildonspark/issuer-sdk": "^0.1.37",
-    "@buildonspark/spark-sdk": "^0.8.1",
+    "@buildonspark/issuer-sdk": "^0.1.45",
+    "@buildonspark/spark-sdk": "^0.9.0",
+    "@noble/curves": "^1.9.7",
     "dotenv": "^17.4.2",
     "light-bolt11-decoder": "^3.2.0"
   },
   "devDependencies": {
-    "vitest": "^4.1.7"
+    "vitest": "^4.1.9"
   }
 }

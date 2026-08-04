@@ -4,7 +4,7 @@ Thanks for taking a look. This is a small single-maintainer project, but contrib
 
 ## Bugs and feature requests
 
-Open an issue at https://github.com/echennells/sparkbtcbot-skill/issues. For bugs, please include:
+Open an issue at https://github.com/echennells/sparkbtcbot/issues. For bugs, please include:
 
 - What you ran (the exact `npm run …` script or code snippet)
 - What you expected

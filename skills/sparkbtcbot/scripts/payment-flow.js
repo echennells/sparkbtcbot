@@ -1,4 +1,6 @@
 import "dotenv/config";
+import { pathToFileURL } from "node:url";
+import { realpathSync } from "node:fs";
 import { SparkWallet } from "@buildonspark/spark-sdk";
 import { loadMnemonicFromEnv } from "../../../lib/encrypted-seed.js";
 import { realpathSync } from "node:fs";
@@ -60,7 +62,7 @@ async function main() {
   //
   // const payment = await wallet.payLightningInvoice({
   //   invoice: "lnbc...",
-  //   maxFeeSats: 10,
+  //   maxFeeSats: 25,  // size to the amount — a flat 10 blocks sends >~4,000 sats; see references/lightning.md
   //   preferSpark: true,
   // });
   // console.log("Payment sent:", payment);
@@ -74,7 +76,7 @@ async function main() {
   // });
   // console.log("Transfer:", transfer.id);
 
-  wallet.cleanupConnections();
+  wallet.cleanup();
 }
 
 // Run main() only when executed directly (node script.js), not when this

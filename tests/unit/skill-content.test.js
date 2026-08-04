@@ -48,6 +48,7 @@ describe("skill-content helpers", () => {
       "extras",
       "l402",
       "lightning",
+      "security",
       "spark-invoices",
       "tokens",
       "wallet",
@@ -72,18 +73,11 @@ describe("skill-content helpers", () => {
     });
   });
 
-  it("getReference rejects path-traversal names", async () => {
-    // Names come from LLM output — a crafted name must not escape referencesDir.
-    const malicious = [
-      "../../../package",
-      "../../../../../../etc/hosts",
-      "..\\..\\secret",
-      "l402.md", // suffix is added by the helper; dots are not allowed
-      "l402/extras",
-      "",
-    ];
-    for (const name of malicious) {
-      await expect(getReference(name)).rejects.toThrow(/Invalid reference name/);
+  // A crafted (e.g. prompt-injected) name must not traverse out of
+  // referencesDir — "../SECURITY" previously read arbitrary .md files.
+  it("getReference rejects path-traversal and non-kebab names", async () => {
+    for (const bad of ["../SECURITY", "../../etc/passwd", "a/b", "A", "notes.md", ""]) {
+      await expect(getReference(bad)).rejects.toThrow(/Invalid reference name/);
     }
   });
 });

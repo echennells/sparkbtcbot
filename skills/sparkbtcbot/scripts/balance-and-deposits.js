@@ -1,4 +1,6 @@
 import "dotenv/config";
+import { pathToFileURL } from "node:url";
+import { realpathSync } from "node:fs";
 import { SparkWallet } from "@buildonspark/spark-sdk";
 import { loadMnemonicFromEnv } from "../../../lib/encrypted-seed.js";
 import { realpathSync } from "node:fs";
@@ -53,7 +55,7 @@ async function main() {
     console.log("\nNo transfers yet.");
   }
 
-  wallet.cleanupConnections();
+  wallet.cleanup();
 }
 
 // Run main() only when executed directly (node script.js), not when this

@@ -1,4 +1,6 @@
 import "dotenv/config";
+import { pathToFileURL } from "node:url";
+import { realpathSync } from "node:fs";
 import { SparkWallet } from "@buildonspark/spark-sdk";
 // light-bolt11-decoder is a single-maintainer package (fiatjaf). Pinned to an
 // exact version in package.json. Used here only to extract the amount field
@@ -6,6 +8,7 @@ import { SparkWallet } from "@buildonspark/spark-sdk";
 // for payment, so a malicious decoder can mislead pricing but cannot redirect
 // funds. Re-audit on version bump.
 import { decode } from "light-bolt11-decoder";
+import { checkL402Amount, lightningFeeCap } from "../../../lib/fee-guards.js";
 import { loadMnemonicFromEnv } from "../../../lib/encrypted-seed.js";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
@@ -63,7 +66,7 @@ async function parseChallenge(response) {
  * Caches tokens by domain so repeat requests don't pay again.
  */
 async function fetchWithL402(wallet, url, options = {}) {
-  const { method = "GET", headers = {}, body, maxFeeSats = 10 } = options;
+  const { method = "GET", headers = {}, body, maxFeeSats, maxAmountSats = 10_000 } = options;
   const domain = new URL(url).host;
   const reqHeaders = { "Content-Type": "application/json", ...headers };
   const reqBody = body ? JSON.stringify(body) : undefined;
@@ -122,11 +125,20 @@ async function fetchWithL402(wallet, url, options = {}) {
   const amountSats = Math.ceil(Number(amountSection.value) / 1000);
   console.log(`Invoice amount: ${amountSats} sats`);
 
-  // Step 4: Pay the invoice
-  console.log("Paying invoice...");
+  // Bound the AMOUNT, not just the routing fee — a malicious/compromised paywall
+  // can demand an arbitrarily large invoice. Raise maxAmountSats for pricier resources.
+  const amtCheck = checkL402Amount({ amountSats, maxAmountSats });
+  if (!amtCheck.ok) throw new Error(`L402 payment blocked: ${amtCheck.reason}. Raise maxAmountSats to override.`);
+
+  // Step 4: Pay the invoice. Fee cap comes from the LIBRARY, not an inline
+  // formula — the lib's floor is 25 because a live 4,464-sat payment carried a
+  // 25-sat estimate that an inlined max(10, 0.5%) under-capped and the SDK
+  // refused. Copy-pasting this script must inherit that lesson, not re-lose it.
+  const feeCap = maxFeeSats ?? lightningFeeCap({ amountSats });
+  console.log(`Paying invoice (max fee ${feeCap} sats)...`);
   const payResult = await wallet.payLightningInvoice({
     invoice,
-    maxFeeSats,
+    maxFeeSats: feeCap,
   });
 
   // Get preimage (may need to poll if payment is async)
@@ -229,7 +241,7 @@ async function main() {
   //
   // console.log("=== Fetch with L402 Payment ===");
   // const result = await fetchWithL402(wallet, L402_TEST_URL, {
-  //   maxFeeSats: 10,
+  //   maxFeeSats: 25,  // size to the amount — a flat 10 blocks sends >~4,000 sats; see references/lightning.md
   // });
   // console.log("Paid:", result.paid);
   // if (result.amountSats) console.log("Amount:", result.amountSats, "sats");
@@ -241,7 +253,7 @@ async function main() {
   // console.log("Paid:", result2.paid, "Cached:", result2.cached);
   // console.log("Data:", result2.data);
 
-  wallet.cleanupConnections();
+  wallet.cleanup();
 }
 
 // Run main() only when executed directly (node script.js), not when this

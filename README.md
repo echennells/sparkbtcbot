@@ -1,8 +1,17 @@
-# sparkbtcbot-skill
+# sparkbtcbot
 
-Spark Bitcoin L2 wallet skill for AI agents — give an agent its own Bitcoin wallet so it can send and receive money on its own: pay for an API call, get paid for a task, tip, or settle up, without a human signing off on every transaction.
+[![CI](https://github.com/echennells/sparkbtcbot/actions/workflows/ci.yml/badge.svg)](https://github.com/echennells/sparkbtcbot/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
+[![Node](https://img.shields.io/badge/node-%E2%89%A518-brightgreen.svg)](https://nodejs.org)
+
+Spark Bitcoin L2 wallet skill for AI agents — give an agent its own Bitcoin wallet so it can send and receive money on its own: pay for an API call, get paid for a task, tip, settle up — or buy real-world things (gift cards, eSIMs, VPNs) from Bitcoin-accepting merchants, with guardrails that verify every invoice against its quote before a sat moves.
 
 Built on [Spark](https://docs.spark.money), a Bitcoin Layer 2 with instant, near-zero-fee transfers and native Lightning support — and fully self-custodial, so the agent holds its own keys. Use it in Claude Code as a plugin, or in any other LLM agent framework via the npm package.
+
+> ⚠️ **Handles real Bitcoin.** Mainnet by default, full custody the moment the seed is decrypted, no built-in spending caps — treat the agent like a hot wallet. Use a dedicated wallet with limited funds, or run [sparkbtcbot-proxy](https://github.com/echennells/sparkbtcbot-proxy) for server-enforced per-transaction and daily limits.
+
+**Best for:** autonomous agents that send/receive small amounts — pay per API call, get paid for a task, tip, settle up — plus dev/test on REGTEST and trusted agents you control.
+**Not for:** custody of large balances on the direct SDK path, or anything needing hard spending caps or revocable access (use the proxy for those).
 
 ## What is Spark?
 
@@ -26,6 +35,8 @@ Spark is a Bitcoin Layer 2 that lets you send and receive Bitcoin instantly with
 - **Withdrawal** — Cooperative exit back to L1 Bitcoin with fee estimation
 - **Message Signing** — Prove identity via cryptographic signatures
 - **L402 Paywalls** — Pay-per-request APIs via Lightning. Preview costs, pay invoices, cache tokens.
+- **Merchant Purchases** — Buy real-world goods and services (gift cards via [Bitrefill](https://www.bitrefill.com), eSIMs/VPNs/burner numbers via [nadanada](https://nadanada.me)) over Lightning, governed by a shared payment policy: invoice-vs-quote verification, amount ceilings, confirm-before-buy, PII consent, bearer-secret handling. Live-validated with real purchases.
+- **Unilateral-Exit Backup** — Auto-maintained `spark.unilateral-exit-bundle.v1` recovery bundle, consumed by Blink's [spark-unilateral-exit](https://github.com/blinkbitcoin/spark-unilateral-exit) tool if the operators ever go dark. Verify with `npm run leaf-vault -- verify`.
 
 ## Installation
 
@@ -34,7 +45,7 @@ Two install paths depending on your stack.
 ### Claude Code
 
 ```bash
-claude plugin marketplace add https://github.com/echennells/sparkbtcbot-skill
+claude plugin marketplace add https://github.com/echennells/sparkbtcbot
 claude plugin install sparkbtcbot
 ```
 
@@ -57,7 +68,8 @@ const instructions = await getSkillContent();
 // On-demand reference docs by name
 console.log(await listReferences());
 // → ['agent-class', 'architecture', 'encrypted-seed', 'extras', 'l402',
-//    'lightning', 'spark-invoices', 'tokens', 'wallet']
+//    'lightning', 'recovery-scenarios', 'security', 'spark-invoices',
+//    'tokens', 'unilateral-exit', 'wallet']
 const l402Doc = await getReference("l402");
 ```
 
@@ -70,13 +82,22 @@ await saveEncryptedMnemonic({ mnemonic, passphrase, path: "./seed.enc" });
 const decrypted = await loadMnemonicFromEnv(); // reads SPARK_PASSPHRASE
 ```
 
+And the unilateral-exit backup (the "leaf-vault") via its subpath export:
+
+```javascript
+import { enableLeafVault, snapshotLeafVault, verifyVault } from "sparkbtcbot-skill/leaf-vault";
+
+const vault = enableLeafVault(wallet); // auto-refreshing recovery bundle
+// ... later: await vault.dispose();   // flushes a final snapshot if needed
+```
+
 The package has zero runtime dependencies beyond Node 18+ built-ins.
 
 ### Local clone (for running the example scripts and tests yourself)
 
 ```bash
-git clone https://github.com/echennells/sparkbtcbot-skill.git ~/.claude/skills/sparkbtcbot-skill
-cd ~/.claude/skills/sparkbtcbot-skill
+git clone https://github.com/echennells/sparkbtcbot.git ~/.claude/skills/sparkbtcbot
+cd ~/.claude/skills/sparkbtcbot
 npm install
 ```
 
@@ -86,7 +107,7 @@ The Quick Start below assumes this path — useful if you want to kick the tires
 
 ```bash
 # Install dependencies (in the cloned skill directory)
-cd ~/.claude/skills/sparkbtcbot-skill
+cd ~/.claude/skills/sparkbtcbot
 npm install
 
 # Copy env template, set SPARK_PASSPHRASE (>=12 chars)

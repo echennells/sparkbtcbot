@@ -16,7 +16,7 @@ export async function createTestWallet(opts = {}) {
 export async function cleanupAllWallets() {
   for (const w of tracked) {
     try {
-      await w.cleanupConnections();
+      await w.cleanup();
     } catch {}
   }
   tracked.clear();

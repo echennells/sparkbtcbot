@@ -1,7 +1,8 @@
 // Interactive one-time setup: encrypts a BIP39 mnemonic at rest.
 //
 // Mode selection (first match wins):
-//   1. --import flag → prompt for mnemonic on stderr (hidden input, no echo, no shell-history exposure)
+//   1. --import flag → prompt for mnemonic on stderr (no shell-history exposure)
+import { pathToFileURL } from "node:url";
 //   2. SPARK_MNEMONIC env set → encrypt that mnemonic (one-time migration path)
 //   3. default → generate a fresh mnemonic via @buildonspark/spark-sdk
 //
@@ -15,11 +16,9 @@
 // instructions if generated fresh.
 
 import "dotenv/config";
-import { stdin, stdout, stderr, exit, env } from "node:process";
-import { saveEncryptedMnemonic, writeMnemonicBackupFile, DEFAULT_SEED_PATH } from "../../../lib/encrypted-seed.js";
+import { stdout, stderr, exit, env } from "node:process";
+import { saveEncryptedMnemonic, DEFAULT_SEED_PATH, MIN_PASSPHRASE_CHARS } from "../../../lib/encrypted-seed.js";
 import { existsSync, realpathSync } from "node:fs";
-import { dirname } from "node:path";
-import { pathToFileURL } from "node:url";
 
 const SEED_PATH = env.SPARK_SEED_PATH || DEFAULT_SEED_PATH;
 const NETWORK = env.SPARK_NETWORK || "MAINNET";
@@ -32,67 +31,14 @@ function info(msg) {
   stderr.write(`${msg}\n`);
 }
 
-// Piped input can deliver several lines in a single data event; the stream
-// has no concept of lines. Leftovers are kept here so the next prompt sees
-// them instead of the chars being silently swallowed with the chunk.
-let stdinCarry = "";
-
-async function promptStderr(question, { hidden = false } = {}) {
-  // readline writes prompts to stdout by default, which is wrong for secrets.
-  // Manual loop on stderr.
-  return new Promise((resolve, reject) => {
-    stderr.write(question);
-    let input = "";
-    const cleanup = () => {
-      stdin.pause();
-      stdin.removeListener("data", onData);
-      stdin.removeListener("end", onEnd);
-      stdin.removeListener("error", onError);
-    };
-    const onError = (e) => {
-      cleanup();
-      reject(e);
-    };
-    // Without this, a closed/empty stdin leaves the promise pending and Node
-    // exits 0 with no error and no seed written — a silent false success.
-    const onEnd = () => {
-      cleanup();
-      reject(new Error("stdin closed without input"));
-    };
-    // Consume chars up to the first line break; stash the rest for the next
-    // prompt. Treat \r\n as a single line break.
-    const feed = (data) => {
-      for (let i = 0; i < data.length; i++) {
-        const ch = data[i];
-        if (ch === "\n" || ch === "\r") {
-          stdinCarry = data.slice(ch === "\r" && data[i + 1] === "\n" ? i + 2 : i + 1);
-          cleanup();
-          stderr.write("\n");
-          resolve(input);
-          return;
-        }
-        input += ch;
-        if (!hidden) stderr.write(ch);
-      }
-      stdinCarry = "";
-    };
-    const onData = (chunk) => feed(chunk.toString());
-    stdin.resume();
-    stdin.setEncoding("utf8");
-    stdin.on("data", onData);
-    stdin.once("end", onEnd);
-    stdin.once("error", onError);
-    // Drain anything carried over from a previous prompt first.
-    if (stdinCarry) feed(stdinCarry);
-  });
-}
+import { promptStderr } from "./prompt.js";
 
 async function getPassphrase() {
   if (env.SPARK_PASSPHRASE) {
     info("Using SPARK_PASSPHRASE from env.");
     return env.SPARK_PASSPHRASE;
   }
-  const a = await promptStderr("Set encryption passphrase (>= 12 chars): ", { hidden: true });
+  const a = await promptStderr(`Set encryption passphrase (>= ${MIN_PASSPHRASE_CHARS} chars): `, { hidden: true });
   const b = await promptStderr("Confirm passphrase: ", { hidden: true });
   if (a !== b) {
     err("Passphrases do not match.");
@@ -116,11 +62,7 @@ async function getMnemonicSource() {
   // Order: explicit --import flag, then SPARK_MNEMONIC env, then generate fresh.
   const args = process.argv.slice(2);
   if (args.includes("--import")) {
-    // Hidden: stderr (and anything capturing it, e.g. an agent transcript)
-    // must not get a verbatim copy of the mnemonic. Paste corruption is
-    // still caught — the SDK verifies the mnemonic below and the printed
-    // Spark address lets the user confirm the right wallet loaded.
-    const m = await promptStderr("Paste your existing 12 or 24 word mnemonic: ", { hidden: true });
+    const m = await promptStderr("Paste your existing 12-24 word (BIP39) mnemonic: ");
     return { mnemonic: normalizeMnemonic(m), source: "imported" };
   }
   if (env.SPARK_MNEMONIC) {
@@ -132,7 +74,7 @@ async function getMnemonicSource() {
   const { SparkWallet } = await import("@buildonspark/spark-sdk");
   const result = await SparkWallet.initialize({ options: { network: NETWORK } });
   const mnemonic = normalizeMnemonic(result.mnemonic);
-  await result.wallet.cleanupConnections();
+  await result.wallet.cleanup();
   return { mnemonic, source: "generated" };
 }
 
@@ -161,8 +103,8 @@ async function main() {
   }
 
   const passphrase = await getPassphrase();
-  if (passphrase.length < 12) {
-    err("Passphrase must be at least 12 characters.");
+  if (passphrase.length < MIN_PASSPHRASE_CHARS) {
+    err(`Passphrase must be at least ${MIN_PASSPHRASE_CHARS} characters.`);
     exit(1);
   }
 
@@ -176,7 +118,7 @@ async function main() {
     options: { network: NETWORK },
   });
   const address = await wallet.getSparkAddress();
-  await wallet.cleanupConnections();
+  await wallet.cleanup();
 
   info("\nEncrypting...");
   await saveEncryptedMnemonic({ mnemonic, passphrase, path: SEED_PATH });
@@ -189,24 +131,19 @@ async function main() {
   stdout.write(`encrypted seed: ${SEED_PATH}\n`);
 
   if (source === "generated") {
-    // CRITICAL: do NOT print the mnemonic to stdout. If this script is being
-    // invoked by an AI agent that captures stdout into a conversation log,
-    // printing the mnemonic would leak it into the transcript. Instead write
-    // the mnemonic to a persistent file (next to seed.enc) and print only
-    // the path.
-    const backupPath = await writeMnemonicBackupFile(mnemonic, { dir: dirname(SEED_PATH) });
+    // Do NOT print the mnemonic to stdout (an AI agent invoking setup over the
+    // Bash tool captures stdout into its transcript) — AND do not write a
+    // persistent plaintext backup file (it undercuts encryption-at-rest until
+    // the user remembers to rm it). The mnemonic is safe inside seed.enc; to
+    // back it up, the USER runs `reveal-mnemonic` in their OWN terminal, which
+    // decrypts and prints on demand and refuses to run non-interactively.
     stdout.write("\n=== !!! BACK UP YOUR MNEMONIC NOW !!! ===\n");
-    stdout.write(`The 12-word mnemonic was written to:\n  ${backupPath}\n`);
-    stdout.write("\nThis file is on disk, mode 0600, and does NOT auto-delete.\n");
-    stdout.write("\nWhat to do next:\n");
-    stdout.write("  1. Read the file:  cat \"" + backupPath + "\"\n");
-    stdout.write("     (Default: do this in your own terminal so the words don't land\n");
-    stdout.write("     in the agent's transcript. Asking the agent to read it is allowed\n");
-    stdout.write("     if you'd rather see it here, but accept the trade-off.)\n");
-    stdout.write("  2. Copy the words to an offline backup — paper, password manager,\n");
-    stdout.write("     or hardware-wallet seed backup. This is the ONLY recovery path.\n");
-    stdout.write(`  3. Delete the file:  rm "${backupPath}"\n`);
-    stdout.write("\nUntil you delete it, the file persists across reboots.\n");
+    stdout.write("Your 12-word seed is encrypted in the seed file above. No plaintext\n");
+    stdout.write("copy is written to disk. To see the words for offline backup, run this\n");
+    stdout.write("in YOUR OWN terminal (not via an agent — it prints your seed phrase):\n\n");
+    stdout.write("  npm run reveal-mnemonic\n\n");
+    stdout.write("Copy the words to an offline backup (paper / hardware seed backup).\n");
+    stdout.write("This is the ONLY recovery path — without it, a lost seed file = lost wallet.\n");
   } else if (source === "env") {
     stdout.write("\nNext: remove SPARK_MNEMONIC from .env and replace with SPARK_PASSPHRASE.\n");
   }

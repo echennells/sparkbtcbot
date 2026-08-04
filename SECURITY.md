@@ -2,7 +2,7 @@
 
 ## Reporting a Vulnerability
 
-If you find a security issue in `sparkbtcbot-skill`, **please do not open a public GitHub issue.**
+If you find a security issue in `sparkbtcbot`, **please do not open a public GitHub issue.**
 
 Email **eric@brodie.rocks** with:
 
@@ -17,7 +17,7 @@ You should expect an acknowledgement within 7 days. I'll work with you on a fix 
 
 In scope:
 
-- The npm package `sparkbtcbot-skill` — encryption helpers (`lib/encrypted-seed.js`), the skill content shipped to LLM agents, the example scripts in `skills/sparkbtcbot/scripts/`.
+- The npm package `sparkbtcbot` — encryption helpers (`lib/encrypted-seed.js`), the skill content shipped to LLM agents, the example scripts in `skills/sparkbtcbot/scripts/`.
 - Anything that could cause a mnemonic, passphrase, or decrypted seed to leak to disk, logs, network, or process output where the skill's own docs say it won't.
 - Anything that could cause an agent following the skill's instructions to send funds to an address other than the one the user/code specified.
 
