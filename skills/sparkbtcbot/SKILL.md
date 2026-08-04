@@ -170,7 +170,7 @@ SPARK_NETWORK=MAINNET
 **Security warnings:**
 - **Never log the mnemonic or the passphrase** — not even during development. To verify the wallet loads, compare *addresses*, never seed words.
 - **Never commit `.env`** — add it to `.gitignore` first. The seed file (`~/.spark/seed.enc`) is sensitive too: mode 0600, keep it out of images/backups that travel with the passphrase.
-- **REGTEST is available for testing** — point a throwaway mnemonic at REGTEST (`SPARK_NETWORK=REGTEST`) if you want to exercise flows without real funds. For production with real funds, prefer the proxy (see Custody Model above).
+- **REGTEST is available for testing** — point a throwaway mnemonic at REGTEST (`SPARK_NETWORK=REGTEST`) to exercise flows without real funds. For production with real funds, prefer the proxy (see Custody Model above). **⚠️ The same seed is a _different wallet_ on REGTEST vs MAINNET:** the SDK defaults `accountNumber` to 0 on REGTEST and 1 on MAINNET, so if you test then switch networks without setting it explicitly, your MAINNET wallet shows a different address and 0 balance. Set `accountNumber` explicitly to carry the same wallet across networks (see the note below).
 
 **Note on `accountNumber`:** defaults to 1 for MAINNET, 0 for REGTEST. If you reuse the same mnemonic across networks, set `accountNumber` explicitly to avoid address mismatches.
 
