@@ -215,6 +215,12 @@ export function paymentHashMatches(
   expectedPaymentHash: string | null | undefined,
 ): boolean;
 
+/** Seconds until the invoice expires (negative = already expired); null if undecodable. */
+export function invoiceSecondsRemaining(bolt11: string, nowMs?: number): number | null;
+
+/** True when the invoice is already expired (or undecodable — fails closed). */
+export function invoiceIsExpired(bolt11: string, nowMs?: number): boolean;
+
 /** Total cooperative-exit fee (userFee + l1BroadcastFee) for a speed; null if unreadable. */
 export function withdrawalTotalFee(
   quote: unknown,

@@ -21,6 +21,14 @@ Pass `includeSparkAddress: true` to embed a Spark address in the invoice's route
 
 ## Pay Lightning Invoice (Send)
 
+A BOLT11 is **time-bounded** — it carries an expiry (default 3600s from creation; often shorter). Paying an expired invoice fails at the SDK, but the real hazard is a flow that spends time or money *before* the pay call (the L1 on-ramp below, a confirm-with-the-user pause, a queued job): the invoice can lapse in that gap. Cheap insurance — decode the remaining life and refuse early rather than after you've committed:
+
+```javascript
+import { invoiceSecondsRemaining, invoiceIsExpired } from "sparkbtcbot-skill";
+if (invoiceIsExpired(bolt11)) throw new Error("invoice already expired — ask for a fresh one");
+// or, when a delay is coming, gate on a buffer: invoiceSecondsRemaining(bolt11) < BUFFER
+```
+
 ### Estimate Fee First
 
 ```javascript
@@ -79,12 +87,34 @@ Worked example at 100,000 sats: ~150 + ~2,430 ≈ **2.6% total**; at 1M sats ≈
 
 ## L1 → Lightning On-Ramp (via Spark)
 
-The reverse direction — on-chain sats becoming Lightning spending power without opening a channel (the other job swap services used to do). Two legs:
+The reverse direction — on-chain sats becoming Lightning spending power without opening a channel (the other job swap services used to do).
+
+**This is FUNDING, not a swap — and it is the wrong tool for paying a specific time-bounded invoice from cold L1.** The on-ramp waits ~3 confirmations, which is a *variable* 10–90+ minutes (block times are random). The BOLT11 you mean to pay is a **depreciating asset**: its expiry clock started when it was created, before you ever send the deposit. Most invoices default to a 1-hour expiry and interactive/POS ones are often 10 minutes or less — so the common outcome of "pay this invoice from on-chain via Spark" is: you send L1, wait for confirmations, and **the invoice expires mid-flow, leaving you with miner fees spent and sats stranded in Spark against a dead invoice.**
+
+**So the FIRST step is a precheck, before you hand out any deposit address:**
+
+```javascript
+import { invoiceSecondsRemaining } from "sparkbtcbot-skill";
+
+const remaining = invoiceSecondsRemaining(bolt11); // seconds; null if undecodable
+// Refuse (or loudly warn) if the invoice can't survive a worst-case confirmation
+// window. 3 L1 confirmations can take well over an hour; require a real buffer.
+const SAFE_BUFFER_SECONDS = 2 * 60 * 60; // 2h — 3 confs + claim + slack
+if (remaining == null || remaining < SAFE_BUFFER_SECONDS) {
+  throw new Error(
+    `Invoice expires in ${remaining == null ? "unknown time" : Math.round(remaining / 60) + " min"} — ` +
+    `too soon to fund via the L1 on-ramp (3 confirmations can take 60+ min). ` +
+    `Ask for an invoice with a longer expiry, or fund Spark from L1 FIRST and pay once the balance lands.`,
+  );
+}
+```
+
+Only if the invoice comfortably outlasts the window do the two legs:
 
 1. **L1 → Spark**: send to `getStaticDepositAddress()`, wait **3 confirmations** (the SSP refuses to quote before then), then claim with a fee ceiling — `agent.claimDeposit({ txid, vout, dryRun })` previews the quoted credit, and the claim enforces a size-aware ceiling (`maxFeePct`, default 10% of the quoted credit). Costs: your miner fee plus the SSP claim spread (live-measured 297 sats on a 10,350-sat deposit; quote honored exactly). The credit is **asynchronous** (~30s after the claim returns).
-2. **Spark → Lightning**: pay any BOLT11 via `agent.payLightningInvoice` (0.25% + routing worst case; free if the payee is Spark-backed, see above).
+2. **Spark → Lightning**: pay any BOLT11 via `agent.payLightningInvoice` (0.25% + routing worst case; free if the payee is Spark-backed, see above). Re-check `invoiceIsExpired(bolt11)` right before paying — the clock kept running through leg 1.
 
-Slower than the off-ramp direction (leg 1 waits for confirmations) and its first-leg spread is only knowable at quote time — state both to the user up front.
+**The sustainable pattern is "fund the Spark wallet from L1 once, then pay invoices instantly from the balance"** — the two-step nature is correct there, and the balance sitting in Spark has no clock. Reserve one-shot "pay this invoice starting from on-chain" for invoices with generous (multi-hour) expiries; for genuinely time-critical invoices from cold L1, a submarine swap that fronts the Lightning payment is the right tool, not this. Tell the user up front: the on-ramp is slower than it looks, the claim spread is only knowable at quote time, and the invoice must outlive the confirmation wait.
 
 ## Receive on REGTEST
 
