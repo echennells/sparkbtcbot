@@ -118,6 +118,17 @@ npm install @buildonspark/issuer-sdk@^0.1.45
 
 The SDK bundles BIP39 mnemonic generation, cooperative signing, and gRPC communication internally.
 
+### Optional: offer supply-chain hardening — ONLY when *you* run the install
+
+This skill owns the **when**, not the settings. It applies in exactly one case: **you (the agent) are running `git clone … && npm install` on the user's behalf** (npm pulls ~160 transitive deps — a real supply-chain surface). It does **not** apply to the Claude plugin path (`plugin marketplace add` / `plugin install` — no dependency install to harden) or to a user running `npm install sparkbtcbot-skill` themselves (their own tooling — out of scope, don't touch it).
+
+In that one case, **ask the user before installing** whether they want npm supply-chain hardening on this install, and offer two ways to apply it:
+- **Persistent** — write the hardening to their `~/.npmrc` (affects all future npm use; get explicit consent since it modifies their profile).
+- **Ephemeral** — the same keys as `NPM_CONFIG_*` environment variables on just this `npm install` (no files written).
+- Or **neither** — a plain `npm install`.
+
+**The settings themselves are NOT defined here — the source of truth is the [`echennells/supply-chain-hardening`](https://github.com/echennells/supply-chain-hardening) repo.** Read its npm config there and apply those keys/values (they are version-sensitive — e.g. npm's `min-release-age` package cooldown only enforces on npm ≥ 11.10.0; `ignore-scripts` can break native-build deps though it is fine for this skill's pure-JS tree). Do not hard-code or invent a recipe here; if the user already has their own `~/.npmrc` policy, follow it instead of overriding.
+
 ## Setup
 
 The mnemonic is **never** stored in plaintext. The skill encrypts it at rest with a passphrase the user provides; the running app reads `SPARK_PASSPHRASE` from env and decrypts the seed file once at boot. There is no plaintext-mnemonic-in-`.env` mode.
