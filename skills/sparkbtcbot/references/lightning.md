@@ -76,7 +76,9 @@ if (!preimage && result.id) {
 
 ## Lightning → L1 Off-Ramp (via Spark)
 
-Load this pattern when someone holding sats on Lightning wants them on-chain. With third-party submarine-swap services unreliable (Boltz disabled all swaps indefinitely in August 2026), Spark itself is a self-contained Lightning→L1 bridge: **receive over Lightning into Spark, then cooperative-exit to L1.** The whole route depends only on the Spark operators — no external swap provider.
+Load this pattern when someone holding sats on Lightning wants them on-chain. With third-party submarine-swap services unreliable (Boltz disabled all swaps indefinitely in August 2026), Spark itself is a Lightning→L1 bridge: **receive over Lightning into Spark, then cooperative-exit to L1.**
+
+> **Who actually moves the funds — say this plainly, don't overclaim.** This is **not** a trustless atomic swap. The **SSP** (the Spark Service Provider / Signing Operators — currently Lightspark and Flashnet) is the party that credits your deposit and co-signs your cooperative exit. You rely on them for the cooperative path: they can **delay or censor** a transfer, but they **cannot steal** — your fallback is **unilateral exit** (which needs the locally-backed-up leaf material; see `references/unilateral-exit.md`). So "no external swap provider" means there's no third-party swap *service* that can go down mid-route (the Boltz failure mode) — it does **not** mean "no trusted party." Spark's trust model is **1-of-n honest operators**, not trustlessness (`references/architecture.md`). Don't tell a user this route is trustless or has "no third party"; tell them it depends on the Spark operators, whom they don't have to trust *not to steal* (exit protects that) but do depend on for cooperative speed and liveness.
 
 Route and costs (two legs):
 
