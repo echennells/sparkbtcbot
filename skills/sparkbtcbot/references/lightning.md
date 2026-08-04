@@ -89,7 +89,7 @@ Worked example at 100,000 sats: ~150 + ~2,430 ≈ **2.6% total**; at 1M sats ≈
 
 ## L1 → Lightning On-Ramp (via Spark)
 
-The reverse direction — on-chain sats becoming Lightning spending power without opening a channel (the other job swap services used to do).
+The reverse direction — on-chain sats becoming Lightning spending power without opening a channel (the other job swap services used to do). **This is also the flow for the very common case "the Spark wallet is empty; fund it from L1, then pay."** Whenever you're about to tell a user how much on-chain BTC to send in order to cover a downstream payment, you are in this section — size the deposit with `estimateOnrampDeposit` (below), not "invoice + fee".
 
 **This is FUNDING, not a swap — and it is the wrong tool for paying a specific time-bounded invoice from cold L1.** The on-ramp waits ~3 confirmations, which is a *variable* 10–90+ minutes (block times are random). The BOLT11 you mean to pay is a **depreciating asset**: its expiry clock started when it was created, before you ever send the deposit. Most invoices default to a 1-hour expiry and interactive/POS ones are often 10 minutes or less — so the common outcome of "pay this invoice from on-chain via Spark" is: you send L1, wait for confirmations, and **the invoice expires mid-flow, leaving you with miner fees spent and sats stranded in Spark against a dead invoice.**
 

@@ -31,7 +31,20 @@ const staticAddr = await wallet.getStaticDepositAddress();
 const singleAddr = await wallet.getSingleUseDepositAddress();
 ```
 
-Both are P2TR (`bc1p...` on mainnet, `bcrt1p...` on regtest). Deposits require 3 L1 confirmations before they can be claimed on Spark (the SSP refuses to even quote before then). **Claiming is manual — there is no auto-claim.** Deposit and forget, and the funds sit unclaimed at the address.
+Both are P2TR (`bc1p...` on mainnet, `bcrt1p...` on regtest) — an **L1 on-chain** address, NOT a Spark (`sp1...`) address. Deposits require 3 L1 confirmations before they can be claimed on Spark (the SSP refuses to even quote before then). **Claiming is manual — there is no auto-claim** (the funds sit unclaimed at the address until you claim them).
+
+> **⚠️ Sizing the deposit when it's funding a payment — the #1 on-ramp mistake.** If you are depositing to then pay something (a Lightning invoice, a merchant), **the amount you deposit is NOT the amount that lands on Spark.** Claiming takes an SSP spread, so `credited = deposited − spread` (live: 297 sats on 10,350; ~396 on ~10,100 — feerate-dependent, hundreds of sats). Telling the user to send "invoice + Lightning fee" **under-funds every time** and forces a second deposit. Use the helper — it sums all three legs (invoice + Lightning routing + claim-spread buffer + slack):
+>
+> ```javascript
+> import { estimateOnrampDeposit } from "sparkbtcbot-skill";
+> const { depositSats } = estimateOnrampDeposit({
+>   invoiceSats: 10_000,
+>   lightningFeeSats: /* agent.estimateLightningFee(bolt11), or omit for the cap */,
+> });
+> // → ~10,700; tell the user to send AT LEAST depositSats, never "invoice + fee".
+> ```
+>
+> Then pay from the **actual credited balance** after claiming (`quote.creditAmountSats`), not the number you quoted. Full flow + the invoice-expiry precheck: `references/lightning.md` → "L1 → Lightning On-Ramp".
 
 ## Claim a Deposit
 
