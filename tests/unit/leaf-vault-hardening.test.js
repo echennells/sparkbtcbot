@@ -63,6 +63,24 @@ describe("network label derivation + KNOWN_NETWORKS gate", () => {
       expect(await exists(p)).toBe(false); // nothing written
     } finally { await rm(p, { force: true }); }
   });
+
+  // F2 (ToB): verifyVault runs the shape gate against bundles it did NOT
+  // produce (restored, older version, a stringified numeric enum "1"). Those
+  // never passed through snapshot's KNOWN_NETWORKS check, so the shape gate
+  // itself must reject a network Blink would refuse — else verify reports a
+  // green, un-recoverable bundle.
+  it("verifyVault REJECTS a structurally-valid bundle whose network Blink refuses (F2)", async () => {
+    const p = uniq("lv-verify-badnet") + ".json";
+    try {
+      // valid schema/leaf, but network "1" (numeric enum leaked as string) / "BITCOIN"
+      for (const network of ["1", "BITCOIN", "mainnet"]) {
+        await atomicWriteJson(p, { schema: "spark.unilateral-exit-bundle.v1", createdAt: "2026-07-09T00:00:00.000Z", network, leaves: [{ id: "leaf1", valueSats: 1000, treeNodeHex: "0a020102" }] });
+        const r = await verifyVault(p);
+        expect(r.ok).toBe(false);
+        expect(r.reason).toMatch(/Blink's recovery CLI accepts|network/i);
+      }
+    } finally { await rm(p, { force: true }); }
+  });
 });
 
 describe("identity guard: a different wallet/network must not clobber the prior bundle", () => {

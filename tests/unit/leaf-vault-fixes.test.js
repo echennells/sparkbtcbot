@@ -87,6 +87,32 @@ describe("transient empty getLeaves guard (M-2)", () => {
       expect(wrote).toBe(false); // nothing written
     } finally { await rm(p, { force: true }); }
   });
+  // F1 (ToB): with NO prior vault (first boot / lost vault), a funded wallet whose
+  // getLeaves transiently returns empty must NOT be scored a confirmed-empty
+  // success. Pre-fix the balance check was gated on a prior existing, so this
+  // path returned "no-leaves" (health green, BROKEN cleared) with no backup.
+  it("funded wallet + NO prior vault + empty getLeaves => transient, not confirmed-empty (F1)", async () => {
+    const p = uniq("lv-f1") + ".json";
+    try {
+      const r = await snapshotLeafVault(mockWallet([], 250000n), { path: p, networkLabel: "LOCAL" });
+      expect(r.skipped).toBe("transient-empty-getLeaves"); // funded, no leaves captured — NOT a success
+      const wrote = await readVault(p).then(() => true, () => false);
+      expect(wrote).toBe(false); // still no bundle, but it is NOT reported as healthy
+    } finally { await rm(p, { force: true }); }
+  });
+  it("unreadable balance + NO prior + empty getLeaves fails safe to transient (F1)", async () => {
+    const p = uniq("lv-f1b") + ".json";
+    try {
+      const wallet = {
+        leafManager: { getLeaves: async () => [] },
+        connectionManager: { createSparkClient: async () => ({}) },
+        config: { getCoordinatorAddress: () => "coord" },
+        getBalance: async () => { throw new Error("balance unavailable"); },
+      };
+      const r = await snapshotLeafVault(wallet, { path: p, networkLabel: "LOCAL" });
+      expect(r.skipped).toBe("transient-empty-getLeaves"); // null balance treated as non-zero
+    } finally { await rm(p, { force: true }); }
+  });
   it("reads OWNED sats, not `available` — owned-but-locked funds keep a good bundle", async () => {
     const p = uniq("lv-owned") + ".json";
     try {

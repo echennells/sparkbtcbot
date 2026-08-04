@@ -23,7 +23,7 @@ import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { open, mkdir, unlink } from "node:fs/promises";
-import { atomicWriteJson, readVault, validateSnapshotShape, isNonEmptyStr, BUNDLE_SCHEMA } from "../../../lib/leaf-vault.js";
+import { atomicWriteJson, readVault, validateSnapshotShape, isNonEmptyStr, BUNDLE_SCHEMA, RECOVERABLE_NETWORKS } from "../../../lib/leaf-vault.js";
 
 // TreeNode protobuf codec (+ the proto Network enum's name mapping) — loaded
 // LAZILY from the SDK's own exports subpath (`@buildonspark/spark-sdk/proto/spark`).
@@ -54,7 +54,8 @@ export const defaultVaultPath = () =>
 // The network labels Blink's recovery tool accepts (its normalizeNetwork throws
 // on anything else) — a bundle carrying any other label verifies green locally
 // but is refused at recovery time, so we refuse to write one.
-const KNOWN_NETWORKS = ["MAINNET", "REGTEST", "TESTNET", "SIGNET", "LOCAL"];
+// Single source of truth in lib (the Blink-compat contract); alias for local use.
+const KNOWN_NETWORKS = RECOVERABLE_NETWORKS;
 const normalizeNetwork = (v) => String(v ?? "").toUpperCase();
 const APP_VERSION = "sparkbtcbot";
 const safe = async (fn) => { try { return await fn(); } catch { return undefined; } };
@@ -156,16 +157,24 @@ export async function snapshotLeafVault(wallet, { path = defaultVaultPath(), net
   const leaves = await wallet.leafManager.getLeaves(true);
 
   if (leaves.length === 0) {
-    // The bundle schema requires >=1 leaf; an empty wallet has nothing to exit.
-    // Guard a TRANSIENT empty getLeaves from discarding a good bundle (M-2): only
-    // treat empty as real when the wallet genuinely reports zero balance.
-    const prior = await readVault(path).catch(() => null);
-    if (Array.isArray(prior?.leaves) && prior.leaves.length > 0) {
-      const sats = await reportedBalanceSats(wallet); // null when unreadable → treat as non-zero
-      if (sats == null || sats > 0n) return { path, leafCount: prior.leaves.length, skipped: "transient-empty-getLeaves" };
+    // The bundle schema requires >=1 leaf; a genuinely empty wallet has nothing
+    // to exit. But empty getLeaves is a TRANSIENT capture failure on a FUNDED
+    // wallet (the coordinator recover path swallows errors) — so "empty" only
+    // means "confirmed empty" when the wallet ALSO reports zero balance. This
+    // balance check must run whether or not a prior bundle exists: on first boot
+    // or a lost/corrupt vault there is no prior, and gating the check on a prior
+    // let a funded wallet be scored "confirmed empty" — clearing BROKEN and going
+    // health-green with NO bundle written (F1). null/unreadable balance is treated
+    // as non-zero, i.e. fail safe toward "keep protecting".
+    const sats = await reportedBalanceSats(wallet); // null when unreadable → treat as non-zero
+    if (sats == null || sats > 0n) {
+      const prior = await readVault(path).catch(() => null);
+      const leafCount = Array.isArray(prior?.leaves) ? prior.leaves.length : 0;
+      return { path, leafCount, skipped: "transient-empty-getLeaves" }; // funded but no leaves captured — NOT a success
     }
-    // Confirmed-empty is a complete, healthy backup state: nothing to exit, so a
-    // leftover BROKEN marker (e.g. from before the wallet was emptied) is noise.
+    // Confirmed-empty (balance is zero): a complete, healthy backup state — nothing
+    // to exit, so a leftover BROKEN marker (e.g. from before the wallet was emptied)
+    // is noise.
     await unlink(join(dirname(path), "BROKEN")).catch(() => {});
     return { path, leafCount: 0, skipped: "no-leaves" }; // nothing to back up; any prior bundle is left in place
   }
