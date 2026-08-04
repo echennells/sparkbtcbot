@@ -262,20 +262,39 @@ describe("estimateOnrampDeposit (fee composition across both legs)", () => {
     const { depositSats } = estimateOnrampDeposit({ invoiceSats: 5000, lightningFeeSats: 19 });
     expect(depositSats - 300).toBeGreaterThanOrEqual(5000 + 19);
   });
-  it("defaults: 500-sat spread buffer, 0 lightning/slack", () => {
-    expect(estimateOnrampDeposit({ invoiceSats: 1000 }).depositSats).toBe(1500);
-  });
   it("ceils fractional inputs and sums slack", () => {
     expect(estimateOnrampDeposit({ invoiceSats: 1000.4, lightningFeeSats: 5, claimSpreadBufferSats: 300, slackSats: 100 }).depositSats).toBe(1406);
+  });
+  // ToB F2: the Lightning leg must NOT default to 0 — that's the exact
+  // leg-omission this helper condemns. It defaults to the amount-aware cap.
+  it("never omits the Lightning leg: one-arg call includes a non-zero fee (F2)", () => {
+    const { breakdown } = estimateOnrampDeposit({ invoiceSats: 200_000 });
+    expect(breakdown.lightningFeeSats).toBeGreaterThan(0); // ~1000 (0.5% cap), not 0
+  });
+  // ToB F1: a flat 500 buffer only covers the ~2.87% spread near ~10k. Above
+  // that the SSP's percentage-shaped fee exceeds it, so the default buffer must
+  // scale. Verify the deposit still covers the real spread at a large amount.
+  it("scales the claim-spread buffer proportionally for large deposits (F1)", () => {
+    const { depositSats, breakdown } = estimateOnrampDeposit({ invoiceSats: 100_000 });
+    expect(breakdown.claimSpreadBufferSats).toBeGreaterThan(500); // proportional kicked in
+    const realSpread = Math.ceil(depositSats * 0.0287); // measured spread rate
+    expect(depositSats - realSpread).toBeGreaterThanOrEqual(100_000 + breakdown.lightningFeeSats);
+  });
+  it("small amounts keep the 500 floor", () => {
+    expect(estimateOnrampDeposit({ invoiceSats: 1000, claimSpreadBufferSats: undefined }).breakdown.claimSpreadBufferSats).toBe(500);
   });
   it("throws on a non-positive or unreadable invoice amount", () => {
     expect(() => estimateOnrampDeposit({ invoiceSats: 0 })).toThrow(/positive number/);
     expect(() => estimateOnrampDeposit({ invoiceSats: "5k" })).toThrow(/positive number/);
     expect(() => estimateOnrampDeposit({})).toThrow(/positive number/);
   });
-  it("throws on negative/garbage fee components (no silent under-buffer)", () => {
-    expect(() => estimateOnrampDeposit({ invoiceSats: 5000, claimSpreadBufferSats: -100 })).toThrow(/non-negative/);
-    expect(() => estimateOnrampDeposit({ invoiceSats: 5000, lightningFeeSats: "free" })).toThrow(/non-negative/);
+  // ToB F4: Number("")/Number(null)/Number(true) coerce to small values that
+  // would silently under-buffer. Present-but-non-number must THROW, not coerce.
+  it("throws on garbage optional params instead of coercing to a small value (F4)", () => {
+    for (const bad of [null, "", "  ", true, [100], "free", -1, NaN]) {
+      expect(() => estimateOnrampDeposit({ invoiceSats: 5000, lightningFeeSats: bad }), `lightningFeeSats=${JSON.stringify(bad)}`).toThrow(/non-negative/);
+      expect(() => estimateOnrampDeposit({ invoiceSats: 5000, claimSpreadBufferSats: bad }), `claimSpreadBufferSats=${JSON.stringify(bad)}`).toThrow(/non-negative/);
+    }
   });
   it("rejects misspelled options instead of dropping them", () => {
     expect(() => estimateOnrampDeposit({ invoiceSats: 5000, claimSpreadBuffer: 500 })).toThrow(/unknown option/);

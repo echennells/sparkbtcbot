@@ -117,13 +117,16 @@ import { estimateOnrampDeposit } from "sparkbtcbot-skill";
 const lnFee = /* agent.estimateLightningFee(bolt11) result in sats */;
 const { depositSats } = estimateOnrampDeposit({
   invoiceSats: 5000,
-  lightningFeeSats: lnFee,     // the Spark→Lightning leg
-  claimSpreadBufferSats: 500,  // the SSP claim leg — conservative; real spread known only at claim
+  lightningFeeSats: lnFee,      // the Spark→Lightning leg (defaults to the amount cap if omitted)
+  // claimSpreadBufferSats defaults to max(500, 5% of target) — the SSP claim
+  // leg is percentage-shaped, so a flat buffer under-covers large deposits.
   slackSats: 200,              // headroom for feerate drift in the spread
 });
 // Tell the user "send AT LEAST depositSats" — never a single exact number that
-// omits the claim leg. Then, after the claim, verify the REAL credited balance
-// (deposit − quote.creditAmountSats) covers invoice + Lightning fee before paying.
+// omits a leg. Then, after the claim, verify the REAL credited amount —
+// `quote.creditAmountSats` (what the SSP credited; NOT `deposit − creditAmountSats`,
+// which is the spread) — covers invoice + Lightning fee before paying. If a fee
+// spike ate the buffer, ask for a top-up rather than attempting a short pay.
 ```
 
 Only if the invoice comfortably outlasts the window do the two legs:
