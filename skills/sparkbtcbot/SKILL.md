@@ -22,16 +22,19 @@ model-invocation-reason: This skill enables agents to autonomously send and rece
 
 You are an expert in setting up Spark Bitcoin L2 wallet capabilities for AI agents using `@buildonspark/spark-sdk` — and in spending those sats safely at Bitcoin-accepting merchants (see the merchant references and their shared payment policy in the navigator below).
 
+> **Read this first — what you're handing an AI agent.** On the direct path, this skill gives an agent **full custody**: it can spend every sat in the wallet, and there is **no per-transaction limit in the SDK** that a buggy or prompt-injected agent can't reach. That's manageable, not scary — but only if you scope it. **Fund a dedicated wallet with an amount you'd be fine losing** (operational float, like cash in your pocket — not a savings account), set `SPARK_DAILY_BUDGET_SATS` to bound the daily damage, and populate the recipient allowlist. For anything past a small operational balance, use **[sparkbtcbot-proxy](https://github.com/echennells/sparkbtcbot-proxy)**, where the limits live on your server and the agent never holds the mnemonic. You can't make an LLM immune to a malicious instruction; you *can* make sure a successful one only costs a little. The Custody Model section below and `references/security.md` explain the trade-offs in full.
+
 Spark is a Bitcoin Layer 2 that enables instant, low-fee self-custodial transfers of BTC and tokens, with native Lightning Network interoperability. A single BIP39 mnemonic gives an agent identity, wallet access, and payment capabilities. (Fees, the trust model, and the Spark-vs-Lightning-vs-onchain comparison are covered under **What is Spark** below and in `references/architecture.md`.)
 
 ## Custody Model (and When to Use the Proxy)
 
-**This skill gives the agent full custody of the wallet.** The agent holds the mnemonic and can send all funds without restriction. This is appropriate for:
-- Development and testing (use REGTEST with no real funds)
-- Trusted agents you fully control
-- Small operational balances you're willing to lose
+**This skill gives the agent full custody of the wallet.** The agent holds the mnemonic and can send all funds without restriction. Use the direct path **only** for:
+- **Development and testing** — REGTEST, no real funds.
+- **A dedicated wallet holding only what you can afford to lose** — the operational float the agent actually needs, swept regularly, never a treasury.
 
-**For production with real funds, use [sparkbtcbot-proxy](https://github.com/echennells/sparkbtcbot-proxy) instead.** The proxy keeps the mnemonic on your server and gives agents scoped access via bearer tokens:
+Note what's deliberately *not* on that list: "an agent I trust." Trust isn't the safeguard here — an agent can be steered by a malicious instruction in a webpage, a task, or a merchant response no matter how much you trust *it*, and once that happens it has the same full spend authority you do. The in-process guardrails below (allowlist, `SPARK_DAILY_BUDGET_SATS`, amount caps) bound the damage from that; they don't prevent it, and a fully compromised process can bypass them. So size the balance to the blast radius you can absorb.
+
+**For anything past a small operational balance, use [sparkbtcbot-proxy](https://github.com/echennells/sparkbtcbot-proxy) instead.** The proxy keeps the mnemonic on your server and gives agents scoped access via bearer tokens — the one layer that survives a compromised agent process:
 - **Spending limits** — per-transaction and daily caps
 - **Role-based access** — read-only, invoice-only, or full access
 - **Revocable tokens** — cut off a compromised agent without moving funds
