@@ -16,10 +16,9 @@ import { pathToFileURL } from "node:url";
 // instructions if generated fresh.
 
 import "dotenv/config";
-import { stdin, stdout, stderr, exit, env } from "node:process";
-import { saveEncryptedMnemonic, writeMnemonicBackupFile, DEFAULT_SEED_PATH, MIN_PASSPHRASE_CHARS } from "../../../lib/encrypted-seed.js";
+import { stdout, stderr, exit, env } from "node:process";
+import { saveEncryptedMnemonic, DEFAULT_SEED_PATH, MIN_PASSPHRASE_CHARS } from "../../../lib/encrypted-seed.js";
 import { existsSync, realpathSync } from "node:fs";
-import { dirname } from "node:path";
 
 const SEED_PATH = env.SPARK_SEED_PATH || DEFAULT_SEED_PATH;
 const NETWORK = env.SPARK_NETWORK || "MAINNET";
@@ -32,106 +31,7 @@ function info(msg) {
   stderr.write(`${msg}\n`);
 }
 
-// Prompt on stderr (readline prompts on stdout by default, which is wrong for
-// secrets). Two paths:
-//   TTY: raw mode, so the terminal does not echo — a `hidden` passphrase must
-//        never appear on screen or in pty recordings (tmux/asciinema/script);
-//        visible input is echoed exactly once by us.
-//   pipe/CI: line-buffered with a carry buffer — piped input delivers several
-//        lines in one chunk, and whatever follows the submitted line must feed
-//        the NEXT prompt, not vanish with this one's listener.
-let pendingInput = "";
-
-async function promptStderr(question, { hidden = false } = {}) {
-  stderr.write(question);
-  return stdin.isTTY ? promptRawTty(hidden) : promptPipedLine();
-}
-
-function promptPipedLine() {
-  return new Promise((resolve, reject) => {
-    const takeLine = () => {
-      const nl = pendingInput.search(/[\r\n]/);
-      if (nl === -1) return null;
-      const line = pendingInput.slice(0, nl);
-      const crlf = pendingInput[nl] === "\r" && pendingInput[nl + 1] === "\n";
-      pendingInput = pendingInput.slice(nl + (crlf ? 2 : 1));
-      return line;
-    };
-    const buffered = takeLine();
-    if (buffered !== null) { stderr.write("\n"); resolve(buffered); return; }
-    const onData = (chunk) => {
-      pendingInput += chunk.toString();
-      const line = takeLine();
-      if (line !== null) {
-        stdin.pause();
-        stdin.removeListener("data", onData);
-        stderr.write("\n");
-        resolve(line);
-      }
-    };
-    stdin.setEncoding("utf8");
-    stdin.on("data", onData);
-    stdin.once("error", reject);
-    stdin.resume();
-  });
-}
-
-function promptRawTty(hidden) {
-  return new Promise((resolve, reject) => {
-    let input = "";
-    let esc = false; // swallow escape sequences (arrow keys etc.)
-    stdin.setRawMode(true);
-    stdin.setEncoding("utf8");
-    const done = (value) => {
-      stdin.setRawMode(false);
-      stdin.pause();
-      stdin.removeListener("data", onData);
-      stderr.write("\n");
-      resolve(value);
-    };
-    // Returns true when the line was submitted; anything after the submit char
-    // (a paste of "pass\npass\n" arrives as ONE chunk) is carried over to the
-    // next prompt via pendingInput instead of being dropped.
-    const consume = (data) => {
-      for (let i = 0; i < data.length; i++) {
-        const ch = data[i];
-        if (esc) { if (/[a-zA-Z~]/.test(ch)) esc = false; continue; }
-        if (ch === "\x1b") { esc = true; continue; }
-        if (ch === "\r" || ch === "\n") {
-          pendingInput += data.slice(i + (ch === "\r" && data[i + 1] === "\n" ? 2 : 1));
-          done(input);
-          return true;
-        }
-        if (ch === "\x03") { // Ctrl-C — raw mode means we handle it ourselves
-          stdin.setRawMode(false);
-          stderr.write("\n");
-          exit(130);
-        }
-        if (ch === "\x7f" || ch === "\b") {
-          if (input.length > 0) {
-            input = input.slice(0, -1);
-            if (!hidden) stderr.write("\b \b");
-          }
-          continue;
-        }
-        if (ch < " ") continue; // other control chars
-        input += ch;
-        if (!hidden) stderr.write(ch); // raw mode: the tty no longer echoes, we do — once
-      }
-      return false;
-    };
-    const onData = (data) => { consume(data); };
-    // A previous prompt may have carried over pasted-ahead input — drain it first.
-    if (pendingInput) {
-      const carried = pendingInput;
-      pendingInput = "";
-      if (consume(carried)) return;
-    }
-    stdin.on("data", onData);
-    stdin.once("error", (e) => { stdin.setRawMode(false); reject(e); });
-    stdin.resume();
-  });
-}
+import { promptStderr } from "./prompt.js";
 
 async function getPassphrase() {
   if (env.SPARK_PASSPHRASE) {
@@ -231,24 +131,19 @@ async function main() {
   stdout.write(`encrypted seed: ${SEED_PATH}\n`);
 
   if (source === "generated") {
-    // CRITICAL: do NOT print the mnemonic to stdout. If this script is being
-    // invoked by an AI agent that captures stdout into a conversation log,
-    // printing the mnemonic would leak it into the transcript. Instead write
-    // the mnemonic to a persistent file (next to seed.enc) and print only
-    // the path.
-    const backupPath = await writeMnemonicBackupFile(mnemonic, { dir: dirname(SEED_PATH) });
+    // Do NOT print the mnemonic to stdout (an AI agent invoking setup over the
+    // Bash tool captures stdout into its transcript) — AND do not write a
+    // persistent plaintext backup file (it undercuts encryption-at-rest until
+    // the user remembers to rm it). The mnemonic is safe inside seed.enc; to
+    // back it up, the USER runs `reveal-mnemonic` in their OWN terminal, which
+    // decrypts and prints on demand and refuses to run non-interactively.
     stdout.write("\n=== !!! BACK UP YOUR MNEMONIC NOW !!! ===\n");
-    stdout.write(`The 12-word mnemonic was written to:\n  ${backupPath}\n`);
-    stdout.write("\nThis file is on disk, mode 0600, and does NOT auto-delete.\n");
-    stdout.write("\nWhat to do next:\n");
-    stdout.write("  1. Read the file:  cat \"" + backupPath + "\"\n");
-    stdout.write("     (Default: do this in your own terminal so the words don't land\n");
-    stdout.write("     in the agent's transcript. Asking the agent to read it is allowed\n");
-    stdout.write("     if you'd rather see it here, but accept the trade-off.)\n");
-    stdout.write("  2. Copy the words to an offline backup — paper, password manager,\n");
-    stdout.write("     or hardware-wallet seed backup. This is the ONLY recovery path.\n");
-    stdout.write(`  3. Delete the file:  rm "${backupPath}"\n`);
-    stdout.write("\nUntil you delete it, the file persists across reboots.\n");
+    stdout.write("Your 12-word seed is encrypted in the seed file above. No plaintext\n");
+    stdout.write("copy is written to disk. To see the words for offline backup, run this\n");
+    stdout.write("in YOUR OWN terminal (not via an agent — it prints your seed phrase):\n\n");
+    stdout.write("  npm run reveal-mnemonic\n\n");
+    stdout.write("Copy the words to an offline backup (paper / hardware seed backup).\n");
+    stdout.write("This is the ONLY recovery path — without it, a lost seed file = lost wallet.\n");
   } else if (source === "env") {
     stdout.write("\nNext: remove SPARK_MNEMONIC from .env and replace with SPARK_PASSPHRASE.\n");
   }

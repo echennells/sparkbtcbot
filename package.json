@@ -70,7 +70,8 @@
     "test:unit": "vitest run tests/unit",
     "test:integration": "vitest run tests/integration --exclude tests/integration/funded",
     "test:funded": "vitest run tests/integration/funded",
-    "test:all": "vitest run"
+    "test:all": "vitest run",
+    "reveal-mnemonic": "node skills/sparkbtcbot/scripts/reveal-mnemonic.js"
   },
   "dependencies": {
     "@buildonspark/issuer-sdk": "^0.1.45",

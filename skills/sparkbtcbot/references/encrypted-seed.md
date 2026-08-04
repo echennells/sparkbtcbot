@@ -45,7 +45,7 @@ The version + KDF id + cipher id at the start means the file is self-describing;
 
 `npm run setup` is the single entry point. Three scenarios depending on where the mnemonic comes from:
 
-**Scenario A — Fresh wallet.** No flag, no `SPARK_MNEMONIC` env var. The SDK generates a new BIP39 mnemonic, the script encrypts it, and writes the words to a backup file for offline copy.
+**Scenario A — Fresh wallet.** No flag, no `SPARK_MNEMONIC` env var. The SDK generates a new BIP39 mnemonic and the script encrypts it. The words are never printed and never written to disk in plaintext — back them up on demand with `npm run reveal-mnemonic` (below).
 ```bash
 SPARK_NETWORK=MAINNET SPARK_PASSPHRASE="..." npm run setup
 ```
@@ -68,11 +68,11 @@ After setup completes:
 
 1. The seed file is at `~/.spark/seed.enc` (override with `SPARK_SEED_PATH`)
 2. `SPARK_PASSPHRASE` needs to remain available to the runtime — keep it in `.env` (gitignored) or your deployment's secret manager. If you set it inline only for the setup invocation, add it to `.env` now.
-3. **If a fresh mnemonic was generated** (scenario A), the script wrote the 12 words to a persistent file next to `seed.enc` (typically `~/.spark/MNEMONIC_BACKUP_<random>.txt`, mode 0600) and printed only the path. The mnemonic was **not** printed to stdout. The user should:
-   - `cat` that file (default: in their own terminal so the words don't enter the transcript; if they explicitly ask the agent to read it, that's their call)
-   - Copy the words to offline backup (paper / password manager / hardware backup)
-   - `rm` the file — it does not auto-delete, and persists across reboots until removed
-   The file-handoff keeps the mnemonic out of the agent's stdout-via-Bash capture by default. The agent must not read the file unless the user explicitly asks.
+3. **If a fresh mnemonic was generated** (scenario A), the 12 words live only inside `seed.enc` — not printed, not written to disk in plaintext. To back them up, the user runs, **in their own terminal**:
+   ```bash
+   npm run reveal-mnemonic
+   ```
+   It decrypts `seed.enc` and prints the words once. It **refuses to run when stdout isn't a TTY** (an agent capturing output over the Bash tool, CI, a pipe) and asks for a y/N confirmation first — so the seed can't be pulled into an agent's transcript by accident. Copy the words to offline backup (paper / password manager / hardware backup); there is no plaintext file to delete. The agent must not run `reveal-mnemonic` itself — it should tell the user to. (Earlier versions wrote a persistent `MNEMONIC_BACKUP_*.txt`; that was removed because it left a plaintext seed on disk until the user manually `rm`'d it.)
 4. If you migrated from a plaintext `.env` (scenario B), remove `SPARK_MNEMONIC` from `.env`.
 
 The script verifies by initializing a wallet from the encrypted seed and printing the resulting Spark address — useful as a sanity check that the right wallet loaded.
