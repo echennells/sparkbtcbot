@@ -44,9 +44,10 @@ conversation transcript or shell history is identical to a leak from disk.
   never echo it.
 - **Never commit `.env` or `~/.spark/seed.enc`.** `.env` must be in `.gitignore`; the seed file
   is mode 0600 and must stay out of images/backups that travel with the passphrase.
-- **Use a dedicated wallet with limited funds.** For non-trivial balances, use
-  [sparkbtcbot-proxy](https://github.com/echennells/sparkbtcbot-proxy) (server-held seed,
-  revocable scoped tokens, enforced limits) instead of the direct-SDK path.
+- **Use a dedicated wallet with limited funds.** There are no server-enforced spending caps on
+  this path — the funded balance is the only limit that survives a compromised process. Keep an
+  operational float you'd be fine losing, set `SPARK_DAILY_BUDGET_SATS`, populate the recipient
+  allowlist, and sweep earnings out regularly.
 - **If you think a mnemonic or passphrase was exposed in this conversation, stop and tell the
   user first.** Do not "clean up" by generating a new wallet or sweeping funds on your own.
 

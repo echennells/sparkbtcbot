@@ -8,12 +8,12 @@ Spark Bitcoin L2 wallet skill for AI agents — give an agent its own Bitcoin wa
 
 Built on [Spark](https://docs.spark.money), a Bitcoin Layer 2 with instant, near-zero-fee transfers and native Lightning support — and fully self-custodial, so the agent holds its own keys. Use it in Claude Code as a plugin, or in any other LLM agent framework via the npm package.
 
-> ⚠️ **Handles real Bitcoin.** Mainnet by default, full custody the moment the seed is decrypted, no built-in spending caps — treat the agent like a hot wallet. Use a dedicated wallet with limited funds, or run [sparkbtcbot-proxy](https://github.com/echennells/sparkbtcbot-proxy) for server-enforced per-transaction and daily limits.
+> ⚠️ **Handles real Bitcoin.** Mainnet by default, full custody the moment the seed is decrypted, no server-enforced spending caps — treat the agent like a hot wallet. Use a dedicated wallet holding only an operational float, set `SPARK_DAILY_BUDGET_SATS`, and populate the recipient allowlist; the funded balance is the only limit that survives a compromised process.
 
 > 🤖 **If you are an AI agent, read [`AGENTS.md`](./AGENTS.md) before running any wallet code.** Non-negotiables: never print or echo the mnemonic **or** the passphrase (both control all funds); never run `npm run reveal-mnemonic` yourself; and if you `git clone`/`npm install` for the user, offer supply-chain hardening **first**. Full behavioral guidance is in [`SKILL.md`](./skills/sparkbtcbot/SKILL.md).
 
 **Best for:** autonomous agents that send/receive small amounts — pay per API call, get paid for a task, tip, settle up — plus dev/test on REGTEST and trusted agents you control.
-**Not for:** custody of large balances on the direct SDK path, or anything needing hard spending caps or revocable access (use the proxy for those).
+**Not for:** custody of large balances, or anything needing hard server-enforced spending caps or revocable access — no such enforcement exists on this path.
 
 ## What is Spark?
 
@@ -189,7 +189,7 @@ Recommendations:
 - Use a dedicated wallet with limited funds for each agent
 - Use separate `accountNumber` values for different funding tiers
 - Back up the **mnemonic** offline — the encrypted seed file is not a substitute for an offline seed backup
-- For production with non-trivial balances, run [sparkbtcbot-proxy](https://github.com/echennells/sparkbtcbot-proxy) — keeps the seed on a server you control and gives the agent only HTTP access via revocable scoped tokens
+- No server-enforced limits exist on this path: the funded balance is the hard cap. Keep it small and sweep earnings out regularly
 
 ## Resources
 

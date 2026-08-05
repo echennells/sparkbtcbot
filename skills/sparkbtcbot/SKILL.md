@@ -19,18 +19,18 @@ requires:
     - name: SPARK_SPEND_LEDGER_PATH
       description: Optional override for the spend-ledger file backing SPARK_DAILY_BUDGET_SATS. Defaults to ~/.spark/spend-ledger.json.
 model-invocation: autonomous
-model-invocation-reason: This skill enables agents to autonomously send and receive Bitcoin payments. Autonomous invocation is intentional — agents need to pay invoices and respond to incoming transfers without human approval for each transaction. The direct-SDK path here is full-custody-once-decrypted with no spending caps; for guardrails (scoped tokens, per-tx and daily limits, audit logs, revocation), run sparkbtcbot-proxy and have the agent talk to it over HTTP instead.
+model-invocation-reason: This skill enables agents to autonomously send and receive Bitcoin payments. Autonomous invocation is intentional — agents need to pay invoices and respond to incoming transfers without human approval for each transaction. This path is full-custody-once-decrypted with no server-enforced spending caps; bound the blast radius with a dedicated small-float wallet, SPARK_DAILY_BUDGET_SATS, and the recipient allowlist.
 ---
 
 # Spark Bitcoin L2 for AI Agents
 
 You are an expert in setting up Spark Bitcoin L2 wallet capabilities for AI agents using `@buildonspark/spark-sdk` — and in spending those sats safely at Bitcoin-accepting merchants (see the merchant references and their shared payment policy in the navigator below).
 
-> **Read this first — what you're handing an AI agent.** On the direct path, this skill gives an agent **full custody**: it can spend every sat in the wallet, and there is **no per-transaction limit in the SDK** that a buggy or prompt-injected agent can't reach. That's manageable, not scary — but only if you scope it. **Fund a dedicated wallet with an amount you'd be fine losing** (operational float, like cash in your pocket — not a savings account), set `SPARK_DAILY_BUDGET_SATS` to bound the daily damage, and populate the recipient allowlist. For anything past a small operational balance, use **[sparkbtcbot-proxy](https://github.com/echennells/sparkbtcbot-proxy)**, where the limits live on your server and the agent never holds the mnemonic. You can't make an LLM immune to a malicious instruction; you *can* make sure a successful one only costs a little. The Custody Model section below and `references/security.md` explain the trade-offs in full.
+> **Read this first — what you're handing an AI agent.** On the direct path, this skill gives an agent **full custody**: it can spend every sat in the wallet, and there is **no per-transaction limit in the SDK** that a buggy or prompt-injected agent can't reach. That's manageable, not scary — but only if you scope it. **Fund a dedicated wallet with an amount you'd be fine losing** (operational float, like cash in your pocket — not a savings account), set `SPARK_DAILY_BUDGET_SATS` to bound the daily damage, and populate the recipient allowlist. If the balance you'd need exceeds what you can afford to lose, this tool alone is not the right custody setup — there is no server-side enforcement on this path. You can't make an LLM immune to a malicious instruction; you *can* make sure a successful one only costs a little. The Custody Model section below and `references/security.md` explain the trade-offs in full.
 
 Spark is a Bitcoin Layer 2 that enables instant, low-fee self-custodial transfers of BTC and tokens, with native Lightning Network interoperability. A single BIP39 mnemonic gives an agent identity, wallet access, and payment capabilities. (Fees, the trust model, and the Spark-vs-Lightning-vs-onchain comparison are covered under **What is Spark** below and in `references/architecture.md`.)
 
-## Custody Model (and When to Use the Proxy)
+## Custody Model
 
 **This skill gives the agent full custody of the wallet.** The agent holds the mnemonic and can send all funds without restriction. Use the direct path **only** for:
 - **Development and testing** — REGTEST, no real funds.
@@ -38,13 +38,7 @@ Spark is a Bitcoin Layer 2 that enables instant, low-fee self-custodial transfer
 
 Note what's deliberately *not* on that list: "an agent I trust." Trust isn't the safeguard here — an agent can be steered by a malicious instruction in a webpage, a task, or a merchant response no matter how much you trust *it*, and once that happens it has the same full spend authority you do. The in-process guardrails below (allowlist, `SPARK_DAILY_BUDGET_SATS`, amount caps) bound the damage from that; they don't prevent it, and a fully compromised process can bypass them. So size the balance to the blast radius you can absorb.
 
-**For anything past a small operational balance, use [sparkbtcbot-proxy](https://github.com/echennells/sparkbtcbot-proxy) instead.** The proxy keeps the mnemonic on your server and gives agents scoped access via bearer tokens — the one layer that survives a compromised agent process:
-- **Spending limits** — per-transaction and daily caps
-- **Role-based access** — read-only, invoice-only, or full access
-- **Revocable tokens** — cut off a compromised agent without moving funds
-- **Audit logs** — track all wallet activity
-
-The proxy wraps the same Spark SDK behind authenticated REST endpoints. Agents get HTTP access instead of direct SDK access.
+**There is no server-enforced variant of this skill** — no scoped tokens, no server-side caps, no revocation short of sweeping to a new wallet. The in-process guardrails below are the strongest controls available here, and because they live in the agent's own process, a fully compromised process can bypass them. That makes the sizing rule above the real control: the funded balance is the only cap that survives compromise. Hold only what you can afford to lose, and sweep regularly.
 
 ## Optional agent-side guardrails (direct skill)
 
@@ -57,9 +51,9 @@ Even on the direct path, the wrapper exposes three opt-in safety knobs. They are
 
 - **Cumulative spend budget via `SPARK_DAILY_BUDGET_SATS`.** Every other guard is per-call, so none of them stops a *loop* of individually-valid sends. Set this env var and the wrapper enforces a rolling 24-hour sats budget across Spark transfers, Lightning pays, Spark-invoice fulfillment, and L1 withdrawals, persisted in a ledger at `~/.spark/spend-ledger.json` (`SPARK_SPEND_LEDGER_PATH` to relocate; `agent.spendStatus()` to inspect). Over-budget sends throw before reaching the SDK. Unset = not enforced; a malformed value refuses to boot rather than being silently ignored.
 
-When you (Claude) help a user set up a production-leaning agent, recommend they populate `recipients.allow` with their known destinations (own addresses, exchange deposit addresses, paid services). Cheap, opt-in, and stops the most common "agent paid the wrong address" failure mode without requiring a proxy.
+When you (Claude) help a user set up a production-leaning agent, recommend they populate `recipients.allow` with their known destinations (own addresses, exchange deposit addresses, paid services). Cheap, opt-in, and stops the most common "agent paid the wrong address" failure mode.
 
-**The allowlist does not bound Lightning or L402 spend.** Both pay a node pubkey embedded in a BOLT11 invoice, not an address, so `recipients.allow` cannot gate them. Populating `recipients.allow` does **not** make outbound spend safe. What does bound Lightning/L402 through the wrapper is the per-call amount ceiling (`maxAmountSats`) plus the cumulative `SPARK_DAILY_BUDGET_SATS` budget above — but both live in the agent's own process, so they bound *mistakes and runaway loops*, not a compromised process calling the raw SDK. The only spending control that survives process compromise is the proxy's server-side `maxTxSats` / `dailyBudgetSats`.
+**The allowlist does not bound Lightning or L402 spend.** Both pay a node pubkey embedded in a BOLT11 invoice, not an address, so `recipients.allow` cannot gate them. Populating `recipients.allow` does **not** make outbound spend safe. What does bound Lightning/L402 through the wrapper is the per-call amount ceiling (`maxAmountSats`) plus the cumulative `SPARK_DAILY_BUDGET_SATS` budget above — but both live in the agent's own process, so they bound *mistakes and runaway loops*, not a compromised process calling the raw SDK. No control shipped here survives full process compromise — which is why the funded balance itself is the ultimate cap.
 
 ## Rules for Claude when operating this skill
 
@@ -202,7 +196,7 @@ SPARK_NETWORK=MAINNET
 **Security warnings:**
 - **Never log the mnemonic or the passphrase** — not even during development. To verify the wallet loads, compare *addresses*, never seed words.
 - **Never commit `.env`** — add it to `.gitignore` first. The seed file (`~/.spark/seed.enc`) is sensitive too: mode 0600, keep it out of images/backups that travel with the passphrase.
-- **REGTEST is available for testing** — point a throwaway mnemonic at REGTEST (`SPARK_NETWORK=REGTEST`) to exercise flows without real funds. For production with real funds, prefer the proxy (see Custody Model above). **⚠️ The same seed is a _different wallet_ on REGTEST vs MAINNET:** the SDK defaults `accountNumber` to 0 on REGTEST and 1 on MAINNET, so if you test then switch networks without setting it explicitly, your MAINNET wallet shows a different address and 0 balance. Set `accountNumber` explicitly to carry the same wallet across networks (see the note below).
+- **REGTEST is available for testing** — point a throwaway mnemonic at REGTEST (`SPARK_NETWORK=REGTEST`) to exercise flows without real funds. For production with real funds, keep the balance to an operational float (see Custody Model above). **⚠️ The same seed is a _different wallet_ on REGTEST vs MAINNET:** the SDK defaults `accountNumber` to 0 on REGTEST and 1 on MAINNET, so if you test then switch networks without setting it explicitly, your MAINNET wallet shows a different address and 0 balance. Set `accountNumber` explicitly to carry the same wallet across networks (see the note below).
 
 **Note on `accountNumber`:** defaults to 1 for MAINNET, 0 for REGTEST. If you reuse the same mnemonic across networks, set `accountNumber` explicitly to avoid address mismatches.
 
@@ -288,7 +282,7 @@ Runnable example scripts live in `skills/sparkbtcbot/scripts/` (run via `npm run
 - Never expose the mnemonic or passphrase in code, logs, git, or errors; keep `SPARK_PASSPHRASE` in a secret manager and `.env` in `.gitignore`.
 - Keep only a minimal operational balance; sweep earned funds to cold storage regularly (this skill ships no auto-sweeper).
 - Separate mnemonic per agent; separate `accountNumber` per wallet; call `cleanup()` when done.
-- For real per-transaction / daily caps, use [sparkbtcbot-proxy](https://github.com/echennells/sparkbtcbot-proxy) — in-process limits are bypassable by a compromised process.
+- In-process limits (`SPARK_DAILY_BUDGET_SATS`, fee/amount ceilings) bound mistakes and loops, not a compromised process — there are no server-enforced caps on this path, so the funded balance is the only hard cap. Size it accordingly.
 
 → Full operational-security guide (threat detail, sweeping patterns, monitoring, and exactly what the allowlist does and does not bound): `references/security.md`.
 

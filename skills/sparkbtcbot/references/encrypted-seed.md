@@ -112,14 +112,14 @@ The mnemonic remains the ultimate backup. Encryption defends the seed file at re
 
 - **Doesn't protect against memory dumps** of the running process — the mnemonic is in memory after `loadMnemonicFromEnv()` returns. To attack this an attacker needs shell on the host with the same UID as the agent.
 - **Doesn't protect against the host being compromised** while running — same as above.
-- **Doesn't replace the proxy** for production setups where you want scoped, revocable bearer tokens. Encryption-at-rest is the floor for this skill; [sparkbtcbot-proxy](https://github.com/echennells/sparkbtcbot-proxy) is the ceiling — it keeps the seed on a separate server entirely and gives the agent only HTTP access.
+- **Doesn't provide scoped or revocable access.** Encryption-at-rest is all-or-nothing: whoever can decrypt the seed has full custody, and access can't be revoked without sweeping to a new wallet.
 
-## When to escalate to the proxy
+## When this skill alone is not enough
 
-Encryption-at-rest is the minimum bar this skill enforces. Move to the proxy when any of these are true:
+Encryption-at-rest is the minimum bar this skill enforces, and it has **no server-side variant** — no scoped tokens, no server-enforced caps, no shared wallet views, no audit log. If any of these describe your setup, this skill alone is not sufficient custody infrastructure; keep the balance here to an operational float and hold the rest elsewhere:
 
-- Non-trivial balances on the wallet (rule of thumb: more than you'd lose without changing your day)
-- Multiple agents need to share a wallet view
-- You want revocable scoped tokens (read-only / invoice-only / full) instead of all-or-nothing access
-- You want per-transaction or daily spending caps enforced server-side
-- You want an audit log of every wallet operation
+- Non-trivial balances (rule of thumb: more than you'd lose without changing your day)
+- Multiple agents needing access to the same funds
+- A need for revocable or role-scoped access instead of all-or-nothing custody
+- A need for spending caps that survive a compromised agent process
+- A need for an audit trail of every wallet operation
