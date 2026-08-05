@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 — 2026-08-05
+
+First npm release since 0.3.0 (0.3.1 shipped only to the plugin marketplace), folding in the full 0.4.0 line. The sections below run newest-first; the entries following the second group of headings are the earlier 0.4.0-line work from July.
 
 ### Fixed
 
@@ -31,8 +33,6 @@
 - **`claimDeposit`'s fee ceiling is size-aware.** The flat 5,000-sat default authorized the SSP to take 83% of a 6,000-sat deposit. The default is now `maxFeePct` (10%) of the quoted credit — the same posture as `withdraw` — with explicit `maxFeeSats` still winning and an unreadable quote failing closed.
 - **`estimateFirstFeeCap`'s estimate-driven growth is bounded.** The live estimate could raise its own cap without limit, so an inflated estimate from a hostile counterparty grew the cap instead of tripping it. Growth is now capped at 3× the amount-scaled cap (override with `maxCapSats`).
 - **`l402-paywalls.js` uses the library fee cap.** The example script inlined `max(10, 0.5%)` — re-inheriting the exact under-cap failure (`floor 25`) already fixed in `lib/fee-guards.js` for anyone who copy-pasted it.
-
-## 0.4.0 — 2026-07-07
 
 ### Added
 
