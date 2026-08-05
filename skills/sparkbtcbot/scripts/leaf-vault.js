@@ -73,6 +73,14 @@ function sdkVersion() {
 // backup. This ordering IS the "judge owned, not available" semantics every
 // guard and the CLI rely on; it lives in exactly one place so it cannot drift.
 const ownedSats = (b) => b?.satsBalance?.owned ?? b?.balance ?? b?.satsBalance?.available ?? null;
+// AVAILABLE (immediately spendable) sats — counterpart to ownedSats, used ONLY by
+// the shrink guard's cooperative-exit window (below). owned = available + leaves
+// locked in outgoing transfers/swaps/exits. Transfers and swaps KEEP their leaves
+// in getLeaves; a cooperative EXIT removes them at broadcast while `owned` still
+// counts the exiting sats until the L1 tx confirms — during that window only
+// `available` tracks what the leaf set actually holds. (`balance` is the
+// deprecated alias for available; never fall back to owned here.)
+const availableSats = (b) => b?.satsBalance?.available ?? b?.balance ?? null;
 
 function exportBalances(balance, leaves) {
   const btc = ownedSats(balance);
@@ -90,6 +98,30 @@ export async function reportedBalanceSats(wallet) {
   try {
     const v = ownedSats(await wallet.getBalance?.());
     return v == null ? null : BigInt(v);
+  } catch { return null; }
+}
+
+// Positive evidence of an in-flight cooperative exit: ask the SSP for pending
+// COOP_EXIT user requests. Returns a count (0 = definitively none) or null when
+// it cannot be determined (method absent, network/query failure) — the caller
+// MUST treat null as "no excuse" so this only ever RELAXES a false positive,
+// never a real one. wallet.getUserRequests is real on SparkWallet at runtime but
+// absent from the SDK's public .d.ts (verified against spark-sdk 0.9.0), so it
+// gets the same treat-as-reach-in caution as the rest of this module: probe,
+// and degrade to the strict path if it moved. The enums aren't exported from the
+// SDK root; the wire values are plain strings (types-*.d.ts: SparkUserRequestType
+// .COOP_EXIT, SparkUserRequestStatus .CREATED / .IN_PROGRESS).
+export async function pendingCoopExitCount(wallet) {
+  try {
+    if (typeof wallet?.getUserRequests !== "function") return null;
+    const conn = await wallet.getUserRequests({
+      first: 1,
+      types: ["COOP_EXIT"],
+      statuses: ["CREATED", "IN_PROGRESS"],
+    });
+    if (typeof conn?.count === "number") return conn.count;
+    if (Array.isArray(conn?.entities)) return conn.entities.length;
+    return null;
   } catch { return null; }
 }
 
@@ -294,7 +326,14 @@ export async function snapshotLeafVault(wallet, { path = defaultVaultPath(), net
       // < reported and is caught. (priorSats vs reported would wrongly let any spend
       // excuse an arbitrary transient drop.)
       const capturedSats = sumLeafSats(persisted.leaves);
-      const reported = await reportedBalanceSats(wallet);
+      // One getBalance() read for BOTH owned and available: owned drives the strict
+      // gate (unchanged); available feeds only the cooperative-exit window below.
+      let reported = null, reportedAvailable = null;
+      try {
+        const bal = await wallet.getBalance?.();
+        const ov = ownedSats(bal); reported = ov == null ? null : BigInt(ov);
+        const av = availableSats(bal); reportedAvailable = av == null ? null : BigInt(av);
+      } catch { /* both stay null — handled conservatively below */ }
       const coversBalance = capturedSats != null && reported != null && capturedSats >= reported;
       if (!coversBalance) {
         // RESCUE before failing: the fresh capture may hold leaves (a new deposit,
@@ -308,7 +347,7 @@ export async function snapshotLeafVault(wallet, { path = defaultVaultPath(), net
         // genuinely spent leaf (indistinguishable from a transiently missing one);
         // that is harmless to the Blink contract and self-heals on the next clean
         // snapshot.
-        let rescued = false;
+        let unionWritten = null;
         try {
           const nodeById = new Map();
           for (const n of prior.nodes ?? []) nodeById.set(n.id, n);
@@ -328,10 +367,43 @@ export async function snapshotLeafVault(wallet, { path = defaultVaultPath(), net
             });
             if (allProven) {
               await atomicWriteJson(path, union);
-              rescued = true;
+              unionWritten = union;
             }
           }
         } catch { /* best-effort; the guard error below still fires */ }
+        const rescued = unionWritten != null;
+
+        // COOPERATIVE-EXIT WINDOW: a coop exit removes its leaves from getLeaves at
+        // broadcast while `owned` keeps counting the exiting sats until the L1 tx
+        // confirms — for those minutes every snapshot shows captured < owned and used
+        // to trip BROKEN on EVERY withdrawal (cry-wolf). But that balance signature is
+        // IDENTICAL to a genuine partial read dropping a transfer-locked leaf, so
+        // balances alone must never excuse the gap. Excuse it only on ALL THREE:
+        //   1. captured >= available — every spendable-backing leaf is present, so the
+        //      shortfall is exactly the locked/in-flight band;
+        //   2. the union bundle above was written and gate-proven — the missing
+        //      leaves' exit material is retained either way (belt and suspenders);
+        //   3. the SSP POSITIVELY confirms a pending COOP_EXIT request — this is what
+        //      a dropped transfer-leaf partial read cannot fake (null = unknowable =
+        //      no excuse; strict path below).
+        // Then this snapshot SUCCEEDS (union bundle, marker cleared) instead of
+        // marching toward BROKEN; the plain bundle self-heals on the first snapshot
+        // after L1 confirmation.
+        const coversAvailable =
+          capturedSats != null && reportedAvailable != null && capturedSats >= reportedAvailable;
+        if (coversAvailable && rescued && ((await pendingCoopExitCount(wallet)) ?? 0) > 0) {
+          console.info(
+            `leaf-vault: capture holds ${capturedSats} sats — covers available (${reportedAvailable}) ` +
+            `but not owned (${reported}); the SSP reports a pending cooperative exit settling. Wrote a ` +
+            `UNION bundle (carried-over prior leaves ${missing.map((l) => l.id).join(", ")}) and did NOT ` +
+            `trip the BROKEN marker; a clean snapshot lands after the exit's L1 tx confirms.`,
+          );
+          // Same invariant as the clean path below: a gate-proven bundle was written,
+          // so a stale BROKEN marker may be cleared.
+          await unlink(join(dirname(path), "BROKEN")).catch(() => {});
+          return { path, leafCount: unionWritten.leaves.length, nodeCount: (unionWritten.nodes ?? []).length, network };
+        }
+
         throw new Error(
           `leaf-vault: a leaf present in the prior bundle is missing and the capture holds ` +
           `${capturedSats ?? "an unreadable"} sats vs a reported ${reported ?? "unreadable"} balance ` +

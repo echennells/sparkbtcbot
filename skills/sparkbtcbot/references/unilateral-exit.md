@@ -47,6 +47,14 @@ up, 1 = broken bundle or funded wallet with no backup, 2 = indeterminate). If
 snapshots fail persistently — or the SDK reach-in breaks — a `BROKEN` file is
 written beside `current.json`; treat its presence as "no fresh backup".
 
+A **cooperative L1 withdrawal does not trip the marker** while its transaction sits
+unconfirmed: during that window the exiting leaves have left the leaf set but
+`owned` still counts their sats, which used to read as a shrink and cry BROKEN on
+every withdrawal. The snapshot now confirms a pending COOP_EXIT with the SSP,
+keeps a union bundle (so even the in-flight leaves retain exit material), and
+writes the clean bundle after the exit confirms on L1. A BROKEN marker during a
+withdrawal therefore still means something is actually wrong.
+
 ## Tokens are NOT covered by this
 
 Unilateral exit recovers **BTC only**. The bundle records token balances as
