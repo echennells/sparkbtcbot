@@ -10,7 +10,14 @@ The most standards-forward agent surface seen so far: keyless MCP, RFC 9727 `api
 
 ## The pairing (verified path)
 
-Their MCP is at `https://api.cryptorefills.com/mcp/http` — **the header `User-Agent: Cryptorefills-MCP/1.0` is required**. As of 2026-07-29 the granular catalog tools were broken (`listProductsForCountry`/`getProductPrice` → 400/404; REST `/v2/brands` returns empty), so the working path is:
+Their MCP is at `https://api.cryptorefills.com/mcp/http` — **the header `User-Agent: Cryptorefills-MCP/1.0` is required**.
+
+**Catalog + pricing work through the granular MCP tools (re-verified 2026-08-05).** The 400/404s seen on 2026-07-29 were a missing-argument error, not a dead endpoint — `listProductsForCountry` returns 400 *without* a `brand_name`, not "regardless":
+- `listBrands {country_code}` → categories → brands, each `{ brand, brand_id, logo_url, min, max, is_out_of_stock }`. **Field names differ from the x402 REST `/v1/brands` in step 1** (which returns `{ brand_name, family, category, min, max }`) — don't cross the two shapes. Pass the human-readable `brand` value as the `brand_name` argument to the tools below.
+- `listProductsForCountry {country_code, brand_name}` → product details (`product_id`, `range`, `coin_amount`, `delivery_type`). **`brand_name` is required** — a bare `{country_code}` is the HTTP 400.
+- `getProductPrice {brand_name, country_code, face_value, coin}` → `{ product_id, coin_amount, range, payment_method, delivery_type }`. Verified: $5 CAD Amazon.ca = 0.00005681 BTC (5,681 sats).
+
+These give a direct catalog/pricing route that avoids the stateful wizard. **But checkout is a different story:** only the `purchaseElicitation` wizard below is verified end-to-end. The non-wizard checkout (`createOrder`/`validateOrder`) is **NOT yet verified** — do not treat it as a blessed money path until a real purchase confirms it (open re-test item). The verified path:
 
 1. **Catalog discovery** (read-only): `GET https://x402.cryptorefills.com/v1/brands?country_code=us` (lowercase ISO) — their x402 host's catalog works and prices match. Cheapest known SKU: Tango $1 (US). **Response is an array of `{ brand_name, family, category, min, max }`.** Search/filter on **`brand_name`** — *not* `name`/`id`/`slug`. Those Bitrefill-convention fields don't exist here, so filtering on them silently matches nothing: it once produced a false "Amazon not available on Cryptorefills" when Amazon.ca was in the catalog the whole time — the search just hit empty/absent `name` fields.
 2. **The `purchaseElicitation` wizard tool** — a stateful session (keep the `session_token`, answer one question per call): product type → country (uppercase here) → brand → denomination → delivery email → coin (`BTC`) → network (`Lightning`) → confirmation email → recap → `yes`.
@@ -38,3 +45,5 @@ The wizard demands a **delivery email** (`beneficiary_account` — where the car
 ## Testing
 
 Rung 3 is DONE (the $1 Tango above — smallest SKU on the platform, and it exercised the full loop including secret retrieval). For future re-validation the same $1 product is the cheapest probe; wizard sessions are free to walk and abandon before the final `yes`.
+
+**Open:** the non-wizard checkout via the granular MCP tools (`createOrder`/`validateOrder`) is unverified end-to-end. Catalog + pricing (`listBrands`/`listProductsForCountry`/`getProductPrice`) were re-verified 2026-08-05, but a real $1 purchase through `createOrder`/`validateOrder` is still needed before that path is documented as blessed. Until then the wizard is the only verified checkout.
