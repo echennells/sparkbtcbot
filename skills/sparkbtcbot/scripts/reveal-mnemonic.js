@@ -29,6 +29,25 @@ import { promptStderr } from "./prompt.js";
 const SEED_PATH = env.SPARK_SEED_PATH || DEFAULT_SEED_PATH;
 
 async function main() {
+  // Arg gate FIRST — before the TTY gate, so `--help` answers even when piped
+  // (usage text holds no secrets). This CLI's default action reveals the seed
+  // phrase, so any argument other than -h/--help fails closed with usage: a
+  // typo'd flag must never fall through to a reveal.
+  const args = process.argv.slice(2);
+  const usage =
+    "Usage: sparkbtcbot-reveal-mnemonic\n\n" +
+    "Decrypts the seed file and prints the mnemonic ONCE, for the human operator\n" +
+    "to copy to an offline backup. Takes no arguments. Refuses to run without a\n" +
+    "real interactive terminal on both stdin and stdout — run it yourself, not\n" +
+    "through an agent. Env: SPARK_PASSPHRASE (prompted if unset), SPARK_SEED_PATH.\n";
+  if (args.includes("--help") || args.includes("-h")) {
+    stdout.write(usage);
+    return exit(0);
+  }
+  if (args.length) {
+    stderr.write(`reveal-mnemonic: unknown argument(s): ${args.join(" ")}\n\n` + usage);
+    return exit(2);
+  }
   // Gate: require a real interactive terminal on BOTH ends. Piped/captured
   // stdout (an agent Bash tool, CI, `| tee`) would land the words somewhere
   // durable; piped stdin would let a canned `y\n` auto-answer the confirm below.

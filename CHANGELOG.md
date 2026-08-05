@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Security
+
+- **`--help` no longer performs the CLI's default action.** All three published CLIs ignored unrecognized arguments and fell through to their default — which for `sparkbtcbot-setup` is *creating a wallet*: an agent probing `--help` for usage silently bootstrapped a real, unbacked wallet (caught by QA on REGTEST before it happened on MAINNET). `sparkbtcbot-leaf-vault --help` would likewise have taken a snapshot, and a typo'd flag to `sparkbtcbot-reveal-mnemonic` fell through toward a seed reveal. All three now gate arguments before any side effect: `-h`/`--help` prints usage and exits 0 (in reveal's case, before the TTY gate — usage holds no secrets), and any unknown argument fails closed with usage on stderr (exit 2). Regression tests pin that `--help` creates nothing.
+
+## 0.4.2 — 2026-08-05
+
 ### Fixed
 
 - **The Claude Code plugin path is now runnable.** `claude plugin install` lands the sources with no `node_modules` in a versioned cache that's wiped on update — and the docs assumed a cloned repo, leaving plugin users no supported way to run setup and *no runnable form at all* of the user-executed seed backup. The package now ships bin commands — `sparkbtcbot-setup`, `sparkbtcbot-reveal-mnemonic`, `sparkbtcbot-leaf-vault` — so `npx -y --package=sparkbtcbot-skill sparkbtcbot-setup` works with no repo checkout (same answer for npm consumers, whose `npm run setup` never worked either). SKILL.md gained a "Which install path are you on?" section naming that one supported answer and banning installs into the plugin cache; the frontmatter now declares `SPARK_DAILY_BUDGET_SATS`/`SPARK_SPEND_LEDGER_PATH`; README's local-clone instructions no longer land `SKILL.md` a level too deep for skill discovery.

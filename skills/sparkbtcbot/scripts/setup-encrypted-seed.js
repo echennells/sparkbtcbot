@@ -79,7 +79,42 @@ async function getMnemonicSource() {
   return { mnemonic, source: "generated" };
 }
 
+// Args are gated BEFORE any side effect. This CLI's default action creates a
+// wallet — so an unrecognized flag must never fall through to it: an agent
+// probing `--help` for usage used to silently bootstrap a real (unbacked)
+// MAINNET wallet. --help/-h prints usage and exits; anything unknown fails
+// closed with usage on stderr.
+const USAGE = `Usage: sparkbtcbot-setup [--import]
+
+One-time wallet bootstrap: generates (or imports) a BIP39 mnemonic and encrypts
+it at rest to ${DEFAULT_SEED_PATH} (override: SPARK_SEED_PATH). Refuses to
+overwrite an existing seed file.
+
+Options:
+  --import      Prompt (on stderr) for an existing 12-24 word mnemonic instead
+                of generating a fresh one. SPARK_MNEMONIC in the environment is
+                also honored.
+  -h, --help    Show this help and exit. No wallet is created.
+
+Environment: SPARK_PASSPHRASE (12+ chars; prompted if unset), SPARK_NETWORK,
+SPARK_SEED_PATH, SPARK_ACCOUNT_NUMBER. Reads .env from the current directory.
+`;
+function gateArgs() {
+  const args = process.argv.slice(2);
+  if (args.includes("--help") || args.includes("-h")) {
+    stdout.write(USAGE);
+    exit(0);
+  }
+  const unknown = args.filter((a) => a !== "--import");
+  if (unknown.length) {
+    err(`Unknown argument(s): ${unknown.join(" ")} — refusing to run setup (a typo must not create a wallet).`);
+    stderr.write("\n" + USAGE);
+    exit(2);
+  }
+}
+
 async function main() {
+  gateArgs();
   if (existsSync(SEED_PATH)) {
     err(`Encrypted seed already exists at ${SEED_PATH}.`);
     err("Refusing to overwrite. Delete the file first, or set SPARK_SEED_PATH to a different location.");

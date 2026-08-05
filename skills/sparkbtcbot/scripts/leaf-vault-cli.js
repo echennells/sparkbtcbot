@@ -7,6 +7,29 @@
 import "dotenv/config";
 import { snapshotLeafVault, verifyVault, reportedBalanceSats, judgeMissingVault } from "./leaf-vault.js";
 
+// Arg gate FIRST — the no-arg default takes a snapshot (a side effect), so an
+// unrecognized argument (e.g. `--help`, or a typo like `vreify`) must fail
+// closed with usage instead of falling through to it.
+{
+  const arg = process.argv[2];
+  const usage =
+    "Usage: sparkbtcbot-leaf-vault [verify]\n\n" +
+    "  (no argument)  Take a fresh unilateral-exit recovery-bundle snapshot of\n" +
+    "                 the encrypted-seed wallet (requires SPARK_PASSPHRASE).\n" +
+    "  verify         Check the current bundle rebuilds offline. Exit codes:\n" +
+    "                 0 = ok / nothing to back up, 1 = broken or funded-with-no-\n" +
+    "                 backup, 2 = indeterminate.\n" +
+    "  -h, --help     Show this help and exit (no snapshot is taken).\n";
+  if (arg === "--help" || arg === "-h") {
+    process.stdout.write(usage);
+    process.exit(0);
+  }
+  if (arg !== undefined && arg !== "verify") {
+    process.stderr.write(`leaf-vault: unknown argument "${arg}"\n\n` + usage);
+    process.exit(2);
+  }
+}
+
 // Back up the SAME wallet the operator funds and that SparkAgent's auto-vault
 // backs up: the SDK's network-correct default (account 1 on MAINNET, 0 on
 // REGTEST), which every other script uses by OMITTING accountNumber. So leave it
