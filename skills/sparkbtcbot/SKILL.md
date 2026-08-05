@@ -14,6 +14,10 @@ requires:
       description: Optional override for the encrypted-seed file location. Defaults to ~/.spark/seed.enc.
     - name: SPARK_LEAF_VAULT
       description: Set to "off" to disable the automatic recovery-bundle backup (the "leaf-vault" — keeps a fresh spark.unilateral-exit-bundle.v1 bundle for Blink's unilateral-exit recovery tool). On by default.
+    - name: SPARK_DAILY_BUDGET_SATS
+      description: Opt-in rolling 24-hour cumulative spend budget in sats, enforced across Spark transfers, Lightning pays, Spark-invoice fulfillment, and L1 withdrawals. The one guard that stops a LOOP of individually-valid sends — strongly recommended for any autonomous agent. Unset = no budget.
+    - name: SPARK_SPEND_LEDGER_PATH
+      description: Optional override for the spend-ledger file backing SPARK_DAILY_BUDGET_SATS. Defaults to ~/.spark/spend-ledger.json.
 model-invocation: autonomous
 model-invocation-reason: This skill enables agents to autonomously send and receive Bitcoin payments. Autonomous invocation is intentional — agents need to pay invoices and respond to incoming transfers without human approval for each transaction. The direct-SDK path here is full-custody-once-decrypted with no spending caps; for guardrails (scoped tokens, per-tx and daily limits, audit logs, revocation), run sparkbtcbot-proxy and have the agent talk to it over HTTP instead.
 ---
@@ -136,9 +140,23 @@ In that one case, **ask the user before installing** whether they want npm suppl
 
 The mnemonic is **never** stored in plaintext. The skill encrypts it at rest with a passphrase the user provides; the running app reads `SPARK_PASSPHRASE` from env and decrypts the seed file once at boot. There is no plaintext-mnemonic-in-`.env` mode.
 
+### Which install path are you on? (determines how you run things)
+
+The `npm run …` commands below assume a **cloned repo** where `npm install` has run. On the **Claude Code plugin path** there is no such repo: the plugin cache (`~/.claude/plugins/cache/...`) ships the sources **without `node_modules`**, and it is versioned — anything you write or install there is **silently lost on the next plugin update**. So, one supported answer per surface:
+
+- **Plugin path (and any project using the npm package): use the published CLI.** The npm package declares bin commands, so from the **user's project directory** (where `.env` lives):
+  ```bash
+  npx -y --package=sparkbtcbot-skill sparkbtcbot-setup            # one-time bootstrap
+  npx -y --package=sparkbtcbot-skill sparkbtcbot-reveal-mnemonic  # USER runs, own terminal
+  npx -y --package=sparkbtcbot-skill sparkbtcbot-leaf-vault verify
+  ```
+  (After `npm install sparkbtcbot-skill` in the project, plain `npx sparkbtcbot-setup` etc. works.) Wherever this document says `npm run setup` / `npm run reveal-mnemonic` / `npm run leaf-vault`, these are the equivalent commands on the plugin path.
+- **Cloned repo:** the `npm run …` forms as written.
+- **NEVER `npm install` inside the plugin cache directory**, and never point the user's seed/config at it.
+
 ### Step 1: Run setup
 
-`npm run setup` (or `node skills/sparkbtcbot/scripts/setup-encrypted-seed.js`) is the one-time bootstrap. It encrypts a BIP39 mnemonic with the user's passphrase and writes `~/.spark/seed.enc` (mode 0600). Three scenarios depending on where the mnemonic comes from:
+`npm run setup` (cloned repo) or `npx -y --package=sparkbtcbot-skill sparkbtcbot-setup` (plugin/npm path — see above) is the one-time bootstrap. It encrypts a BIP39 mnemonic with the user's passphrase and writes `~/.spark/seed.enc` (mode 0600). Three scenarios depending on where the mnemonic comes from:
 
 ```bash
 # A) Fresh wallet — the SDK generates a new mnemonic, the script encrypts it
@@ -162,7 +180,7 @@ If `SPARK_PASSPHRASE` is unset the script prompts on stderr. The script verifies
 **Fresh-generate mode never writes the mnemonic to disk in plaintext, and never prints it to stdout.** When scenario A runs, the new 12-word mnemonic is stored only inside the encrypted `seed.enc`. It is not printed (stdout-from-Bash gets captured into an agent's transcript) and — unlike older versions — **no plaintext `MNEMONIC_BACKUP_*.txt` file is written** (that lingered on disk until the user remembered to `rm` it, undercutting encryption-at-rest). Backup is now on-demand via `reveal-mnemonic`.
 
 After running setup, relay this to the user — the words never pass through you:
-1. In **their own** terminal, run: `npm run reveal-mnemonic` — it decrypts `seed.enc` and prints the 12 words. It refuses to run non-interactively, so it can't be captured into this chat.
+1. In **their own** terminal, run: `npm run reveal-mnemonic` (cloned repo) or `npx -y --package=sparkbtcbot-skill sparkbtcbot-reveal-mnemonic` (plugin/npm path — no repo needed; run it in the directory holding `.env`, or export `SPARK_PASSPHRASE` first). It decrypts `seed.enc` and prints the 12 words, and refuses to run non-interactively, so it can't be captured into this chat.
 2. Copy the words to paper, a password manager, or a hardware-wallet seed backup. This is the only recovery path — the encrypted seed file is **not** a substitute for the offline backup.
 3. Nothing to delete — no plaintext file was created.
 
@@ -189,7 +207,7 @@ SPARK_NETWORK=MAINNET
 
 ### Step 3: Load the wallet in code
 
-The decrypt helper lives at `lib/encrypted-seed.js` in this skill repo. It's not published to npm — when scaffolding a user's project, copy that file into the project (e.g., `<project>/lib/encrypted-seed.js`) and import from there. It has no dependencies beyond Node's built-in `node:crypto`.
+**All the lib helpers ARE published to npm** — `sparkbtcbot-skill` ships `lib/` and exports it: `import { loadMnemonicFromEnv, checkInvoiceAgainstQuote, lightningFeeCap, createSpendLedger } from "sparkbtcbot-skill"`. **When scaffolding a user's project, add the package as a dependency and import from it** — that's the one supported answer on every install path (the Claude Code plugin cache is NOT importable and is wiped on update; never reference it from generated code). This matters most for the guard helpers (`fee-guards`, `bolt11`, `spend-ledger`, the allowlist): hand-rolled or copy-pasted versions rot and re-introduce fixed bugs. Copy a file into the project only as a last resort when adding a dependency is impossible — `lib/encrypted-seed.js` is the least-bad one to copy (no dependencies beyond `node:crypto`), the guards are the worst.
 
 ```javascript
 import "dotenv/config";
@@ -224,7 +242,7 @@ A few rough edges that bite agents running in containers, devcontainers, or sand
 
 - **Working directory matters for `npm run setup`.** The script's `dotenv/config` import resolves `.env` relative to `process.cwd()`, not the script's location. Run from the project root (the directory containing `package.json`). If you `cd` somewhere else first, `.env` won't load and `SPARK_PASSPHRASE` will be empty.
 - **`~` must be writable.** The default seed path is `~/.spark/seed.enc`. In some sandboxes `$HOME` is read-only or set to an unexpected location (e.g., `HOME=/workspace` with `/workspace/.spark/` not writable). If the default fails, override with `SPARK_SEED_PATH=/tmp/spark/seed.enc` (or any writable path).
-- **Module resolution.** Node walks up from the script's file path looking for `node_modules`. If the SDK imports fail (`Cannot find module '@buildonspark/spark-sdk'`), the script is being run from outside a tree that has the dependencies installed. Run from the cloned skill repo (where `npm install` already ran), or install the deps in your target project first.
+- **Module resolution.** Node walks up from the script's file path looking for `node_modules`. If the SDK imports fail (`Cannot find module '@buildonspark/spark-sdk'`), the script is being run from outside a tree that has the dependencies installed. On the **plugin path this is guaranteed to happen** — the plugin cache ships no `node_modules` — so use the npx CLI form ("Which install path are you on?" above), which brings the dependencies with it. On a cloned repo, run from the repo (where `npm install` already ran) or install the deps in the target project first.
 
 ## Backup and Recovery
 

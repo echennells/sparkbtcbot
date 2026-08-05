@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 // CLI for the leaf-vault: `node leaf-vault-cli.js verify` checks the current
 // bundle; no arg takes a snapshot using the encrypted-seed wallet. Kept separate
 // from leaf-vault.js so importing the library never loads .env into the caller's

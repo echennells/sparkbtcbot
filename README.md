@@ -100,14 +100,26 @@ const vault = enableLeafVault(wallet); // auto-refreshing recovery bundle
 // ... later: await vault.dispose();   // flushes a final snapshot if needed
 ```
 
-The package has zero runtime dependencies beyond Node 18+ built-ins.
+The package also ships the setup/backup CLIs, so npm consumers (and Claude Code plugin users, who get sources but no `node_modules`) never need the cloned repo:
+
+```bash
+npx -y --package=sparkbtcbot-skill sparkbtcbot-setup            # one-time wallet bootstrap
+npx -y --package=sparkbtcbot-skill sparkbtcbot-reveal-mnemonic  # user-run seed backup (refuses non-interactive)
+npx -y --package=sparkbtcbot-skill sparkbtcbot-leaf-vault verify
+```
 
 ### Local clone (for running the example scripts and tests yourself)
 
 ```bash
-git clone https://github.com/echennells/sparkbtcbot.git ~/.claude/skills/sparkbtcbot
-cd ~/.claude/skills/sparkbtcbot
+git clone https://github.com/echennells/sparkbtcbot.git ~/sparkbtcbot
+cd ~/sparkbtcbot
 npm install
+```
+
+Don't clone directly into `~/.claude/skills/` — this repo nests the skill at `skills/sparkbtcbot/`, so the clone would put `SKILL.md` a level too deep and Claude Code won't discover it. If you want the clone to double as a personal skill (instead of the plugin install), symlink the inner skill directory:
+
+```bash
+ln -s ~/sparkbtcbot/skills/sparkbtcbot ~/.claude/skills/sparkbtcbot
 ```
 
 The Quick Start below assumes this path — useful if you want to kick the tires on the example scripts (`npm run example:balance` etc.) before integrating.
@@ -115,8 +127,8 @@ The Quick Start below assumes this path — useful if you want to kick the tires
 ## Quick Start
 
 ```bash
-# Install dependencies (in the cloned skill directory)
-cd ~/.claude/skills/sparkbtcbot
+# Install dependencies (in the cloned repo)
+cd ~/sparkbtcbot
 npm install
 
 # Copy env template, set SPARK_PASSPHRASE (>=12 chars)

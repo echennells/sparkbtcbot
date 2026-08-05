@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 // Interactive one-time setup: encrypts a BIP39 mnemonic at rest.
 //
 // Mode selection (first match wins):

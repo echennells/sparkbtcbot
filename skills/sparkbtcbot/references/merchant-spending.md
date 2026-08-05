@@ -9,8 +9,11 @@ Every agent-ready merchant converges on the same shape: catalog → checkout →
 Whatever returns the invoice — REST response, MCP tool result, CLI output — can be wrong, stale, tampered with, or malicious. Never pay an invoice solely because a checkout handed it to you. Pin it to the price you were quoted *before* checkout, with an absolute ceiling the quote cannot override:
 
 ```javascript
-// The helpers ship in the npm package (or ../../../lib/ in this repo) —
-// import them, don't re-implement them; the inlined versions rot.
+// The helpers ship in the npm package (or ../../../lib/ in a cloned repo) —
+// import them, don't re-implement them; the inlined versions rot. On the Claude
+// Code PLUGIN path neither relative path exists and the plugin cache is not
+// importable: `npm install sparkbtcbot-skill` in the user's project and use
+// this exact import — that's the one supported answer on every install path.
 import { decodeInvoiceSats, paymentHashMatches, checkInvoiceAgainstQuote } from "sparkbtcbot-skill";
 
 // `confirm` is REQUIRED, not optional: an async callback that shows the preview

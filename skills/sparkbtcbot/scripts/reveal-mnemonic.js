@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 // Show the wallet's 12-word mnemonic ON DEMAND, decrypted from seed.enc, so the
 // user can back it up offline — WITHOUT ever writing a persistent plaintext file
 // (the old MNEMONIC_BACKUP_*.txt undercut encryption-at-rest until it was rm'd).

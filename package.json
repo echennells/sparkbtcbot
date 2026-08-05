@@ -58,6 +58,11 @@
   "engines": {
     "node": ">=20"
   },
+  "bin": {
+    "sparkbtcbot-setup": "skills/sparkbtcbot/scripts/setup-encrypted-seed.js",
+    "sparkbtcbot-reveal-mnemonic": "skills/sparkbtcbot/scripts/reveal-mnemonic.js",
+    "sparkbtcbot-leaf-vault": "skills/sparkbtcbot/scripts/leaf-vault-cli.js"
+  },
   "scripts": {
     "setup": "node skills/sparkbtcbot/scripts/setup-encrypted-seed.js",
     "example:balance": "node skills/sparkbtcbot/scripts/balance-and-deposits.js",
