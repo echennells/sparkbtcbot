@@ -82,6 +82,30 @@ export function isTerminalLightningFailure(status) {
 // SPARK_SPEND_LEDGER_PATH, default ~/.spark/spend-ledger.json). A malformed
 // budget THROWS instead of being ignored — a budget the operator thinks is
 // set but isn't would be the silently-generated-wallet bug all over again.
+// The SDK validates every sats amount with Number.isSafeInteger, which returns
+// FALSE for ALL BigInts — so passing BigInt(8258) throws a misleading "Sats
+// amount must be less than 2^53" even for tiny values, while a plain 8258 works.
+// Callers legitimately hold sats as bigint (getBalance() returns bigint), so
+// normalize number|bigint to a plain safe-integer Number here and let both work
+// identically on the dry-run and live paths. Real sats amounts are always
+// < 2^53 (2^53 sats dwarfs the total BTC supply), so the Number cast never loses
+// precision. undefined/null pass through unchanged (for optional amounts).
+function toSats(value, method, field = "amount") {
+  if (value === undefined || value === null) return value;
+  if (typeof value === "bigint") {
+    if (value < 0n || value > BigInt(Number.MAX_SAFE_INTEGER)) {
+      throw new Error(`SparkAgent.${method}: ${field} ${value} is out of range (0 .. 2^53-1).`);
+    }
+    return Number(value);
+  }
+  if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) return value;
+  throw new Error(
+    `SparkAgent.${method}: ${field} must be a non-negative integer below 2^53 (number or bigint), got ${
+      typeof value === "number" ? value : typeof value
+    }.`,
+  );
+}
+
 function spendLedgerFromEnv() {
   const raw = process.env.SPARK_DAILY_BUDGET_SATS;
   if (raw == null || String(raw).trim() === "") return null;
@@ -318,23 +342,24 @@ export class SparkAgent {
   async transfer({ to, amount, dryRun = false, ...rest }) {
     rejectUnknownOptions("transfer", rest);
     await this.#assertAllowed(to);
+    const sats = toSats(amount, "transfer"); // number|bigint -> safe-int Number (dry-run + live agree)
     if (dryRun) {
       return {
         dryRun: true,
         operation: "spark_transfer",
         from: await this.#wallet.getSparkAddress(),
         to,
-        amount: String(amount),
+        amount: String(sats),
         unit: "sats",
         estimatedFee: "0", // Spark-to-Spark transfers are free
         network: this.#network,
       };
     }
-    const spend = await this.#recordSpend(Number(amount), "spark_transfer");
+    const spend = await this.#recordSpend(sats, "spark_transfer");
     try {
       return await this.#wallet.transfer({
         receiverSparkAddress: to,
-        amountSats: amount,
+        amountSats: sats,
       });
     } catch (err) {
       await spend.undo().catch(() => {});
@@ -350,7 +375,7 @@ export class SparkAgent {
 
   async createLightningInvoice(amountSats, memo, options = {}) {
     const request = await this.#wallet.createLightningInvoice({
-      amountSats,
+      amountSats: toSats(amountSats, "createLightningInvoice"),
       memo,
       expirySeconds: options.expirySeconds || 3600,
       includeSparkAddress: options.includeSparkAddress ?? true,
@@ -369,10 +394,11 @@ export class SparkAgent {
     // to "no cap set" inside the guards (see requireNumericOption).
     const maxFee = requireNumericOption("payLightningInvoice", "maxFeeSats", maxFeeSats);
     const maxAmt = requireNumericOption("payLightningInvoice", "maxAmountSats", maxAmountSats) ?? 10_000;
+    const amtSats = toSats(amountSats, "payLightningInvoice", "amountSats"); // bigint -> safe-int Number
     const invoiceAmt = invoiceAmountSats(bolt11); // embedded amount; undefined for amountless/undecodable
     const est = await this.#wallet.getLightningSendFeeEstimate({
       encodedInvoice: bolt11,
-      amountSats,
+      amountSats: amtSats,
     });
     const estimatedFee = lightningEstimateSats(est);
     // The INVOICE wins over the caller's number. For an amount-bearing invoice
@@ -382,14 +408,14 @@ export class SparkAgent {
     // ceiling validates 100 while 20,000 leaves the wallet — and the dry-run
     // preview would show the operator the wrong number too. Disagreement is a
     // bug or an injected parameter, so refuse rather than silently pick one.
-    if (invoiceAmt !== undefined && amountSats !== undefined && Number(amountSats) !== invoiceAmt) {
+    if (invoiceAmt !== undefined && amtSats !== undefined && amtSats !== invoiceAmt) {
       throw new Error(
         `SparkAgent.payLightningInvoice: amountSats (${amountSats}) disagrees with the invoice's ` +
         `embedded amount (${invoiceAmt} sats). The invoice amount is what gets paid — omit amountSats ` +
         `for amount-bearing invoices.`,
       );
     }
-    const amt = invoiceAmt ?? amountSats;
+    const amt = invoiceAmt ?? amtSats;
     // Fee cap: amount-aware (0.5% of amount, min 25 sats — Spark's flat fee
     // component alone hit 25 on a live 4.5k-sat send). Explicit maxFeeSats wins.
     const cap = maxFee ?? lightningFeeCap({ amountSats: amt, estimatedFeeSats: estimatedFee });
@@ -434,7 +460,7 @@ export class SparkAgent {
         invoice: bolt11,
         maxFeeSats: cap,
         preferSpark: true,
-        ...(invoiceAmt === undefined && amountSats !== undefined ? { amountSatsToSend: amountSats } : {}),
+        ...(invoiceAmt === undefined && amtSats !== undefined ? { amountSatsToSend: amtSats } : {}),
       });
     } catch (err) {
       await spend.undo().catch(() => {});
@@ -445,7 +471,7 @@ export class SparkAgent {
   async estimateLightningFee(bolt11, amountSats) {
     return await this.#wallet.getLightningSendFeeEstimate({
       encodedInvoice: bolt11,
-      amountSats,
+      amountSats: toSats(amountSats, "estimateLightningFee"),
     });
   }
 
@@ -487,7 +513,7 @@ export class SparkAgent {
 
   async createSatsInvoice(amountSats, memo) {
     return await this.#wallet.createSatsInvoice({
-      amount: amountSats,
+      amount: toSats(amountSats, "createSatsInvoice"),
       memo,
     });
   }
@@ -672,7 +698,7 @@ export class SparkAgent {
 
   async getWithdrawalFeeQuote(amountSats, onchainAddress) {
     return await this.#wallet.getWithdrawalFeeQuote({
-      amountSats,
+      amountSats: toSats(amountSats, "getWithdrawalFeeQuote"),
       withdrawalAddress: onchainAddress,
     });
   }
@@ -687,8 +713,9 @@ export class SparkAgent {
     const pct = requireNumericOption("withdraw", "maxFeePct", maxFeePct) ?? 10;
     const abs = requireNumericOption("withdraw", "maxFeeSats", maxFeeSats);
     await this.#assertAllowed(to);
+    const sats = toSats(amount, "withdraw"); // number|bigint -> safe-int Number (SDK rejects bigint)
     const quote = await this.#wallet.getWithdrawalFeeQuote({
-      amountSats: amount,
+      amountSats: sats,
       withdrawalAddress: to,
     });
     // Total exit fee = userFee + l1BroadcastFee for the chosen speed. Ceiling:
@@ -696,7 +723,7 @@ export class SparkAgent {
     // absolute maxFeeSats — which legibly refuses uneconomical small withdrawals,
     // consistent with "discourage sub-25k-sat exits".
     const fee = withdrawalTotalFee(quote, speed);
-    const pctCap = Number.isFinite(Number(amount)) ? Math.ceil((Number(amount) * pct) / 100) : Infinity;
+    const pctCap = Number.isFinite(sats) ? Math.ceil((sats * pct) / 100) : Infinity;
     const absCap = abs ?? Infinity;
     const cap = Math.min(pctCap, absCap);
     // Unlike the Lightning/L402/claim paths — which hand the SDK a SERVER-enforced
@@ -712,7 +739,7 @@ export class SparkAgent {
         operation: "l1_withdraw",
         from: await this.#wallet.getSparkAddress(),
         to,
-        amount: String(amount),
+        amount: String(sats),
         unit: "sats",
         estimatedFee: fee != null ? String(fee) : "unknown",
         maxFeeSats: Number.isFinite(cap) ? String(cap) : null,
@@ -725,12 +752,12 @@ export class SparkAgent {
     }
     if (!check.ok) {
       const detail = check.fee != null
-        ? ` (${((check.fee / Number(amount)) * 100).toFixed(1)}% of the ${amount}-sat exit). Raise maxFeeSats/maxFeePct to override.`
+        ? ` (${((check.fee / sats) * 100).toFixed(1)}% of the ${sats}-sat exit). Raise maxFeeSats/maxFeePct to override.`
         : `. Re-fetch the quote or check the SDK CoopExitFeeQuote shape.`;
       throw new Error(`Withdrawal blocked: ${check.reason}${detail}`);
     }
     // Budget counts amount + the vetted fee — both leave the wallet on an exit.
-    const spend = await this.#recordSpend(Number(amount) + (check.fee ?? 0), "l1_withdraw");
+    const spend = await this.#recordSpend(sats + (check.fee ?? 0), "l1_withdraw");
     try {
       // Bind the executed exit to the SAME quote we just vetted, so the operator
       // charges the quoted fee we checked rather than re-pricing at broadcast
@@ -740,7 +767,7 @@ export class SparkAgent {
       return await this.#wallet.withdraw({
         onchainAddress: to,
         exitSpeed: speed,
-        amountSats: amount,
+        amountSats: sats,
         ...(check.fee != null && quote?.id
           ? { feeQuoteId: quote.id, feeAmountSats: check.fee }
           : { feeQuote: quote }),

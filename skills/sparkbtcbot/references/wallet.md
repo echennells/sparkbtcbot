@@ -87,6 +87,8 @@ console.log("Transfer ID:", transfer.id);
 
 Spark-to-Spark transfers are instant and zero-fee.
 
+> **⚠️ Pass sats amounts to the raw SDK as a `Number`, not a `BigInt`.** The SDK validates every amount with `Number.isSafeInteger()`, which returns **`false` for all BigInts** — so `amountSats: 8258n` throws a misleading `"Sats amount must be less than 2^53"` even for tiny values, while `amountSats: 8258` works. This bites because `getBalance()` returns balances as **`bigint`**, so it's natural to pass one straight back into `transfer`/`withdraw`. Convert first: `amountSats: Number(balance.available)` (real sats are always < 2^53, so the cast is lossless). The `SparkAgent` wrapper handles this for you — its amount methods accept number *or* bigint and normalize — but the raw SDK does not.
+
 > **⚠️ `wallet.transfer()` has NO `dryRun` option — this call SENDS, immediately.**
 > Passing `dryRun: true` (or any unknown key) does nothing: JavaScript drops it
 > silently and the transfer signs and broadcasts anyway. `dryRun` exists only on
