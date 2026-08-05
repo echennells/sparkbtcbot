@@ -44,6 +44,13 @@ Spark is a Bitcoin Layer 2 that lets you send and receive Bitcoin instantly with
 
 Two install paths depending on your stack.
 
+**Tested setups.** No lock-in to one model or harness — the wallet, merchant, and bridge flows have been run end-to-end on real mainnet sats under both:
+
+- **[Claude Code](https://claude.com/claude-code)** (recommended) — native plugin install below; `SKILL.md` loads automatically.
+- **[opencode](https://opencode.ai)** running **GLM-5.2 via [OpenRouter](https://openrouter.ai)** — clone-the-repo path; opencode picks up the rules in [`AGENTS.md`](./AGENTS.md) automatically.
+
+Anything that can load the skill content should work the same way (Cursor, LangChain, OpenAI Agents SDK, your own harness — see the npm package below); those two are the stacks we've validated with real purchases and withdrawals.
+
 ### Claude Code
 
 ```bash
