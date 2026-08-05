@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **The Claude Code plugin path is now runnable.** `claude plugin install` lands the sources with no `node_modules` in a versioned cache that's wiped on update — and the docs assumed a cloned repo, leaving plugin users no supported way to run setup and *no runnable form at all* of the user-executed seed backup. The package now ships bin commands — `sparkbtcbot-setup`, `sparkbtcbot-reveal-mnemonic`, `sparkbtcbot-leaf-vault` — so `npx -y --package=sparkbtcbot-skill sparkbtcbot-setup` works with no repo checkout (same answer for npm consumers, whose `npm run setup` never worked either). SKILL.md gained a "Which install path are you on?" section naming that one supported answer and banning installs into the plugin cache; the frontmatter now declares `SPARK_DAILY_BUDGET_SATS`/`SPARK_SPEND_LEDGER_PATH`; README's local-clone instructions no longer land `SKILL.md` a level too deep for skill discovery.
+- **Generated code is told to depend on the npm package, not copy guard helpers.** SKILL.md falsely claimed `lib/encrypted-seed.js` "is not published to npm" (the package has shipped all of `lib/` for some time) and told agents to copy it — while saying nothing about `fee-guards`/`bolt11`/`spend-ledger`, pushing agents to hand-roll exactly the guards that must not rot. One supported answer everywhere: `npm install sparkbtcbot-skill` and import.
+
+### Security
+
+- **`writeMnemonicBackupFile` removed from the library and package exports.** Setup stopped writing the plaintext `MNEMONIC_BACKUP_*.txt` file in 0.4.0, but the helper remained a discoverable public export — a function that "does the backup step" by writing the seed words to disk in plaintext is exactly what an agent scaffolding wallet code would reach for. Deleted outright (with a regression test pinning that no plaintext-mnemonic writer returns to the surface); the supported backup path remains the user-run `reveal-mnemonic`, now invocable everywhere via `npx -y --package=sparkbtcbot-skill sparkbtcbot-reveal-mnemonic`.
+
 ## 0.4.1 — 2026-08-05
 
 Pipeline release — no code changes vs 0.4.0. Adds the CI publish workflow (npm **trusted publishing**, no token secrets) and is the **first version published with a Sigstore provenance attestation** linking the npm tarball to its exact commit and workflow run (`npm audit signatures` verifies). Also: `npm version` now auto-syncs the plugin-marketplace manifest version, and the changelog was folded for the 0.4.0 release.

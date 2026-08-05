@@ -15,10 +15,6 @@ export interface LoadMnemonicOptions {
   path?: string;
 }
 
-export interface WriteMnemonicBackupFileOptions {
-  /** Defaults to dirname(DEFAULT_SEED_PATH), typically ~/.spark/ */
-  dir?: string;
-}
 
 /**
  * Encrypt a BIP39 mnemonic at rest with a user-supplied passphrase.
@@ -56,16 +52,6 @@ export interface LoadMnemonicFromEnvOptions {
  */
 export function loadMnemonicFromEnv(
   options?: LoadMnemonicFromEnvOptions,
-): Promise<string>;
-
-/**
- * Write a freshly-generated mnemonic to a persistent file (mode 0600) for
- * the human operator to back up offline. Returns the file path. The caller
- * is expected to instruct the user to read, copy offline, and `rm` the file.
- */
-export function writeMnemonicBackupFile(
-  mnemonic: string,
-  options?: WriteMnemonicBackupFileOptions,
 ): Promise<string>;
 
 /** ~/.spark/seed.enc (resolved from os.homedir() at module load time) */

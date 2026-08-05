@@ -150,7 +150,7 @@ The `npm run …` commands below assume a **cloned repo** where `npm install` ha
   npx -y --package=sparkbtcbot-skill sparkbtcbot-reveal-mnemonic  # USER runs, own terminal
   npx -y --package=sparkbtcbot-skill sparkbtcbot-leaf-vault verify
   ```
-  (After `npm install sparkbtcbot-skill` in the project, plain `npx sparkbtcbot-setup` etc. works.) Wherever this document says `npm run setup` / `npm run reveal-mnemonic` / `npm run leaf-vault`, these are the equivalent commands on the plugin path.
+  (After `npm install sparkbtcbot-skill` in the project, plain `npx sparkbtcbot-setup` etc. works.) Wherever this document says `npm run setup` / `npm run reveal-mnemonic` / `npm run leaf-vault`, these are the equivalent commands on the plugin path. **Note the CLI comes from npm, not from this plugin** — it may be newer than the skill text you're reading; if a command's behavior disagrees with this document, trust the command's own `--help`/output. (These commands exist in `sparkbtcbot-skill` **0.4.2+** — on an older published version npx will report the executable missing; don't improvise around it, tell the user to wait for/confirm the release.)
 - **Cloned repo:** the `npm run …` forms as written.
 - **NEVER `npm install` inside the plugin cache directory**, and never point the user's seed/config at it.
 
