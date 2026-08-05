@@ -163,3 +163,31 @@ await wallet.cleanup();
 ```
 
 Call when shutting down to release gRPC streams. Long-running agents should keep the connection open and only cleanup on shutdown.
+
+### One-shot scripts that move value: don't race the leaf optimizer
+
+After any balance-changing op (claim, pay, transfer, withdraw) the SDK kicks off a **detached** background job — `autoOptimizeIfNeeded` — that rebalances your internal UTXO "leaves." It is *not* awaited by the call that returned. If you call `cleanup()` immediately afterward, you tear down the gRPC streams mid-optimization and the SDK logs:
+
+```
+Failed to claim transfer after all retries.
+Error: Claim transfer process was interrupted due to cleanup
+```
+
+**This does not lose funds.** The value-moving op itself already completed on-chain/on-Spark; only the internal leaf-consolidation was interrupted, and it resumes on the next `SparkWallet.initialize`. But it's alarming in logs and leaves leaf state half-reconciled (you'll see the balance settle over a few re-inits), and — for this skill specifically — a leaf-vault snapshot flushed at that moment can capture a mid-swap leaf set. It's deterministic: any one-shot script that moves value and then cleans up in the same process hits it.
+
+Two ways to avoid it, in order of preference:
+
+1. **Disable auto-optimization for the one-shot** (deterministic — nothing to interrupt). Optimization is a denomination-consolidation nicety, not a correctness requirement; deferring it to the next long-running session costs nothing:
+   ```javascript
+   const { wallet } = await SparkWallet.initialize({
+     mnemonicOrSeed: mnemonic,
+     options: { network, optimizationOptions: { auto: false } },
+   });
+   ```
+2. **Let it settle before cleanup** if you *want* the optimization to happen in-process — a few seconds is usually enough, but it's a timing guess, not a guarantee (a multi-swap optimization can take longer):
+   ```javascript
+   await new Promise((r) => setTimeout(r, 5000));
+   await wallet.cleanup();
+   ```
+
+**Long-running agents don't need either** — keep the wallet open, let optimization run continuously, and only `cleanup()` on shutdown. The interruption at shutdown is a one-time event that resumes on next boot. This whole hazard is specific to short-lived, value-moving scripts.

@@ -212,6 +212,8 @@ console.log("Available:", satsBalance.available.toString(), "sats");
 await wallet.cleanup();
 ```
 
+**One-shot scripts that move value:** after a claim/pay/transfer/withdraw the SDK starts a *detached* background leaf-optimization job. Calling `cleanup()` right away interrupts it — the SDK logs `Claim transfer process was interrupted due to cleanup`. **No funds are lost** (the op already settled; optimization resumes on next init), but for a short-lived script that moves value then exits, initialize it with `options: { network, optimizationOptions: { auto: false } }` so there's nothing to interrupt — or let it settle a few seconds before `cleanup()`. Long-running agents keep the wallet open and don't hit this. See `references/wallet.md` → Cleanup.
+
 Decrypt happens once at boot (~250ms scrypt). Hold the wallet — do not call `loadMnemonicFromEnv()` per request.
 
 

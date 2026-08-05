@@ -213,9 +213,13 @@ async function previewL402(url) {
 
 async function main() {
   const mnemonic = await loadMnemonicFromEnv();
+  // One-shot pay-then-exit: disable background leaf optimization so cleanup()
+  // at the end doesn't interrupt an in-flight optimizer after the L402 payment
+  // (harmless — funds settle regardless — but it logs a scary error and leaves
+  // leaf state half-reconciled). See references/wallet.md → Cleanup.
   const { wallet } = await SparkWallet.initialize({
     mnemonicOrSeed: mnemonic,
-    options: { network },
+    options: { network, optimizationOptions: { auto: false } },
   });
 
   const { satsBalance } = await wallet.getBalance();

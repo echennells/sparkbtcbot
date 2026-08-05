@@ -176,7 +176,14 @@ export class SparkAgent {
     }
   }
 
-  static async create(mnemonic, network = "MAINNET") {
+  // optimizeLeaves: leave true for long-running agents (the SDK consolidates
+  // UTXO "leaves" in the background after balance changes). Set FALSE for a
+  // one-shot script that moves value then calls cleanup() in the same process:
+  // cleanup() tears down the gRPC streams mid-optimization and the SDK logs
+  // "...interrupted due to cleanup". No funds are lost (the op already settled;
+  // optimization resumes on next init), but disabling it removes the race
+  // entirely. See references/wallet.md → Cleanup.
+  static async create(mnemonic, network = "MAINNET", { optimizeLeaves = true } = {}) {
     // A missing mnemonic must fail LOUDLY, not mint a wallet: the SDK happily
     // generates a fresh wallet for an undefined mnemonicOrSeed, so a typo'd
     // env var or a failed seed decrypt used to silently boot a brand-new
@@ -195,7 +202,7 @@ export class SparkAgent {
     }
     const { wallet, mnemonic: generated } = await SparkWallet.initialize({
       mnemonicOrSeed: mnemonic,
-      options: { network },
+      options: { network, optimizationOptions: { auto: optimizeLeaves } },
     });
     const agent = new SparkAgent(wallet, network);
     // Surface a broken recovery backup LOUDLY at startup instead of the silent
@@ -871,6 +878,11 @@ export class SparkAgent {
   // --- Lifecycle ---
 
   async cleanup() {
+    // The vault flush below waits for the leaf-vault's OWN snapshot, but it
+    // cannot make the SDK's background leaf optimizer finish — cleanup() tears
+    // down the gRPC streams underneath it. If this agent moved value and is a
+    // one-shot process, prefer SparkAgent.create(..., { optimizeLeaves: false })
+    // so there's no in-flight optimization to interrupt. See references/wallet.md.
     await this.#vault?.dispose?.(); // first: the final flush needs the live wallet
     await this.#wallet.cleanup();
   }
