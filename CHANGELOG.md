@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.1 — 2026-08-05
+
+Pipeline release — no code changes vs 0.4.0. Adds the CI publish workflow (npm **trusted publishing**, no token secrets) and is the **first version published with a Sigstore provenance attestation** linking the npm tarball to its exact commit and workflow run (`npm audit signatures` verifies). Also: `npm version` now auto-syncs the plugin-marketplace manifest version, and the changelog was folded for the 0.4.0 release.
+
 ## 0.4.0 — 2026-08-05
 
 First npm release since 0.3.0 (0.3.1 shipped only to the plugin marketplace), folding in the full 0.4.0 line. The sections below run newest-first; the entries following the second group of headings are the earlier 0.4.0-line work from July.

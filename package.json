@@ -67,6 +67,7 @@
     "example:l402": "node skills/sparkbtcbot/scripts/l402-paywalls.js",
     "leaf-vault": "node skills/sparkbtcbot/scripts/leaf-vault-cli.js",
     "test": "vitest run tests/unit",
+    "version": "node -e \"const fs=require('fs');const v=require('./package.json').version;const p='.claude-plugin/marketplace.json';const m=JSON.parse(fs.readFileSync(p,'utf8'));m.metadata.version=v;m.plugins[0].version=v;fs.writeFileSync(p,JSON.stringify(m,null,2)+'\\n')\" && git add .claude-plugin/marketplace.json",
     "test:unit": "vitest run tests/unit",
     "test:integration": "vitest run tests/integration --exclude tests/integration/funded",
     "test:funded": "vitest run tests/integration/funded",
