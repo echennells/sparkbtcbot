@@ -797,9 +797,8 @@ export class SparkAgent {
       return { paid: false, data };
     }
 
-    const challenge = await initialResponse.json();
-    const invoice = challenge.invoice || challenge.payment_request || challenge.pr;
-    const macaroon = challenge.macaroon || challenge.token;
+    // Header first (spec-compliant, incl. `token=`), body fallback — see parseL402Challenge.
+    const { invoice, macaroon } = await parseL402Challenge(initialResponse);
     if (!invoice || !macaroon) throw new Error("Invalid L402 challenge");
 
     const decoded = decode(invoice);
@@ -852,8 +851,8 @@ export class SparkAgent {
     if (response.status !== 402) return { requiresPayment: false };
 
     const { decode } = await import("light-bolt11-decoder");
-    const challenge = await response.json();
-    const invoice = challenge.invoice || challenge.payment_request;
+    const { invoice, macaroon } = await parseL402Challenge(response); // header first, body fallback
+    if (!invoice) throw new Error("Invalid L402 challenge: no invoice in header or body");
     const decoded = decode(invoice);
     const amountSection = decoded.sections.find((s) => s.name === "amount");
     if (!amountSection?.value) throw new Error("L402 invoice has no amount");
@@ -862,7 +861,7 @@ export class SparkAgent {
       requiresPayment: true,
       amountSats: Math.ceil(Number(amountSection.value) / 1000),
       invoice,
-      macaroon: challenge.macaroon,
+      macaroon,
     };
   }
 

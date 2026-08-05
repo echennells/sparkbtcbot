@@ -177,6 +177,30 @@ function assertHttpsUrl(method, url) {
   }
 }
 
+// Parse an L402 (a.k.a. LSAT) 402 challenge. Spec-compliant servers (aperture,
+// lightningfaucet) put the challenge in the WWW-Authenticate HEADER; others
+// return it as a JSON body. Read the header FIRST, then fall back to the body.
+// Extract each field by name so it survives every real-world shape: either
+// scheme prefix (`L402 ` / `LSAT `), any field order, and either credential
+// field name — `macaroon="..."` OR the newer `token="..."` (lightningfaucet
+// sends `L402 version="0", token="...", invoice="..."`). A fixed-prefix split
+// like `split('L402 macaroon="')` misses the token= form entirely, which is why
+// a header-only, spec-compliant server used to throw "Invalid L402 challenge".
+// Returns { invoice, macaroon }; the caller decides whether missing => error.
+export async function parseL402Challenge(response) {
+  const field = (s, key) => s.match(new RegExp(`\\b${key}="([^"]*)"`))?.[1];
+  const wwwAuth = response.headers.get("www-authenticate") || "";
+  let invoice = field(wwwAuth, "invoice");
+  let macaroon = field(wwwAuth, "macaroon") ?? field(wwwAuth, "token");
+  if (!invoice || !macaroon) {
+    let body = {};
+    try { body = await response.json(); } catch { /* body absent or not JSON */ }
+    invoice ||= body.invoice || body.payment_request || body.pr;
+    macaroon ||= body.macaroon || body.token;
+  }
+  return { invoice, macaroon };
+}
+
 export class SparkAgent {
   #wallet;
   #network;
@@ -839,9 +863,8 @@ export class SparkAgent {
       return { paid: false, data };
     }
 
-    const challenge = await initialResponse.json();
-    const invoice = challenge.invoice || challenge.payment_request || challenge.pr;
-    const macaroon = challenge.macaroon || challenge.token;
+    // Header first (spec-compliant), body fallback — see parseL402Challenge.
+    const { invoice, macaroon } = await parseL402Challenge(initialResponse);
     if (!invoice || !macaroon) throw new Error("Invalid L402 challenge");
 
     const decoded = decode(invoice);
@@ -894,8 +917,8 @@ export class SparkAgent {
     if (response.status !== 402) return { requiresPayment: false };
 
     const { decode } = await import("light-bolt11-decoder");
-    const challenge = await response.json();
-    const invoice = challenge.invoice || challenge.payment_request;
+    const { invoice, macaroon } = await parseL402Challenge(response); // header first, body fallback
+    if (!invoice) throw new Error("Invalid L402 challenge: no invoice in header or body");
     const decoded = decode(invoice);
     const amountSection = decoded.sections.find((s) => s.name === "amount");
     if (!amountSection?.value) throw new Error("L402 invoice has no amount");
@@ -904,7 +927,7 @@ export class SparkAgent {
       requiresPayment: true,
       amountSats: Math.ceil(Number(amountSection.value) / 1000),
       invoice,
-      macaroon: challenge.macaroon,
+      macaroon,
     };
   }
 

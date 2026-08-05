@@ -51,7 +51,18 @@ const check = checkInvoiceAgainstQuote({
 
 `POST /api/v2/vpn/config` burns the payment on first success: a retry returns `409 CONFIG_ALREADY_GENERATED`, and it is NOT idempotent regardless of what the general docs imply. Learned by losing one $0.50 config to a client-side crash *after* the server had answered. Hard rules:
 
-- **Generate the WireGuard keypair and PSK BEFORE paying**, and persist them to disk first — the server never sees the private key (their real headline feature), so a lost local key = a dead config.
+- **Generate the WireGuard keypair and PSK BEFORE paying**, and persist them to disk first — the server never sees the private key (their real headline feature), so a lost local key = a dead config. Node's X25519 keys **cannot** be exported as raw (`export({ type: "raw" })` throws) — export DER and take the trailing 32 bytes:
+  ```javascript
+  import { generateKeyPairSync, randomBytes } from "node:crypto";
+  const { publicKey, privateKey } = generateKeyPairSync("x25519");
+  // WireGuard wants base64 32-byte keys; slice the raw key off the end of the DER.
+  const publicKeyB64  = publicKey.export({ type: "spki",  format: "der" }).subarray(-32).toString("base64");
+  const privateKeyB64 = privateKey.export({ type: "pkcs8", format: "der" }).subarray(-32).toString("base64");
+  const presharedKey  = randomBytes(32).toString("base64");
+  // Send publicKeyB64 + presharedKey in the /vpn/request body (above). Keep
+  // privateKeyB64 LOCAL and inject it into the returned config's empty
+  // `PrivateKey = ` line before handing the file to wg-quick.
+  ```
 - **The public key and PSK go in the PURCHASE body, not just the config call.** The `POST /api/v2/vpn/request` body is (verified 2026-08-05):
   ```json
   {

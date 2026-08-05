@@ -24,22 +24,15 @@ const tokenCache = new Map();
 async function parseChallenge(response) {
   let invoice, macaroon;
 
-  // Try WWW-Authenticate header first (spec-compliant)
+  // Try the WWW-Authenticate header first (spec-compliant). Extract each field
+  // BY NAME so it survives any scheme prefix (L402/LSAT), any field order, and
+  // either credential field name — macaroon="..." OR the newer token="..."
+  // (lightningfaucet sends `L402 version="0", token="...", invoice="..."`).
+  // A fixed `split('L402 macaroon="')` misses the token= form entirely.
   const wwwAuth = response.headers.get("www-authenticate") || "";
-  // Prefer L402 prefix
-  const l402 = wwwAuth.split("L402 macaroon=\"")[1];
-  if (l402) {
-    macaroon = l402.split('"')[0];
-    invoice = l402.split('invoice="')[1]?.split('"')[0];
-  }
-  // Fall back to LSAT prefix (older spec name)
-  if (!macaroon || !invoice) {
-    const lsat = wwwAuth.split("LSAT macaroon=\"")[1];
-    if (lsat) {
-      macaroon = macaroon || lsat.split('"')[0];
-      invoice = invoice || lsat.split('invoice="')[1]?.split('"')[0];
-    }
-  }
+  const field = (key) => wwwAuth.match(new RegExp(`\\b${key}="([^"]*)"`))?.[1];
+  invoice = field("invoice");
+  macaroon = field("macaroon") || field("token");
 
   // Fall back to JSON body (non-standard but common)
   if (!invoice || !macaroon) {
