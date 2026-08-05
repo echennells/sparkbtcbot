@@ -65,13 +65,25 @@ const result = await wallet.claimStaticDepositWithMaxFee({
 
 Note: `getUtxosForDepositAddress` returns only `{ txid, vout }` (no amount) and the quote carries only `creditAmountSats`, so there is **no** reliable client-side gross deposit amount to compute a percentage fee against — use the SDK's absolute `maxFee` ceiling above, not a client-side check. The `SparkAgent` wrapper bundles this: `agent.claimDeposit({ txid, vout, maxFeeSats, dryRun })`.
 
-To list unclaimed UTXOs at your registered deposit addresses:
+### "Did my deposit arrive?" — check status, don't trust the balance
+
+`getBalance()` returns **claimed Spark balance only** — a deposit that confirmed on L1 but hasn't been claimed yet is **invisible** there, so an agent that answers "did it arrive?" from `getBalance()` says "no" for funds sitting unclaimed at the address. To actually check, list the confirmed-but-unclaimed UTXOs at your deposit addresses. The `SparkAgent` wrapper bundles this:
+
+```javascript
+const pending = await agent.listPendingDeposits();
+// -> [{ address, txid, vout }, ...]  (empty array = nothing landed yet)
+for (const d of pending) {
+  await agent.claimDeposit({ txid: d.txid, vout: d.vout, maxFeeSats });
+}
+```
+
+Under the hood it's the two raw-SDK calls (use these directly if you're not on the wrapper):
 
 ```javascript
 const addrs = await wallet.queryStaticDepositAddresses();
 for (const addr of addrs) {
-  const utxos = await wallet.getUtxosForDepositAddress(addr, 100, 0, true);
-  // utxos[i] has { txid, vout } only (no amount/value field)
+  const utxos = await wallet.getUtxosForDepositAddress(addr, 100, 0, true); // excludeClaimed=true
+  // utxos[i] has { txid, vout } only (no amount/value field) — dry-run a claim for the credit
 }
 ```
 

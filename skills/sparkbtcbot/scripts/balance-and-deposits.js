@@ -39,8 +39,26 @@ async function main() {
   console.log("Single-use:       ", singleAddr);
 
   console.log("\nSend BTC to either address. Deposits need 3 L1 confirmations.");
-  console.log("After confirmation, claim with:");
-  console.log('  wallet.claimStaticDeposit({ transactionId: "txid", ... })');
+
+  // "Did my deposit arrive?" — getBalance() shows CLAIMED balance only, so a
+  // confirmed-but-unclaimed deposit is INVISIBLE there. Check the deposit
+  // addresses directly. (The SparkAgent wrapper bundles this whole loop as
+  // `agent.listPendingDeposits()` -> [{ address, txid, vout }].)
+  console.log("\n=== Unclaimed deposits (confirmed, waiting to be claimed) ===");
+  const depositAddrs = await wallet.queryStaticDepositAddresses();
+  let anyPending = false;
+  for (const addr of depositAddrs) {
+    const utxos = await wallet.getUtxosForDepositAddress(addr, 100, 0, true); // excludeClaimed=true
+    for (const u of utxos) {
+      anyPending = true;
+      console.log(
+        `  ${u.txid}:${u.vout}  ->  claimStaticDeposit({ transactionId: "${u.txid}", outputIndex: ${u.vout}, maxFee: <sats> })`,
+      );
+    }
+  }
+  if (!anyPending) {
+    console.log("  none yet — nothing confirmed-and-unclaimed (keep waiting after you send).");
+  }
 
   // List recent transfers
   const { transfers } = await wallet.getTransfers(5, 0);
