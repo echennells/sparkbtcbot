@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Changed
+
+- **Agents are explicitly told that running SETUP is allowed and expected.** Live testing showed agents over-extending the reveal-mnemonic prohibition into refusing `npm run setup` when the user asked — citing rules the docs never contained (setup has not printed or written the mnemonic in plaintext since 0.4.0). AGENTS.md and SKILL.md now carry an affirmative rule: creating the wallet on the user's behalf is the designed flow; the only secret to guard during setup is the passphrase, which goes to `.env` and is never echoed.
+
+## 0.4.3 — 2026-08-05
+
 ### Security
 
 - **`--help` no longer performs the CLI's default action.** All three published CLIs ignored unrecognized arguments and fell through to their default — which for `sparkbtcbot-setup` is *creating a wallet*: an agent probing `--help` for usage silently bootstrapped a real, unbacked wallet (caught by QA on REGTEST before it happened on MAINNET). `sparkbtcbot-leaf-vault --help` would likewise have taken a snapshot, and a typo'd flag to `sparkbtcbot-reveal-mnemonic` fell through toward a seed reveal. All three now gate arguments before any side effect: `-h`/`--help` prints usage and exits 0 (in reveal's case, before the TTY gate — usage holds no secrets), and any unknown argument fails closed with usage on stderr (exit 2). Regression tests pin that `--help` creates nothing.
