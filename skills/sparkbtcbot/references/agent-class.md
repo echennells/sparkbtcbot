@@ -7,7 +7,7 @@ Load when building an agent that wraps `SparkWallet` with a higher-level API for
 The `SparkAgent` class exposes these (all `async` unless noted); full signatures and bodies are in the code below.
 
 - **Identity & balance** — `getIdentity()`, `getBalance()`
-- **Deposits** — `getDepositAddress()`, `getSingleUseDepositAddress()`, `claimDeposit(...)`
+- **Deposits** — `getDepositAddress()`, `getSingleUseDepositAddress()`, `listPendingDeposits()`, `claimDeposit(...)`
 - **Send** — `transfer(...)`, `transferTokens(...)`, `batchTransferTokens(transfers)`, `withdraw(...)` (L1 cooperative exit), `getWithdrawalFeeQuote(amountSats, address)`, `getTransfers(limit, offset)`
 - **Lightning** — `createLightningInvoice(amountSats, memo, options)`, `payLightningInvoice(bolt11, ...)`, `estimateLightningFee(bolt11, amountSats)`, `getLightningSendRequest(id)` (poll an initiated send for its preimage), `payAndSettle(bolt11, ...)` (pay + wait for the preimage; never retry-pay on its timeout)
 - **Spark invoices** — `createSatsInvoice(amountSats, memo)`, `createTokenInvoice(tokenIdentifier, amount, memo)`, `fulfillInvoice(invoices, options)` (allowlist-gated on each invoice's decoded receiver; supports `dryRun`)
@@ -291,6 +291,19 @@ export class SparkAgent {
 
   async getDepositAddress() {
     return await this.#wallet.getStaticDepositAddress();
+  }
+
+  // Confirmed-but-UNCLAIMED L1 deposits. getBalance() shows only CLAIMED Spark
+  // balance, so THIS is what answers "did my on-chain deposit arrive?" — an empty
+  // array means nothing to claim yet; each entry feeds claimDeposit({ txid, vout }).
+  async listPendingDeposits({ limit = 100 } = {}) {
+    const addresses = await this.#wallet.queryStaticDepositAddresses();
+    const deposits = [];
+    for (const address of addresses) {
+      const utxos = await this.#wallet.getUtxosForDepositAddress(address, limit, 0, true);
+      for (const u of utxos) deposits.push({ address, txid: u.txid, vout: u.vout });
+    }
+    return deposits;
   }
 
   async getSingleUseDepositAddress() {

@@ -301,6 +301,10 @@ export class SparkAgent {
 
   // --- Balance ---
 
+  // NOTE: this is CLAIMED Spark balance only. A confirmed L1 deposit that hasn't
+  // been claimed yet is invisible here — call listPendingDeposits() to answer
+  // "did my on-chain deposit arrive?" (kept off this hot path to avoid a deposit-
+  // address query on every balance check).
   async getBalance() {
     const { satsBalance, tokenBalances } = await this.#wallet.getBalance();
     const tokens = Object.fromEntries(
@@ -321,6 +325,24 @@ export class SparkAgent {
 
   async getDepositAddress() {
     return await this.#wallet.getStaticDepositAddress();
+  }
+
+  // Confirmed-but-UNCLAIMED L1 deposits waiting at your static deposit
+  // address(es). getBalance() reflects only CLAIMED Spark balance, so THIS is
+  // the method that answers "did my on-chain deposit arrive yet?" — an empty
+  // array means nothing is claimable; a non-empty one means funds are sitting
+  // unclaimed and each entry feeds straight into claimDeposit({ txid, vout }).
+  // The SDK exposes only { txid, vout } per UTXO (no amount/confirmations), so
+  // that is all we can return; to learn the credited amount, dry-run a claim.
+  async listPendingDeposits({ limit = 100 } = {}) {
+    const addresses = await this.#wallet.queryStaticDepositAddresses();
+    const deposits = [];
+    for (const address of addresses) {
+      // 4th arg excludeClaimed=true -> only UTXOs not yet claimed on Spark
+      const utxos = await this.#wallet.getUtxosForDepositAddress(address, limit, 0, true);
+      for (const u of utxos) deposits.push({ address, txid: u.txid, vout: u.vout });
+    }
+    return deposits;
   }
 
   async getSingleUseDepositAddress() {
