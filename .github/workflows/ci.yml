@@ -27,3 +27,21 @@ jobs:
 
       - name: Run unit tests
         run: npm test
+
+  # Practice what the README preaches on supply-chain hygiene. Separate job so a
+  # dependency advisory is a distinct signal from a test failure, and runs once
+  # (audit is lockfile-based, node-version-independent). --audit-level=high keeps
+  # dev-only transitive moderates (e.g. postcss/protobufjs) from redding the build
+  # while still failing hard on a high/critical.
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Audit dependencies (fail on high/critical)
+        run: npm audit --audit-level=high

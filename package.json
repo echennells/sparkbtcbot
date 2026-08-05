@@ -56,7 +56,7 @@
     "CHANGELOG.md"
   ],
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   },
   "scripts": {
     "setup": "node skills/sparkbtcbot/scripts/setup-encrypted-seed.js",
