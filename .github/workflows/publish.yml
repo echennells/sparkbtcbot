@@ -1,0 +1,56 @@
+name: Publish
+
+# Publishes to npm with Sigstore provenance whenever a version tag is pushed.
+# Releases become: bump version -> tag -> push tag; CI does the rest. No npm
+# token lives on any laptop or in any repo secret — auth is npm "trusted
+# publishing" (OIDC): npmjs.com is configured (package settings -> Trusted
+# Publisher) to accept publishes ONLY from this workflow file in this repo.
+# The id-token permission below is what lets the job prove that identity, and
+# it's also what signs the provenance attestation linking the tarball to this
+# exact commit + workflow run.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+  id-token: write # OIDC: trusted-publishing auth + provenance signing
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: "https://registry.npmjs.org"
+          cache: npm
+
+      # Trusted publishing needs a current npm (the runner's bundled one is too
+      # old to speak OIDC to the registry).
+      - name: Update npm
+        run: npm install -g npm@latest
+
+      - name: Install dependencies
+        run: npm ci
+
+      # A tag that fails tests must not ship.
+      - name: Run tests
+        run: npm test
+
+      # Refuse to publish if the tag and package.json disagree — a mismatched
+      # tag would otherwise silently publish the wrong version.
+      - name: Check tag matches package.json version
+        run: |
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match package.json version $PKG_VERSION" >&2
+            exit 1
+          fi
+
+      - name: Publish to npm (with provenance)
+        run: npm publish --provenance --access public
