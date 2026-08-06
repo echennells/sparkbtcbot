@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/echennells/sparkbtcbot/actions/workflows/ci.yml/badge.svg)](https://github.com/echennells/sparkbtcbot/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
-[![Node](https://img.shields.io/badge/node-%E2%89%A518-brightgreen.svg)](https://nodejs.org)
+[![Node](https://img.shields.io/badge/node-%E2%89%A520-brightgreen.svg)](https://nodejs.org)
 
 Spark Bitcoin L2 wallet skill for AI agents — give an agent its own Bitcoin wallet so it can send and receive money on its own: pay for an API call, get paid for a task, tip, settle up — or buy real-world things (gift cards, eSIMs, VPNs) from Bitcoin-accepting merchants, with guardrails that verify every invoice against its quote before a sat moves.
 
@@ -37,7 +37,7 @@ Spark is a Bitcoin Layer 2 that lets you send and receive Bitcoin instantly with
 - **Withdrawal** — Cooperative exit back to L1 Bitcoin with fee estimation
 - **Message Signing** — Prove identity via cryptographic signatures
 - **L402 Paywalls** — Pay-per-request APIs via Lightning. Preview costs, pay invoices, cache tokens.
-- **Merchant Purchases** — Buy real-world goods and services (gift cards via [Bitrefill](https://www.bitrefill.com), eSIMs/VPNs/burner numbers via [nadanada](https://nadanada.me)) over Lightning, governed by a shared payment policy: invoice-vs-quote verification, amount ceilings, confirm-before-buy, PII consent, bearer-secret handling. Live-validated with real purchases.
+- **Merchant Purchases** — Buy real-world goods and services (gift cards via [Bitrefill](https://www.bitrefill.com), eSIMs/VPNs/burner numbers via [nadanada](https://nadanada.me), 10,500+ brands including flights and hotels via [Cryptorefills](https://www.cryptorefills.com)) over Lightning, governed by a shared payment policy: invoice-vs-quote verification, amount ceilings, confirm-before-buy, PII consent, bearer-secret handling. Live-validated with real purchases at all three.
 - **Unilateral-Exit Backup** — Auto-maintained `spark.unilateral-exit-bundle.v1` recovery bundle, consumed by Blink's [spark-unilateral-exit](https://github.com/blinkbitcoin/spark-unilateral-exit) tool if the operators ever go dark. Verify with `npm run leaf-vault -- verify`.
 
 ## Installation
@@ -113,7 +113,7 @@ npx -y --package=sparkbtcbot-skill sparkbtcbot-leaf-vault verify
 ```bash
 git clone https://github.com/echennells/sparkbtcbot.git ~/sparkbtcbot
 cd ~/sparkbtcbot
-npm install
+npm ci     # lockfile-exact install; fails loudly on any drift
 ```
 
 Don't clone directly into `~/.claude/skills/` — this repo nests the skill at `skills/sparkbtcbot/`, so the clone would put `SKILL.md` a level too deep and Claude Code won't discover it. If you want the clone to double as a personal skill (instead of the plugin install), symlink the inner skill directory:
@@ -127,9 +127,9 @@ The Quick Start below assumes this path — useful if you want to kick the tires
 ## Quick Start
 
 ```bash
-# Install dependencies (in the cloned repo)
+# Install dependencies (in the cloned repo; lockfile-exact)
 cd ~/sparkbtcbot
-npm install
+npm ci
 
 # Copy env template, set SPARK_PASSPHRASE (>=12 chars)
 cp .env.example .env

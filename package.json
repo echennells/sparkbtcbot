@@ -1,7 +1,7 @@
 {
   "name": "sparkbtcbot-skill",
   "version": "0.4.3",
-  "description": "Spark Bitcoin L2 wallet skill for AI agents — encrypted-at-rest seed storage, Lightning interop, L402 paywall payment, BTKN/LRC20 tokens, and guarded real-world purchases (Bitrefill gift cards, nadanada eSIMs/VPNs) with invoice-vs-quote verification. Works with Claude Code (via plugin marketplace) and any other LLM agent framework (via the npm package's getSkillContent helpers).",
+  "description": "Spark Bitcoin L2 wallet skill for AI agents — encrypted-at-rest seed storage, Lightning interop, L402 paywall payment, BTKN/LRC20 tokens, and guarded real-world purchases (Bitrefill gift cards, nadanada eSIMs/VPNs, Cryptorefills' 10,500+ brands) with invoice-vs-quote verification. Works with Claude Code (via plugin marketplace) and any other LLM agent framework (via the npm package's getSkillContent helpers).",
   "keywords": [
     "claude",
     "claude-code",
@@ -24,7 +24,7 @@
     "mcp",
     "btc"
   ],
-  "homepage": "https://github.com/echennells/sparkbtcbot",
+  "homepage": "https://sparkbtcbot.yvrbtclabs.dev",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/echennells/sparkbtcbot.git"
@@ -80,11 +80,11 @@
     "reveal-mnemonic": "node skills/sparkbtcbot/scripts/reveal-mnemonic.js"
   },
   "dependencies": {
-    "@buildonspark/issuer-sdk": "^0.1.45",
-    "@buildonspark/spark-sdk": "^0.9.0",
-    "@noble/curves": "^1.9.7",
-    "dotenv": "^17.4.2",
-    "light-bolt11-decoder": "^3.2.0"
+    "@buildonspark/issuer-sdk": "0.1.45",
+    "@buildonspark/spark-sdk": "0.9.0",
+    "@noble/curves": "1.9.7",
+    "dotenv": "17.4.2",
+    "light-bolt11-decoder": "3.2.0"
   },
   "devDependencies": {
     "vitest": "^4.1.9"
