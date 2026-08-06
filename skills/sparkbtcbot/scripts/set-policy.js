@@ -24,12 +24,13 @@ import { promptStderr } from "./prompt.js";
 const USAGE =
   "Usage: sparkbtcbot-set-policy\n\n" +
   "Interactively bind, change, or remove the seed-bound daily spending budget.\n" +
-  "Decrypts seed.enc (SPARK_PASSPHRASE or prompt), shows the current policy,\n" +
+  "Decrypts seed.enc (prompts for the passphrase — never read from .env), shows\n" +
+  "the current policy,\n" +
   "asks for the new budget ('none' removes the policy), confirms, then\n" +
   "re-encrypts the seed atomically. Binding/changing a budget also writes a\n" +
   "fresh signed spend ledger (the window restarts). Takes no arguments; refuses\n" +
   "to run without a real interactive terminal — this is an operator ceremony,\n" +
-  "not an agent command.\n\nEnv: SPARK_PASSPHRASE, SPARK_SEED_PATH, SPARK_SPEND_LEDGER_PATH.\n";
+  "not an agent command.\n\nEnv: SPARK_SEED_PATH, SPARK_SPEND_LEDGER_PATH.\n";
 
 {
   const args = process.argv.slice(2);
@@ -49,8 +50,12 @@ async function main() {
   const seedPath = env.SPARK_SEED_PATH || DEFAULT_SEED_PATH;
   const ledgerPath = env.SPARK_SPEND_LEDGER_PATH || DEFAULT_SPEND_LEDGER_PATH;
 
-  let passphrase = env.SPARK_PASSPHRASE;
-  if (!passphrase) passphrase = await promptStderr(`Passphrase for ${seedPath}: `, { hidden: true });
+  // ALWAYS prompt — deliberately ignoring SPARK_PASSPHRASE/.env. These
+  // ceremonies exist to prove an OPERATOR is present; in the documented
+  // deployment the passphrase lives in .env right next to the wallet, so
+  // accepting it from the environment would reduce "requires the passphrase"
+  // to "requires a PTY", which an agent can allocate.
+  const passphrase = await promptStderr(`Passphrase for ${seedPath} (typed, not read from .env): `, { hidden: true });
   if (!passphrase || passphrase.length < MIN_PASSPHRASE_CHARS) {
     stderr.write(`set-policy: passphrase must be at least ${MIN_PASSPHRASE_CHARS} characters.\n`);
     exit(1);

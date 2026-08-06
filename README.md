@@ -103,11 +103,13 @@ const vault = enableLeafVault(wallet); // auto-refreshing recovery bundle
 The package also ships the setup/backup CLIs (0.4.2+), so npm consumers and Claude Code plugin users never need the cloned repo — install the package into your project, then the commands resolve **locally** (your lockfile governs what runs; no unpinned registry fetch):
 
 ```bash
-npm install sparkbtcbot-skill      # once, in your project
-npx sparkbtcbot-setup              # one-time wallet bootstrap
-npx sparkbtcbot-reveal-mnemonic    # user-run seed backup (refuses non-interactive)
-npx sparkbtcbot-leaf-vault verify
+npm install sparkbtcbot-skill                     # once, in your project
+npm exec --no -- sparkbtcbot-setup                # one-time wallet bootstrap
+npm exec --no -- sparkbtcbot-reveal-mnemonic      # user-run seed backup (refuses non-interactive)
+npm exec --no -- sparkbtcbot-leaf-vault verify
 ```
+
+`--no` is deliberate: plain `npx <cmd>` falls back to **fetching a registry package named after the command** if the local bin isn't found (wrong directory, package not installed) — names this project doesn't own. `npm exec --no` fails instead. If any invocation ever offers to install something, answer **no** and check where you are.
 
 ### Local clone (for running the example scripts and tests yourself)
 
@@ -177,7 +179,7 @@ The mnemonic is **never** stored in plaintext anywhere the runtime reads. `npm r
 ## Dependencies
 
 ```bash
-npm install @buildonspark/spark-sdk dotenv light-bolt11-decoder
+npm install sparkbtcbot-skill   # brings the pinned SDK + helpers with it
 ```
 
 ## Security
@@ -187,7 +189,8 @@ npm install @buildonspark/spark-sdk dotenv light-bolt11-decoder
 Recommendations:
 - Never expose the mnemonic or passphrase in code, logs, or version control
 - Treat `SPARK_PASSPHRASE` like any production secret (deployment secret manager, `.env` in `.gitignore`, etc.)
-- **Use a current npm (`npm install -g npm@latest`).** Prefer **v12+** — it disables package install/lifecycle scripts by default, killing the `postinstall` supply-chain attack class (runs on Node `^22.22.2 || ^24.15.0 || >=26`, but **no Node bundles it** — upgrade explicitly); otherwise **11.10.0+** is the floor where the package-cooldown age-gate (`min-release-age`) enforces at all (fine on Node 20, which can't run npm 12). Distro-packaged npm (Ubuntu `apt` ships ~9.x even alongside Node 22 LTS) runs years behind and silently ignores hardening keys, so upgrade rather than trust the system npm. The hardening config itself lives in the [`supply-chain-hardening`](https://github.com/echennells/supply-chain-hardening) repo.
+- Dependencies are **pinned to exact versions** — you get the tree we live-tested (the recovery backup reaches into SDK internals validated per-version). Tradeoff, stated plainly: upstream security patches reach you when *we* cut a release, not immediately; Dependabot watches this repo, and `npm audit` runs in CI on every push.
+- **Use a current npm (`npm install -g npm@latest`).** Prefer **v12+** — it disables package install/lifecycle scripts by default, killing the `postinstall` supply-chain attack class (runs on Node `^22.22.2 || ^24.15.0 || >=26`, but **no Node bundles it** — upgrade explicitly); otherwise **11.10.0+** is the floor where the package-cooldown age-gate (`min-release-age`) enforces at all. **On Node 20 install `npm@11` explicitly** — `npm@latest` resolves to 12 regardless of your Node and installs anyway (engine mismatches are only a warning), leaving you on an npm your Node doesn't support. Distro-packaged npm (Ubuntu `apt` ships ~9.x even alongside Node 22 LTS) runs years behind and silently ignores hardening keys, so upgrade rather than trust the system npm. The hardening config itself lives in the [`supply-chain-hardening`](https://github.com/echennells/supply-chain-hardening) repo.
 - Don't bundle `seed.enc` into container images that ship alongside the passphrase
 - Use a dedicated wallet with limited funds for each agent
 - Use separate `accountNumber` values for different funding tiers

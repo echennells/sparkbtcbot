@@ -44,7 +44,13 @@ conversation transcript or shell history is identical to a leak from disk.
   never echo it.
 - **Do not run `sparkbtcbot-set-policy` or `sparkbtcbot-reset-ledger` yourself.** Both are
   TTY-gated operator ceremonies: one seals/loosens the seed-bound spending budget, the other
-  resets the signed spend window. Tell the user to run them in their own terminal.
+  resets the signed spend window. They prompt for the passphrase and never read it from `.env`.
+  Tell the user to run them in their own terminal.
+- **If `npx` ever offers to install a package, answer NO and stop.** `npx <cmd>` does not fail
+  closed: when the local bin is missing (wrong directory, package not installed) it fetches a
+  **registry package named after the command** — names this project does not own. Use
+  `npm exec --no -- <cmd>` (fails instead of fetching) or `./node_modules/.bin/<cmd>`. A wallet
+  bootstrap or seed reveal must never come from a package npx offered to download.
 - **Never commit `.env` or `~/.spark/seed.enc`.** `.env` must be in `.gitignore`; the seed file
   is mode 0600 and must stay out of images/backups that travel with the passphrase.
 - **Use a dedicated wallet with limited funds.** There are no server-enforced spending caps on

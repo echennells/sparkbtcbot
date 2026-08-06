@@ -37,7 +37,7 @@ async function main() {
   const usage =
     "Usage: sparkbtcbot-reveal-mnemonic\n\n" +
     "Decrypts the seed file and displays the mnemonic ONCE on a temporary screen\n" +
-    "(alternate buffer — wiped on continue, never enters scrollback), for the human\n" +
+    "(alternate buffer where the terminal supports it — wiped when you continue), for the human\n" +
     "operator to copy to an offline backup. Takes no arguments. Refuses to run without a\n" +
     "real interactive terminal on both stdin and stdout — run it yourself, not\n" +
     "through an agent. Env: SPARK_PASSPHRASE (prompted if unset), SPARK_SEED_PATH.\n";
@@ -64,10 +64,12 @@ async function main() {
   }
 
   stderr.write(
-    "\n⚠️  This will display your 12-word seed phrase on a TEMPORARY screen\n" +
-    "   (wiped when you continue — it never enters scrollback). Anyone who sees\n" +
-    "   it controls the wallet: make sure nobody is watching and your terminal\n" +
-    "   isn't being recorded (asciinema, screen sharing, shoulder cams).\n\n",
+    "\n⚠️  This will display your seed phrase on a temporary screen that is wiped\n" +
+    "   when you continue — on most terminals (xterm, tmux, iTerm, Windows\n" +
+    "   Terminal) it never enters scrollback. GNU screen users: see the note\n" +
+    "   printed afterwards. Anyone who sees these words controls the wallet:\n" +
+    "   make sure nobody is watching and the session isn't being recorded\n" +
+    "   (asciinema, screen sharing, shoulder cams).\n\n",
   );
   const go = await promptStderr("Print the seed phrase now? [y/N]: ");
   if (!/^y(es)?$/i.test(go.trim())) {
@@ -107,10 +109,21 @@ async function main() {
       if (altScreen) stdout.write("\x1b[?1049l"); // back to the primary screen
     } catch { /* terminal already gone */ }
   };
-  // NO exit path may strand the words on screen. The 'exit' event covers them
-  // all — including Ctrl-C, which prompt.js handles itself in raw mode via
-  // process.exit(130) (so a SIGINT handler here would never fire for it).
+  // NO exit path may strand the words on screen. 'exit' covers returns, throws,
+  // and process.exit — including Ctrl-C, which prompt.js handles itself in raw
+  // mode via exit(130), so a SIGINT handler would never fire for it. But 'exit'
+  // does NOT run on default-disposition signals: an unhandled SIGTERM/SIGHUP
+  // would leave the seed on screen (and the terminal stuck in the alt buffer)
+  // indefinitely. Handle those explicitly, then re-raise so the exit status
+  // still reflects the signal.
   process.once("exit", wipe);
+  for (const sig of ["SIGTERM", "SIGHUP"]) {
+    process.once(sig, () => {
+      wipe();
+      try { stdin.setRawMode?.(false); } catch { /* not a tty anymore */ }
+      process.kill(process.pid, sig); // listener already removed by once() -> default disposition
+    });
+  }
 
   const numbered = mnemonic
     .trim()
@@ -122,15 +135,25 @@ async function main() {
   stdout.write(
     "\n  Your seed phrase — copy it to PAPER or a hardware seed backup NOW:\n\n" +
     numbered +
-    "\n\n  This screen will be wiped as soon as you continue; the words will not\n" +
-    "  remain in your terminal or its scrollback.\n",
+    "\n\n  This screen is wiped as soon as you continue.\n",
   );
   await promptStderr("\nPress Enter AFTER you have copied all the words... ");
   wipe();
+  // Honest completion message: we REQUEST the alternate screen, we cannot
+  // verify the terminal honored it. GNU screen ships `altscreen off` by
+  // default, so under TERM=screen* the words went to the pane's normal buffer
+  // and its copy-mode history — which our CSI 3J does not clear. Say so, and
+  // give those users the manual step instead of false assurance.
+  const multiplexed = /^screen/.test(env.TERM ?? "") || Boolean(env.STY);
   stderr.write(
-    "Done — the words are no longer on screen" +
-    (altScreen ? " (alternate buffer wiped)" : " (best-effort erase; TERM lacks alt-screen support)") +
-    ".\nYour offline copy is now the only recovery path — verify you can read every word.\n",
+    "Screen cleared. Your offline copy is now the only recovery path — verify you can read every word.\n" +
+    (multiplexed
+      ? "\n⚠️  You appear to be inside GNU screen, which disables the alternate screen by default.\n" +
+        "   If so, the words went to this pane's scrollback: clear it now (Ctrl-A then :scrollback 0,\n" +
+        "   or detach and start a fresh window) — they are NOT removed automatically there.\n"
+      : altScreen
+        ? ""
+        : "\nNote: TERM has no alternate-screen support, so this was a best-effort erase of the\nprimary screen. If your terminal keeps its own scrollback, clear it manually.\n"),
   );
 }
 

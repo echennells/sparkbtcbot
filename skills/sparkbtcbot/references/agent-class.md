@@ -24,7 +24,7 @@ import {
   encodeSparkAddress,
   getNetworkFromSparkAddress,
 } from "@buildonspark/spark-sdk";
-import { loadMnemonicFromEnv } from "./lib/encrypted-seed.js";
+import { loadMnemonicFromEnv, getLoadedSeedContext, seedFileIsSealed } from "./lib/encrypted-seed.js";
 import {
   loadRecipientsAllowlist,
   assertRecipientAllowed,
@@ -94,14 +94,47 @@ export function isTerminalLightningFailure(status) {
   return status.endsWith("_FAILED") || status === "USER_SWAP_RETURNED";
 }
 
-// Cumulative-budget guardrail (lib/spend-ledger.js): every other guard is
-// per-call, so none of them stops a LOOP of individually-valid sends. Active
-// only when SPARK_DAILY_BUDGET_SATS is set (rolling 24h window; ledger at
-// SPARK_SPEND_LEDGER_PATH, default ~/.spark/spend-ledger.json). A malformed
-// budget THROWS instead of being ignored — a budget the operator thinks is
-// set but isn't would be the silently-generated-wallet bug all over again.
-function spendLedgerFromEnv() {
+// Resolve the spend ledger from (in priority order) a SEED-BOUND policy —
+// carried inside the encrypted seed payload, observed by the loadMnemonicFromEnv
+// call that opened the wallet — then the SPARK_DAILY_BUDGET_SATS env var. A
+// seed-bound budget wins ABSOLUTELY: the env var (agent-writable via .env) must
+// not be able to loosen a policy the operator sealed under the passphrase. When
+// bound, the ledger is HMAC-verified against a seed-derived key, so deleting,
+// truncating, or editing the ledger file fails closed instead of silently
+// restoring the full budget.
+function spendLedgerFromEnv(seedCtx = getLoadedSeedContext()) {
   const raw = process.env.SPARK_DAILY_BUDGET_SATS;
+  if (seedCtx?.policy?.dailyBudgetSats != null) {
+    if (raw != null && String(raw).trim() !== "" && Number(raw) !== seedCtx.policy.dailyBudgetSats) {
+      console.warn(
+        `spark-agent: SPARK_DAILY_BUDGET_SATS (${raw}) differs from the SEED-BOUND budget ` +
+          `(${seedCtx.policy.dailyBudgetSats} sats) — the seed-bound value wins. Change it with ` +
+          `\`npx sparkbtcbot-set-policy\` (requires the passphrase), not the env var.`,
+      );
+    }
+    return createSpendLedger({
+      budgetSats: seedCtx.policy.dailyBudgetSats,
+      path: process.env.SPARK_SPEND_LEDGER_PATH || undefined,
+      hmacKey: seedCtx.ledgerHmacKey,
+      bound: true,
+    });
+  }
+  // FAIL CLOSED on "sealed but unbound": the seed file's version byte is
+  // plaintext, so we can tell a sealed wallet without the passphrase. If the
+  // seed is v2 but no policy reached us, the sealed budget would be silently
+  // ignored — the exact pre-seal behavior the operator paid a ceremony to
+  // escape. Causes: the wallet was opened with loadMnemonic (not *FromEnv), or
+  // two copies of lib/ are loaded, or SparkAgent was constructed before the
+  // seed was read. All are bugs; none may degrade quietly.
+  if (seedFileIsSealed(process.env.SPARK_SEED_PATH || undefined)) {
+    throw new Error(
+      "SparkAgent: the encrypted seed carries a SEALED spending policy, but this process did not " +
+        "receive it — refusing to run with the policy silently unenforced. Open the wallet with " +
+        "loadMnemonicFromEnv() (which reads the policy) before constructing SparkAgent, and make sure " +
+        "only ONE copy of lib/encrypted-seed.js is loaded (import from the npm package, don't mix it " +
+        "with a copied lib/). To remove the policy deliberately, run `npx sparkbtcbot-set-policy`.",
+    );
+  }
   if (raw == null || String(raw).trim() === "") return null;
   const budgetSats = Number(raw);
   if (!Number.isFinite(budgetSats) || budgetSats <= 0) {
@@ -177,10 +210,13 @@ export class SparkAgent {
   #vault = null;
   #ledger = null;
 
-  constructor(wallet, network) {
+  // seedContext (tests / non-env callers only): overrides the seed-bound
+  // policy context normally observed by loadMnemonicFromEnv — shape
+  // { policy: { dailyBudgetSats }, ledgerHmacKey } or null for "no bound policy".
+  constructor(wallet, network, { seedContext } = {}) {
     this.#wallet = wallet;
     this.#network = network;
-    this.#ledger = spendLedgerFromEnv();
+    this.#ledger = spendLedgerFromEnv(seedContext !== undefined ? seedContext : getLoadedSeedContext());
     // Automatically mirror the unilateral-exit material to disk so funds stay
     // recoverable if the Spark operators go offline — snapshots on boot and on
     // every leaf change (send/receive/deposit) + a refresh safety timer. Opt out

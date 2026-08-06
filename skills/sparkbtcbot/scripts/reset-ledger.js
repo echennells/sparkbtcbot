@@ -19,7 +19,7 @@ const USAGE =
   "bound spending policy — the legitimate reset after a machine migration or a\n" +
   "deliberate window restart. Requires the passphrase (the signature key derives\n" +
   "from the decrypted seed). Takes no arguments; refuses to run without a real\n" +
-  "interactive terminal.\n\nEnv: SPARK_PASSPHRASE, SPARK_SEED_PATH, SPARK_SPEND_LEDGER_PATH.\n";
+  "interactive terminal.\n\nEnv: SPARK_SEED_PATH, SPARK_SPEND_LEDGER_PATH.\n";
 
 {
   const args = process.argv.slice(2);
@@ -39,8 +39,12 @@ async function main() {
   const seedPath = env.SPARK_SEED_PATH || DEFAULT_SEED_PATH;
   const ledgerPath = env.SPARK_SPEND_LEDGER_PATH || DEFAULT_SPEND_LEDGER_PATH;
 
-  let passphrase = env.SPARK_PASSPHRASE;
-  if (!passphrase) passphrase = await promptStderr(`Passphrase for ${seedPath}: `, { hidden: true });
+  // ALWAYS prompt — deliberately ignoring SPARK_PASSPHRASE/.env. These
+  // ceremonies exist to prove an OPERATOR is present; in the documented
+  // deployment the passphrase lives in .env right next to the wallet, so
+  // accepting it from the environment would reduce "requires the passphrase"
+  // to "requires a PTY", which an agent can allocate.
+  const passphrase = await promptStderr(`Passphrase for ${seedPath} (typed, not read from .env): `, { hidden: true });
   if (!passphrase || passphrase.length < MIN_PASSPHRASE_CHARS) {
     stderr.write(`reset-ledger: passphrase must be at least ${MIN_PASSPHRASE_CHARS} characters.\n`);
     exit(1);

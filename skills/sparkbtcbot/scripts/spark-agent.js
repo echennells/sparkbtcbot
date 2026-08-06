@@ -6,7 +6,7 @@ import {
   encodeSparkAddress,
   getNetworkFromSparkAddress,
 } from "@buildonspark/spark-sdk";
-import { loadMnemonicFromEnv, getLoadedSeedContext } from "../../../lib/encrypted-seed.js";
+import { loadMnemonicFromEnv, getLoadedSeedContext, seedFileIsSealed } from "../../../lib/encrypted-seed.js";
 import {
   loadRecipientsAllowlist,
   assertRecipientAllowed,
@@ -130,6 +130,22 @@ function spendLedgerFromEnv(seedCtx = getLoadedSeedContext()) {
       hmacKey: seedCtx.ledgerHmacKey,
       bound: true,
     });
+  }
+  // FAIL CLOSED on "sealed but unbound": the seed file's version byte is
+  // plaintext, so we can tell a sealed wallet without the passphrase. If the
+  // seed is v2 but no policy reached us, the sealed budget would be silently
+  // ignored — the exact pre-seal behavior the operator paid a ceremony to
+  // escape. Causes: the wallet was opened with loadMnemonic (not *FromEnv), or
+  // two copies of lib/ are loaded, or SparkAgent was constructed before the
+  // seed was read. All are bugs; none may degrade quietly.
+  if (seedFileIsSealed(process.env.SPARK_SEED_PATH || undefined)) {
+    throw new Error(
+      "SparkAgent: the encrypted seed carries a SEALED spending policy, but this process did not " +
+        "receive it — refusing to run with the policy silently unenforced. Open the wallet with " +
+        "loadMnemonicFromEnv() (which reads the policy) before constructing SparkAgent, and make sure " +
+        "only ONE copy of lib/encrypted-seed.js is loaded (import from the npm package, don't mix it " +
+        "with a copied lib/). To remove the policy deliberately, run `npx sparkbtcbot-set-policy`.",
+    );
   }
   if (raw == null || String(raw).trim() === "") return null;
   const budgetSats = Number(raw);
