@@ -55,6 +55,12 @@ keeps a union bundle (so even the in-flight leaves retain exit material), and
 writes the clean bundle after the exit confirms on L1. A BROKEN marker during a
 withdrawal therefore still means something is actually wrong.
 
+## Normal recovery vs Lightning (why the seed is enough — except for this)
+
+For **normal recovery** (operators online) Spark is **stronger than Lightning**, where channel state must be backed up separately (Static Channel Backup / DLP) and channel funds can be lost on data-dir loss even if the seed is safe. With Spark, *as long as the operators are up*, losing the local data directory loses nothing: operators hold leaf state authoritatively, so a fresh install with the same mnemonic recovers the full wallet. Losing the seed loses everything. The one thing local data protects that the seed does **not** is unilateral exit — the leaf-vault bundle this document describes.
+
+Recovery extends the trust model's "moment-in-time" assumption to one additional moment: at re-init, at least one operator must serve the leaf-state query. The same censorship risk that applies to transfers applies here; if recovery is censored, unilateral exit is the fallback.
+
 ## Tokens are NOT covered by this
 
 Unilateral exit recovers **BTC only**. The bundle records token balances as

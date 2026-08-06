@@ -95,6 +95,13 @@ live incidents. 5 subagent runs total, ~220k tokens, one pass, no baselines
 Net: the 0.4.x doc changes demonstrably steer agent behavior; the three new
 evals pin this week's incident classes against regression.
 
+**Post-diet verification (same day):** after the SKILL.md token diet
+(~10.0k → ~9.0k: setup scenarios/WDK/sandbox detail moved to encrypted-seed.md,
+Lightning-recovery comparison to unilateral-exit.md, dup security bullets
+folded; zero behavioral rules touched), evals 7/19/20 were re-run against the
+slimmer body — 3/3 PASS (~111k tokens). The moved content is reachable via the
+pointers left in place.
+
 ## Previous run (release/0.4.0 skill, Opus, subagents)
 
 SDK-correctness: **skill 4 wins, 2 ties, 0 losses.** The no-skill baseline
