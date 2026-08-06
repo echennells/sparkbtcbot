@@ -66,26 +66,21 @@ that repo:** the npm config template is `templates/npmrc.j2` (system-wide varian
 repo root. Do not hard-code or invent a recipe. If the user already has their own `~/.npmrc`
 policy, follow it instead.
 
-**Check the npm version** (`npm --version`) and upgrade if you reasonably can — but this is
-best-effort hardening, **not a gate**. Preference order, take the best you can actually get:
-- **npm 12+** (needs Node `^22.22.2 || ^24.15.0 || >=26`) — also disables package install/
-  lifecycle scripts by default, the biggest cut to the `postinstall` attack surface in years.
-  Note the two floors are different on purpose: the wallet itself only needs Node >=20
-  (package.json `engines`) — but **if you are provisioning Node fresh anyway, pick 22.22.2+ or
-  24** and npm 12 comes free; installing Node 20 first just to discover the age-gate branch
-  costs a re-install.
-- **npm 11.10.0–11.x** — the floor where the `min-release-age` package cooldown enforces at all.
-  Perfectly fine when the Node version can't support 12 (e.g. Node 20). This is a good outcome,
-  not a fallback to apologize for.
-- **older npm** — the age-gate silently no-ops. You may **still proceed**: tell the user the
-  cooldown won't enforce, lean on the other hardening (lockfile / `npm ci`, pinned versions),
-  and let them decide.
-
-`npm install -g npm@latest` installs the newest npm your Node supports, so it's a safe one-liner
-regardless of where you land. Distro-packaged npm (Ubuntu `apt` ships ~9.x even next to Node 22
-LTS) runs far behind, so prefer the upgrade over trusting the system npm. **Do not block or
-refuse wallet setup over the npm version** — it only hardens the dependency install; the wallet
-itself works on any supported Node/npm.
+**Check `npm --version` and upgrade if you reasonably can — best-effort, not a gate.** The two
+durable floors: **11.10.0** is where the `min-release-age` cooldown enforces at all (older npm
+silently ignores it — proceed anyway, tell the user, lean on `npm ci`/lockfile); **12** also
+disables package install scripts by default. Three gotchas that keep biting agents:
+- **No Node version bundles npm 12** — Node 22.x LTS ships npm 10.x. Meeting npm 12's engines
+  floor (Node 22.22.2+/24.15+; the wallet itself needs only Node >=20) makes the upgrade
+  *possible*, not automatic: run `npm install -g npm@latest`, then `npm --version` to confirm.
+- On a system-wide Node (NodeSource/apt), that `-g` install hits EACCES for non-root — use
+  `sudo`, or a user-owned prefix / version manager (nvm, fnm, volta).
+- **No Node at all?** Install a current LTS (22+/24) from an official channel first — do NOT
+  improvise a `curl | sudo bash` from memory; environment provisioning is the
+  [`supply-chain-hardening`](https://github.com/echennells/supply-chain-hardening) repo's job,
+  same as the config itself.
+**Never block or refuse wallet setup over the npm version** — it hardens the dependency
+install only; the wallet runs on any supported Node/npm.
 
 ## Full guidance
 
