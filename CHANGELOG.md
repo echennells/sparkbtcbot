@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Security
+
+- **Seed-bound spending policy (opt-in): the budget can now be sealed inside the encrypted seed.** Guard enforcement used to depend on files the agent can write — `rm ~/.spark/spend-ledger.json` (or truncating it, or editing `.env` to drop `SPARK_DAILY_BUDGET_SATS`) silently restored the full budget; a cleanup command, a prompt injection, or a machine migration all failed open. Now `npx sparkbtcbot-set-policy` (user-run, TTY-gated) binds `dailyBudgetSats` into the encrypted seed payload (**v2 seed format** — reading it needs the passphrase, tampering fails the GCM tag, deleting it deletes the wallet: the agent can't remove the budget without removing the money), and the spend ledger becomes **HMAC-signed** with a seed-derived HKDF key (never the AES key). Under a bound policy, a missing / unsigned / edited ledger **fails closed** with instructions to run `npx sparkbtcbot-reset-ledger` — the passphrase-gated legitimate reset that finally makes reset distinguishable from attack (previously `rm` was both). A seed-bound budget wins over the env var absolutely. **v1 seeds and env-var budgets are completely unchanged** — no policy, no new behavior. Honest limits, documented: the bar moves from `rm` to *executing code*, not to impossibility; replay of a validly-signed old ledger is undefendable client-side; raw-SDK calls still bypass wrapper guards. New exports: `loadSeedPayload(FromEnv)`, `validateSeedPolicy`, `deriveLedgerHmacKey`, `initSignedLedger`; new CLIs: `sparkbtcbot-set-policy`, `sparkbtcbot-reset-ledger`. 16 attack-first tests (each attack proven to throw).
+
 ### Changed
 
 - **Agents are explicitly told that running SETUP is allowed and expected.** Live testing showed agents over-extending the reveal-mnemonic prohibition into refusing `npm run setup` when the user asked — citing rules the docs never contained (setup has not printed or written the mnemonic in plaintext since 0.4.0). AGENTS.md and SKILL.md now carry an affirmative rule: creating the wallet on the user's behalf is the designed flow; the only secret to guard during setup is the passphrase, which goes to `.env` and is never echoed.

@@ -2,12 +2,38 @@
 
 // --- Encryption library ---
 
+/** Guard policy bound INSIDE the encrypted seed payload (v2 seed files). */
+export interface SeedPolicy {
+  /** Rolling 24h spend budget, sats. Wins absolutely over SPARK_DAILY_BUDGET_SATS. */
+  dailyBudgetSats: number;
+}
+
 export interface SaveEncryptedMnemonicOptions {
   mnemonic: string;
   passphrase: string;
   /** Defaults to ~/.spark/seed.enc */
   path?: string;
+  /** Bind a guard policy into the payload (writes a v2 file). null = v1, no policy. */
+  policy?: SeedPolicy | null;
+  /** ONLY for the TTY-gated set-policy ceremony: replace an existing seed atomically. */
+  allowOverwrite?: boolean;
 }
+
+/** Decrypted seed payload: v1 files carry policy: null. */
+export interface SeedPayload {
+  mnemonic: string;
+  policy: SeedPolicy | null;
+  version: 1 | 2;
+}
+
+export function loadSeedPayload(options: LoadMnemonicOptions): Promise<SeedPayload>;
+export function loadSeedPayloadFromEnv(options?: { clearEnv?: boolean }): Promise<SeedPayload>;
+/** Seed context from the last *FromEnv load: null before any load / for v1 seeds. */
+export function getLoadedSeedContext(): { policy: SeedPolicy; ledgerHmacKey: Buffer } | null;
+/** Validates/normalizes a policy object; throws on unknown keys or garbage budgets. */
+export function validateSeedPolicy(policy: unknown): SeedPolicy | null;
+/** HKDF-derived (never the AES key) HMAC key for the signed spend ledger. */
+export function deriveLedgerHmacKey(mnemonic: string): Buffer;
 
 export interface LoadMnemonicOptions {
   passphrase: string;
@@ -299,7 +325,14 @@ export function createSpendLedger(options?: {
   budgetSats?: number | null;
   windowMs?: number;
   clock?: () => number;
+  /** Seed-derived key (deriveLedgerHmacKey). Required when bound. */
+  hmacKey?: Buffer | null;
+  /** true = seed-bound policy: absent/unsigned/tampered ledger THROWS instead of resetting. */
+  bound?: boolean;
 }): SpendLedger;
+
+/** Write a fresh EMPTY signed ledger — the legitimate reset that replaces `rm`. */
+export function initSignedLedger(options: { path?: string; hmacKey: Buffer }): Promise<string>;
 
 // --- Skill-content helpers (for non-Claude LLM frameworks) ---
 

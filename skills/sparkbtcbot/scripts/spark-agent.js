@@ -6,7 +6,7 @@ import {
   encodeSparkAddress,
   getNetworkFromSparkAddress,
 } from "@buildonspark/spark-sdk";
-import { loadMnemonicFromEnv } from "../../../lib/encrypted-seed.js";
+import { loadMnemonicFromEnv, getLoadedSeedContext } from "../../../lib/encrypted-seed.js";
 import {
   loadRecipientsAllowlist,
   assertRecipientAllowed,
@@ -106,8 +106,31 @@ function toSats(value, method, field = "amount") {
   );
 }
 
-function spendLedgerFromEnv() {
+// Resolve the spend ledger from (in priority order) a SEED-BOUND policy —
+// carried inside the encrypted seed payload, observed by the loadMnemonicFromEnv
+// call that opened the wallet — then the SPARK_DAILY_BUDGET_SATS env var. A
+// seed-bound budget wins ABSOLUTELY: the env var (agent-writable via .env) must
+// not be able to loosen a policy the operator sealed under the passphrase. When
+// bound, the ledger is HMAC-verified against a seed-derived key, so deleting,
+// truncating, or editing the ledger file fails closed instead of silently
+// restoring the full budget.
+function spendLedgerFromEnv(seedCtx = getLoadedSeedContext()) {
   const raw = process.env.SPARK_DAILY_BUDGET_SATS;
+  if (seedCtx?.policy?.dailyBudgetSats != null) {
+    if (raw != null && String(raw).trim() !== "" && Number(raw) !== seedCtx.policy.dailyBudgetSats) {
+      console.warn(
+        `spark-agent: SPARK_DAILY_BUDGET_SATS (${raw}) differs from the SEED-BOUND budget ` +
+          `(${seedCtx.policy.dailyBudgetSats} sats) — the seed-bound value wins. Change it with ` +
+          `\`npx sparkbtcbot-set-policy\` (requires the passphrase), not the env var.`,
+      );
+    }
+    return createSpendLedger({
+      budgetSats: seedCtx.policy.dailyBudgetSats,
+      path: process.env.SPARK_SPEND_LEDGER_PATH || undefined,
+      hmacKey: seedCtx.ledgerHmacKey,
+      bound: true,
+    });
+  }
   if (raw == null || String(raw).trim() === "") return null;
   const budgetSats = Number(raw);
   if (!Number.isFinite(budgetSats) || budgetSats <= 0) {
@@ -210,10 +233,13 @@ export class SparkAgent {
   // concurrent sends on this instance (see #recordSpend).
   #spendChain = Promise.resolve();
 
-  constructor(wallet, network) {
+  // seedContext (tests / non-env callers only): overrides the seed-bound
+  // policy context normally observed by loadMnemonicFromEnv — shape
+  // { policy: { dailyBudgetSats }, ledgerHmacKey } or null for "no bound policy".
+  constructor(wallet, network, { seedContext } = {}) {
     this.#wallet = wallet;
     this.#network = network;
-    this.#ledger = spendLedgerFromEnv();
+    this.#ledger = spendLedgerFromEnv(seedContext !== undefined ? seedContext : getLoadedSeedContext());
     // Automatically mirror the unilateral-exit material to disk so funds stay
     // recoverable if the Spark operators go offline — snapshots on boot and on
     // every leaf change (send/receive/deposit) + a refresh safety timer. Opt out

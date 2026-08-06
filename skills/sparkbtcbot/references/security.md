@@ -34,7 +34,7 @@ Even with encryption-at-rest, a compromised host with passphrase + seed file = f
 3. **Monitor transfers** via event listeners for unexpected outgoing activity (see `extras.md`).
 4. **Call `cleanup()`** when the wallet is no longer needed.
 5. **Use REGTEST** for development and testing, MAINNET only for production.
-6. **There are no hard spending limits on this path.** `SPARK_DAILY_BUDGET_SATS` and the wrapper's fee/amount ceilings bound mistakes and runaway loops, but anything in the agent's process can call `wallet.transfer()` directly past them — no in-process control survives a compromised process. The funded balance is the only cap that does: size it as a loss you can absorb, and sweep earnings out regularly.
+6. **There are no hard spending limits on this path.** `SPARK_DAILY_BUDGET_SATS` and the wrapper's fee/amount ceilings bound mistakes and runaway loops, but anything in the agent's process can call `wallet.transfer()` directly past them — no in-process control survives a compromised process. The funded balance is the only cap that does: size it as a loss you can absorb, and sweep earnings out regularly. **To raise the bar for the budget specifically**, bind it into the encrypted seed (`npx sparkbtcbot-set-policy`, user-run): the ledger becomes HMAC-signed and deleting/editing it fails closed — defeating the budget then requires executing code, not `rm` (see `encrypted-seed.md` → Seed-bound policy; replay and raw-SDK calls remain the documented residuals).
 
 ## What the allowlist does and does not bound
 

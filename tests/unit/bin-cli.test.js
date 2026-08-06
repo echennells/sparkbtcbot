@@ -18,6 +18,8 @@ const EXPECTED = {
   "sparkbtcbot-setup": "skills/sparkbtcbot/scripts/setup-encrypted-seed.js",
   "sparkbtcbot-reveal-mnemonic": "skills/sparkbtcbot/scripts/reveal-mnemonic.js",
   "sparkbtcbot-leaf-vault": "skills/sparkbtcbot/scripts/leaf-vault-cli.js",
+  "sparkbtcbot-set-policy": "skills/sparkbtcbot/scripts/set-policy.js",
+  "sparkbtcbot-reset-ledger": "skills/sparkbtcbot/scripts/reset-ledger.js",
 };
 
 describe("published CLI (plugin-path lifeline)", () => {
