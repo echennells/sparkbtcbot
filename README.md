@@ -100,12 +100,13 @@ const vault = enableLeafVault(wallet); // auto-refreshing recovery bundle
 // ... later: await vault.dispose();   // flushes a final snapshot if needed
 ```
 
-The package also ships the setup/backup CLIs, so npm consumers (and Claude Code plugin users, who get sources but no `node_modules`) never need the cloned repo:
+The package also ships the setup/backup CLIs (0.4.2+), so npm consumers and Claude Code plugin users never need the cloned repo — install the package into your project, then the commands resolve **locally** (your lockfile governs what runs; no unpinned registry fetch):
 
 ```bash
-npx -y --package=sparkbtcbot-skill sparkbtcbot-setup            # one-time wallet bootstrap
-npx -y --package=sparkbtcbot-skill sparkbtcbot-reveal-mnemonic  # user-run seed backup (refuses non-interactive)
-npx -y --package=sparkbtcbot-skill sparkbtcbot-leaf-vault verify
+npm install sparkbtcbot-skill      # once, in your project
+npx sparkbtcbot-setup              # one-time wallet bootstrap
+npx sparkbtcbot-reveal-mnemonic    # user-run seed backup (refuses non-interactive)
+npx sparkbtcbot-leaf-vault verify
 ```
 
 ### Local clone (for running the example scripts and tests yourself)

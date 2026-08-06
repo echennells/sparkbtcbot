@@ -133,23 +133,22 @@ In that one case, **ask the user before installing** whether they want npm suppl
 
 The mnemonic is **never** stored in plaintext. The skill encrypts it at rest with a passphrase the user provides; the running app reads `SPARK_PASSPHRASE` from env and decrypts the seed file once at boot. There is no plaintext-mnemonic-in-`.env` mode.
 
-### Which install path are you on? (determines how you run things)
+### One runtime, however the skill text arrived
 
-The `npm run …` commands below assume a **cloned repo** where `npm install` has run. On the **Claude Code plugin path** there is no such repo: the plugin cache (`~/.claude/plugins/cache/...`) ships the sources **without `node_modules`**, and it is versioned — anything you write or install there is **silently lost on the next plugin update**. So, one supported answer per surface:
+This skill text reaches you via the Claude Code plugin, the cloned repo, or the npm package — but the **runtime is always the `sparkbtcbot-skill` package installed in the user's own project**, pinned by their lockfile:
 
-- **Plugin path (and any project using the npm package): use the published CLI.** The npm package declares bin commands, so from the **user's project directory** (where `.env` lives):
-  ```bash
-  npx -y --package=sparkbtcbot-skill sparkbtcbot-setup            # one-time bootstrap
-  npx -y --package=sparkbtcbot-skill sparkbtcbot-reveal-mnemonic  # USER runs, own terminal
-  npx -y --package=sparkbtcbot-skill sparkbtcbot-leaf-vault verify
-  ```
-  (After `npm install sparkbtcbot-skill` in the project, plain `npx sparkbtcbot-setup` etc. works.) Wherever this document says `npm run setup` / `npm run reveal-mnemonic` / `npm run leaf-vault`, these are the equivalent commands on the plugin path. **Note the CLI comes from npm, not from this plugin** — it may be newer than the skill text you're reading; if a command's behavior disagrees with this document, trust the command's own `--help`/output. (These commands exist in `sparkbtcbot-skill` **0.4.2+** — on an older published version npx will report the executable missing; don't improvise around it, tell the user to wait for/confirm the release.)
-- **Cloned repo:** the `npm run …` forms as written.
-- **NEVER `npm install` inside the plugin cache directory**, and never point the user's seed/config at it.
+```bash
+npm install sparkbtcbot-skill    # once, in the user's project (0.4.2+ ships the CLIs)
+npx sparkbtcbot-setup            # resolves LOCALLY from node_modules/.bin — one-time bootstrap
+npx sparkbtcbot-reveal-mnemonic  # USER runs, own terminal
+npx sparkbtcbot-leaf-vault verify
+```
+
+**Local resolution is the point**: no `-y --package=` remote fetch — an unpinned registry pull at wallet-bootstrap time bypasses the user's lockfile and any hardening policy, the wrong default for a wallet. The installed version is what runs; if `npx sparkbtcbot-setup` reports a missing executable, the installed package predates 0.4.2 — upgrade the dependency, don't improvise. In a **cloned repo** the `npm run setup` / `npm run reveal-mnemonic` / `npm run leaf-vault` forms are equivalent. **NEVER install anything into the plugin cache** (`~/.claude/plugins/cache/...` — versioned, wiped on update) and never point the user's seed/config at it; the cache is skill text only.
 
 ### Step 1: Run setup
 
-`npm run setup` (cloned repo) or `npx -y --package=sparkbtcbot-skill sparkbtcbot-setup` (plugin/npm path — see above) is the one-time bootstrap. It encrypts a BIP39 mnemonic with the user's passphrase (≥12 chars; prompted on stderr if `SPARK_PASSPHRASE` is unset) and writes `~/.spark/seed.enc` (mode 0600). Three scenarios — full commands and the migration walkthrough are in `references/encrypted-seed.md` → Setup:
+`npm run setup` (cloned repo) or `npx sparkbtcbot-setup` (from the project where `sparkbtcbot-skill` is installed — see above) is the one-time bootstrap. It encrypts a BIP39 mnemonic with the user's passphrase (≥12 chars; prompted on stderr if `SPARK_PASSPHRASE` is unset) and writes `~/.spark/seed.enc` (mode 0600). Three scenarios — full commands and the migration walkthrough are in `references/encrypted-seed.md` → Setup:
 
 - **A) Fresh wallet** (default): the SDK generates a new mnemonic, the script encrypts it.
 - **B) Migrate from a pre-existing `SPARK_MNEMONIC` in `.env`**: add `SPARK_PASSPHRASE`, run setup, then delete the `SPARK_MNEMONIC` line. Never pass the mnemonic inline on a command line (shell history).
@@ -160,7 +159,7 @@ The script verifies by initializing a wallet from the encrypted seed and printin
 **Fresh-generate mode never writes the mnemonic to disk in plaintext, and never prints it to stdout.** When scenario A runs, the new 12-word mnemonic is stored only inside the encrypted `seed.enc`. It is not printed (stdout-from-Bash gets captured into an agent's transcript) and — unlike older versions — **no plaintext `MNEMONIC_BACKUP_*.txt` file is written** (that lingered on disk until the user remembered to `rm` it, undercutting encryption-at-rest). Backup is now on-demand via `reveal-mnemonic`.
 
 After running setup, relay this to the user — the words never pass through you:
-1. In **their own** terminal, run: `npm run reveal-mnemonic` (cloned repo) or `npx -y --package=sparkbtcbot-skill sparkbtcbot-reveal-mnemonic` (plugin/npm path — no repo needed; run it in the directory holding `.env`, or export `SPARK_PASSPHRASE` first). It decrypts `seed.enc` and prints the 12 words, and refuses to run non-interactively, so it can't be captured into this chat.
+1. In **their own** terminal, run: `npm run reveal-mnemonic` (cloned repo) or `npx sparkbtcbot-reveal-mnemonic` (from the project directory where `sparkbtcbot-skill` is installed and `.env` lives). It decrypts `seed.enc` and prints the 12 words, and refuses to run non-interactively, so it can't be captured into this chat.
 2. Copy the words to paper, a password manager, or a hardware-wallet seed backup. This is the only recovery path — the encrypted seed file is **not** a substitute for the offline backup.
 3. Nothing to delete — no plaintext file was created.
 
