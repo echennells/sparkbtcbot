@@ -60,8 +60,11 @@ Offer supply-chain hardening (package-cooldown / age-gate, lockfile install, etc
 you install. The settings are **not** defined here — the source of truth is the
 [`echennells/supply-chain-hardening`](https://github.com/echennells/supply-chain-hardening)
 repo. Read its npm config there and apply those keys/values; they are version-sensitive (e.g.
-npm's `min-release-age` package cooldown only enforces on npm ≥ 11.10.0). Do not hard-code or
-invent a recipe. If the user already has their own `~/.npmrc` policy, follow it instead.
+npm's `min-release-age` package cooldown only enforces on npm ≥ 11.10.0). **Where to look in
+that repo:** the npm config template is `templates/npmrc.j2` (system-wide variant:
+`templates/etc-npmrc.j2`), with the values in `defaults/main.yml` — there is no `.npmrc` at the
+repo root. Do not hard-code or invent a recipe. If the user already has their own `~/.npmrc`
+policy, follow it instead.
 
 **Check the npm version** (`npm --version`) and upgrade if you reasonably can — but this is
 best-effort hardening, **not a gate**. Preference order, take the best you can actually get:
