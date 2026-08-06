@@ -70,6 +70,10 @@ policy, follow it instead.
 best-effort hardening, **not a gate**. Preference order, take the best you can actually get:
 - **npm 12+** (needs Node `^22.22.2 || ^24.15.0 || >=26`) — also disables package install/
   lifecycle scripts by default, the biggest cut to the `postinstall` attack surface in years.
+  Note the two floors are different on purpose: the wallet itself only needs Node >=20
+  (package.json `engines`) — but **if you are provisioning Node fresh anyway, pick 22.22.2+ or
+  24** and npm 12 comes free; installing Node 20 first just to discover the age-gate branch
+  costs a re-install.
 - **npm 11.10.0–11.x** — the floor where the `min-release-age` package cooldown enforces at all.
   Perfectly fine when the Node version can't support 12 (e.g. Node 20). This is a good outcome,
   not a fallback to apologize for.
