@@ -56,6 +56,12 @@ conversation transcript or shell history is identical to a leak from disk.
 
 ## If you run `git clone` + `npm install` for the user
 
+**After any install of this repo, run `npm test` before touching wallet code.** The unit suite
+is offline (no funds, no network) and asserts the installed SDK's actual export surface and
+shapes — a red suite means the resolved dependency tree is not the one this code was tested
+against (drift, a bad mirror, or worse). Report it and stop; don't proceed to wallet operations
+on a tree that fails its own checks.
+
 Offer supply-chain hardening (package-cooldown / age-gate, lockfile install, etc.) **before**
 you install. The settings are **not** defined here — the source of truth is the
 [`echennells/supply-chain-hardening`](https://github.com/echennells/supply-chain-hardening)

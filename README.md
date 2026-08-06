@@ -115,6 +115,7 @@ npx sparkbtcbot-leaf-vault verify
 git clone https://github.com/echennells/sparkbtcbot.git ~/sparkbtcbot
 cd ~/sparkbtcbot
 npm ci     # lockfile-exact install; fails loudly on any drift
+npm test   # 368 offline unit tests — verifies the resolved tree matches the one we live-tested
 ```
 
 Don't clone directly into `~/.claude/skills/` — this repo nests the skill at `skills/sparkbtcbot/`, so the clone would put `SKILL.md` a level too deep and Claude Code won't discover it. If you want the clone to double as a personal skill (instead of the plugin install), symlink the inner skill directory:
@@ -128,9 +129,10 @@ The Quick Start below assumes this path — useful if you want to kick the tires
 ## Quick Start
 
 ```bash
-# Install dependencies (in the cloned repo; lockfile-exact)
+# Install dependencies (in the cloned repo; lockfile-exact), then verify:
 cd ~/sparkbtcbot
 npm ci
+npm test   # offline; a red suite means the installed tree isn't the tested one — stop there
 
 # Copy env template, set SPARK_PASSPHRASE (>=12 chars)
 cp .env.example .env

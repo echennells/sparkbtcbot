@@ -46,6 +46,9 @@ describe("docs lint", () => {
     for (const b of cloneBlocks) {
       expect(/npm ci/.test(b), `clone block installs without npm ci: ${b.slice(0, 120)}`).toBe(true);
       expect(/npm install\s*$/m.test(b), "clone block uses bare npm install").toBe(false);
+      // Post-install verification: the offline unit suite doubles as an
+      // install check (it asserts the installed SDK's surface/shapes).
+      expect(/npm test/.test(b), "clone block skips the npm test verification step").toBe(true);
     }
   });
 });

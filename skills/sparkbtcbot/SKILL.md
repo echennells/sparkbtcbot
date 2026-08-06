@@ -145,7 +145,7 @@ npx sparkbtcbot-reveal-mnemonic  # USER runs, own terminal
 npx sparkbtcbot-leaf-vault verify
 ```
 
-**Local resolution is the point**: no `-y --package=` remote fetch — an unpinned registry pull at wallet-bootstrap time bypasses the user's lockfile and any hardening policy, the wrong default for a wallet. The installed version is what runs; if `npx sparkbtcbot-setup` reports a missing executable, the installed package predates 0.4.2 — upgrade the dependency, don't improvise. In a **cloned repo** the `npm run setup` / `npm run reveal-mnemonic` / `npm run leaf-vault` forms are equivalent. **NEVER install anything into the plugin cache** (`~/.claude/plugins/cache/...` — versioned, wiped on update) and never point the user's seed/config at it; the cache is skill text only.
+**Local resolution is the point**: no `-y --package=` remote fetch — an unpinned registry pull at wallet-bootstrap time bypasses the user's lockfile and any hardening policy, the wrong default for a wallet. The installed version is what runs; if `npx sparkbtcbot-setup` reports a missing executable, the installed package predates 0.4.2 — upgrade the dependency, don't improvise. In a **cloned repo** the `npm run setup` / `npm run reveal-mnemonic` / `npm run leaf-vault` forms are equivalent — and after `npm ci` there, run `npm test` (offline) before wallet code: a red suite means the installed tree isn't the tested one. **NEVER install anything into the plugin cache** (`~/.claude/plugins/cache/...` — versioned, wiped on update) and never point the user's seed/config at it; the cache is skill text only.
 
 ### Step 1: Run setup
 
