@@ -36,8 +36,9 @@ async function main() {
   const args = process.argv.slice(2);
   const usage =
     "Usage: sparkbtcbot-reveal-mnemonic\n\n" +
-    "Decrypts the seed file and prints the mnemonic ONCE, for the human operator\n" +
-    "to copy to an offline backup. Takes no arguments. Refuses to run without a\n" +
+    "Decrypts the seed file and displays the mnemonic ONCE on a temporary screen\n" +
+    "(alternate buffer — wiped on continue, never enters scrollback), for the human\n" +
+    "operator to copy to an offline backup. Takes no arguments. Refuses to run without a\n" +
     "real interactive terminal on both stdin and stdout — run it yourself, not\n" +
     "through an agent. Env: SPARK_PASSPHRASE (prompted if unset), SPARK_SEED_PATH.\n";
   if (args.includes("--help") || args.includes("-h")) {
@@ -63,9 +64,10 @@ async function main() {
   }
 
   stderr.write(
-    "\n⚠️  This will print your 12-word seed phrase to THIS screen.\n" +
-    "   Anyone who sees it controls the wallet. Make sure nobody is watching\n" +
-    "   and your terminal isn't being recorded (tmux/screen/asciinema).\n\n",
+    "\n⚠️  This will display your 12-word seed phrase on a TEMPORARY screen\n" +
+    "   (wiped when you continue — it never enters scrollback). Anyone who sees\n" +
+    "   it controls the wallet: make sure nobody is watching and your terminal\n" +
+    "   isn't being recorded (asciinema, screen sharing, shoulder cams).\n\n",
   );
   const go = await promptStderr("Print the seed phrase now? [y/N]: ");
   if (!/^y(es)?$/i.test(go.trim())) {
@@ -89,10 +91,46 @@ async function main() {
     exit(1);
   }
 
-  stdout.write("\n" + mnemonic + "\n\n");
+  // Display on the ALTERNATE screen buffer (the mechanism less/vim use): the
+  // words render outside the normal scrollback, and once the user confirms
+  // they've copied them the buffer is wiped and the terminal returns to the
+  // primary screen — nothing lands in scrollback, tmux/screen history, or
+  // naive terminal logs. Fallback for TERM=dumb: print on the primary screen,
+  // then best-effort erase display + scrollback (CSI 2J / 3J).
+  const altScreen = Boolean(env.TERM) && env.TERM !== "dumb";
+  let wiped = false; // idempotent: the exit hook below must never re-wipe the RESTORED primary screen
+  const wipe = () => {
+    if (wiped) return;
+    wiped = true;
+    try {
+      stdout.write("\x1b[2J\x1b[3J\x1b[H"); // erase display + scrollback, home cursor
+      if (altScreen) stdout.write("\x1b[?1049l"); // back to the primary screen
+    } catch { /* terminal already gone */ }
+  };
+  // NO exit path may strand the words on screen. The 'exit' event covers them
+  // all — including Ctrl-C, which prompt.js handles itself in raw mode via
+  // process.exit(130) (so a SIGINT handler here would never fire for it).
+  process.once("exit", wipe);
+
+  const numbered = mnemonic
+    .trim()
+    .split(/\s+/)
+    .map((w, i) => `  ${String(i + 1).padStart(2)}. ${w}`)
+    .join("\n");
+
+  if (altScreen) stdout.write("\x1b[?1049h\x1b[H"); // enter alt screen
+  stdout.write(
+    "\n  Your seed phrase — copy it to PAPER or a hardware seed backup NOW:\n\n" +
+    numbered +
+    "\n\n  This screen will be wiped as soon as you continue; the words will not\n" +
+    "  remain in your terminal or its scrollback.\n",
+  );
+  await promptStderr("\nPress Enter AFTER you have copied all the words... ");
+  wipe();
   stderr.write(
-    "Copy these words to an OFFLINE backup (paper / hardware seed backup), then\n" +
-    "clear your terminal scrollback. This is the only recovery path.\n",
+    "Done — the words are no longer on screen" +
+    (altScreen ? " (alternate buffer wiped)" : " (best-effort erase; TERM lacks alt-screen support)") +
+    ".\nYour offline copy is now the only recovery path — verify you can read every word.\n",
   );
 }
 
