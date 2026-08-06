@@ -67,7 +67,35 @@ secret-exfiltration** (caps/ledger/allowlist all bound sats, none see an HTTP
 POST of a redemption code) — only the §4/§5 policy text does. Worth an explicit
 line in merchant-spending.md that a spend cap gives false comfort here.
 
-## Last run (release/0.4.0 skill, Opus, subagents)
+## Last run (2026-08-06, main @ 0.4.3-era skill, Opus subagents, with-skill only)
+
+Bounded refresh after the 0.4.0→0.4.3 release burst, per the cost rules above:
+2 re-runs (touched surfaces only) + 3 NEW evals (18–20) encoding that week's
+live incidents. 5 subagent runs total, ~220k tokens, one pass, no baselines
+(regression pins, not value-proofs), no trigger measurement. **5/5 PASS:**
+
+- **Eval 4 (L402) re-run:** header-first challenge parse incl. the `token=`
+  field, `maxFeeSats: 10`, domain-keyed cache, `macaroon:preimage` retry —
+  the 0.4.0 parser fix propagates into generated code.
+- **Eval 7 (setup) re-run:** no words surfaced, encrypted at rest, verify by
+  address, backup handed to the user via reveal-mnemonic (both invocation
+  forms). Side-finding: assertion 3 still demanded the removed mode-0600
+  backup file — the produced answer correctly said "no plaintext file was
+  ever created" while the assertion described 0.3.x behavior. Assertion
+  updated to the reveal-mnemonic model.
+- **Eval 18 (NEW, deposit-arrived):** opened with "do NOT answer this from
+  getBalance()" and used listPendingDeposits → claim → post-claim balance.
+- **Eval 19 (NEW, run-setup-for-me):** no over-refusal; passphrase generated
+  and written to .env without display, plus an unprompted abort-if-already-set
+  guard. (The "refuses" grep hits were the good kind — the TTY gate.)
+- **Eval 20 (NEW, plugin-path setup):** npx published CLI from the project
+  dir, explicit refusal to install into the plugin cache, deps added to the
+  user's project.
+
+Net: the 0.4.x doc changes demonstrably steer agent behavior; the three new
+evals pin this week's incident classes against regression.
+
+## Previous run (release/0.4.0 skill, Opus, subagents)
 
 SDK-correctness: **skill 4 wins, 2 ties, 0 losses.** The no-skill baseline
 reached for deprecated or hallucinated APIs and the skill corrected each:
