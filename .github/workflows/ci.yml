@@ -22,6 +22,19 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: npm
 
+      # After setup-node, which would otherwise shadow this via its toolcache.
+      #
+      # Expect the age gate to report INERT on the node 20 and 22 legs:
+      # min-release-age needs npm 11.10.0 and those ship npm 10, so the key is
+      # written and enforced by nothing. The action says so rather than
+      # claiming a gate it lacks. Script blocking applies on all three legs --
+      # that is the control that stops a dependency executing code during
+      # `npm ci`.
+      - name: Harden package managers
+        uses: echennells/supply-chain-hardening/action@v2
+        with:
+          ecosystems: npm
+
       - name: Install dependencies
         run: npm ci
 
