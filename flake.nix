@@ -21,6 +21,10 @@
       # version without thinking about Nix — which is exactly the class of bug
       # this package's own CI hardening exists to catch elsewhere.
       pkgJson = builtins.fromJSON (builtins.readFile ./package.json);
+
+      # One definition, used by both the package and the test check — two
+      # copies of a hash is two things to forget to update.
+      npmDepsHash = "sha256-9if2GkWzHUzbowbRupE+1JPL2fcG3QPHFeA6w8zSSos=";
     in
     {
       packages = forAllSystems (pkgs: rec {
@@ -36,7 +40,7 @@
           # truth for the dependency closure. Regenerate after any lockfile
           # change with:
           #   nix build .# 2>&1 | grep -A2 'got:'
-          npmDepsHash = "sha256-9if2GkWzHUzbowbRupE+1JPL2fcG3QPHFeA6w8zSSos=";
+          npmDepsHash = npmDepsHash;
 
           # There is no build script in package.json — the package ships the
           # sources it publishes. Nothing to compile, so skip the default
@@ -52,6 +56,59 @@
             mainProgram = "sparkbtcbot";
             platforms = systems;
           };
+        };
+      });
+
+      # TESTS LIVE IN `checks`, NOT IN THE PACKAGE'S checkPhase.
+      #
+      # `nix flake check` runs these; `nix build` and `nix run` do not. That
+      # split is deliberate:
+      #
+      #   - A flake is a PACKAGING definition. Coupling `nix run` to the test
+      #     suite makes every consumer pay for a test run they did not ask for,
+      #     and makes packaging a known-imperfect version impossible.
+      #   - CI already runs these tests on node 20/22/24. This is a fourth
+      #     place they can run, and a fourth place they can disagree — so it
+      #     runs the SAME `npm run test:unit` rather than its own invocation,
+      #     keeping package.json the single definition of what "the tests" are.
+      #
+      # What this adds over CI: the Nix sandbox has no network and a pinned
+      # toolchain, so a test that quietly depends on either fails here and
+      # passes there. Only tests/unit is run — tests/integration and
+      # tests/funded need a network and real funds, and would fail in the
+      # sandbox for reasons unrelated to correctness.
+      checks = forAllSystems (pkgs: {
+        unit-tests = pkgs.buildNpmPackage {
+          pname = "${pkgJson.name}-tests";
+          inherit (pkgJson) version;
+          src = ./.;
+          npmDepsHash = npmDepsHash;
+          dontNpmBuild = true;
+          nodejs = pkgs.nodejs_22;
+
+          # EXPLICIT checkPhase, not `npmTestScript`.
+          #
+          # buildNpmPackage has no npmTestScript attribute. Setting one is
+          # silently ignored — Nix does not reject unknown attrs — so the first
+          # version of this check ran NO tests and passed against a
+          # deliberately failing one. A check that cannot fail reads as
+          # coverage and provides none.
+          doCheck = true;
+          checkPhase = ''
+            runHook preCheck
+            npm run test:unit
+            runHook postCheck
+          '';
+
+          # The check is the point; the output is not. Produce a marker so the
+          # derivation has something to install rather than failing on an empty
+          # install phase.
+          installPhase = ''
+            runHook preInstall
+            mkdir -p $out
+            echo "unit tests passed for ${pkgJson.name} ${pkgJson.version}" > $out/result
+            runHook postInstall
+          '';
         };
       });
 
