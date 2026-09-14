@@ -34,8 +34,30 @@ jobs:
       - name: Update npm
         run: npm install -g npm@latest
 
+      # Harden the runner before anything is installed.
+      #
+      # Trusted publishing already removes the stolen-token risk, but `npm ci`
+      # runs BEFORE `npm publish`, so a dependency lifecycle script could alter
+      # the tree that then ships -- under this workflow's own provenance
+      # attestation. A signed artifact attesting to a commit whose contents
+      # changed after checkout is worse than a leaked token.
+      #
+      # Placement is load-bearing twice: AFTER setup-node, which prepends its
+      # toolcache to PATH and would shadow the hardening; and AFTER the npm
+      # upgrade, because min-release-age landed in npm 11.10.0 and on the
+      # runner's stock npm the age gate is written and enforced by nothing.
+      - name: Harden package managers
+        uses: echennells/supply-chain-hardening/action@v2
+        with:
+          ecosystems: npm
+
       - name: Install dependencies
         run: npm ci
+
+      # Assert the hardening is in FORCE, not merely applied. After the install
+      # so it also catches anything the install changed.
+      - name: Verify hardening is in effect
+        uses: echennells/supply-chain-hardening/action/verify@v2
 
       # A tag that fails tests must not ship.
       - name: Run tests
