@@ -98,10 +98,19 @@ describe("fiatToSats / satsToFiat / describeRate", () => {
     expect(satsToFiat(130269, 76764)).toBeCloseTo(100, 2);
     expect(satsToFiat(130269n, 76764)).toBeCloseTo(100, 2);
   });
+  it("satsToFiat accepts the shapes the wallet actually returns: the wrapper's STRING sats and the SDK's bigint", () => {
+    // SparkAgent.getBalance() → { sats: "19932" }; raw wallet.getBalance().satsBalance.available → 19932n.
+    // The first live funnel run threw here on the string and reported $0.
+    expect(satsToFiat("19932", 76764)).toBeCloseTo(15.3, 1);
+    expect(satsToFiat(19932n, 76764)).toBeCloseTo(15.3, 1);
+    expect(satsToFiat("0", 76764)).toBe(0);
+  });
   it("rejects non-positive or non-numeric input", () => {
     expect(() => fiatToSats(0, 76764)).toThrow(/amount must be a positive number/);
     expect(() => fiatToSats(100, "free")).toThrow(/pricePerBtc must be a positive number/);
     expect(() => satsToFiat(-1, 76764)).toThrow(/non-negative/);
+    expect(() => satsToFiat("abc", 76764)).toThrow(/non-negative/);
+    expect(() => satsToFiat("1e5", 76764)).toThrow(/non-negative/); // digits only — no exponent/float strings
   });
   it("describeRate names the sources, the time, and flags a single source", () => {
     const two = { currency: "USD", price: 76764.23, at: NOW, sources: [{ name: "mempool.space" }, { name: "coinbase" }], singleSource: false };

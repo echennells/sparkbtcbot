@@ -354,6 +354,12 @@ describe("maxSpendableFace (size a gift card under the balance)", () => {
     expect(s.face).toBe(95);
   });
 
+  it("accepts availableSats as the wrapper's STRING or the SDK's bigint (what a caller naturally passes)", () => {
+    expect(maxSpendableFace({ availableSats: String(usd(100)), pricePerBtc: price, denominations: amazon }).face).toBe(50);
+    expect(maxSpendableFace({ availableSats: BigInt(usd(100)), pricePerBtc: price, range: { min: 5, max: 500, step: 0.01 } }).face).toBeCloseTo(97.47, 2);
+    expect(() => maxSpendableFace({ availableSats: "lots", pricePerBtc: price })).toThrow(/availableSats must be a positive number/);
+  });
+
   it("rejects misspelled options, both product shapes at once, and bad numbers", () => {
     expect(() => maxSpendableFace({ availableSats: 1, pricePerBtc: price, denominatons: amazon })).toThrow(/unknown option "denominatons"/);
     expect(() => maxSpendableFace({ availableSats: 1, pricePerBtc: price, denominations: amazon, range: { min: 1, max: 2 } })).toThrow(/not both/);
