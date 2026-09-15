@@ -1,0 +1,77 @@
+# Builds the flake on every push and PR, so `npmDepsHash` drift is caught here
+# instead of by the first Nix user who runs `nix run github:echennells/sparkbtcbot`.
+#
+# The flake reads pname/version from package.json, so a release moves it
+# automatically — the ONE fact it cannot derive is npmDepsHash, a content hash
+# of the dependency closure. Any package-lock.json change invalidates it, and
+# nothing else in CI builds with Nix, so without this job a stale hash sits on
+# main unnoticed (0.8.0 shipped that way). When the hash is stale this job
+# fails and puts the replacement value in the job summary: paste it into
+# flake.nix and push.
+#
+# `nix build` is enough: evaluating the flake, fetching the closure against the
+# hash, and packaging the CLI are the three things that can break. The dev
+# shell is deliberately not built — it provides node only and has no hash.
+name: Nix
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - flake.nix
+      - flake.lock
+      - package.json
+      - package-lock.json
+      - .github/workflows/nix.yml
+  pull_request:
+    branches: [main]
+    paths:
+      - flake.nix
+      - flake.lock
+      - package.json
+      - package-lock.json
+      - .github/workflows/nix.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v23
+
+      - name: Build the flake
+        id: build
+        # Capture the log so a hash mismatch can be surfaced below; the step
+        # still fails on any error.
+        run: |
+          set -o pipefail
+          nix build .# --print-build-logs 2>&1 | tee nix-build.log
+
+      - name: Surface a stale npmDepsHash
+        if: failure()
+        run: |
+          got=$(grep -E '^\s*got:' nix-build.log | head -1 | awk '{print $2}')
+          if [ -n "$got" ]; then
+            {
+              echo "## npmDepsHash is stale"
+              echo
+              echo "package-lock.json changed and \`flake.nix\` still carries the old closure hash."
+              echo "Replace \`npmDepsHash\` with:"
+              echo
+              echo '```'
+              echo "$got"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error file=flake.nix::npmDepsHash is stale — set it to $got"
+          else
+            echo "::error::nix build failed for a reason other than a hash mismatch — read the log above"
+          fi
+
+      - name: Smoke the built CLI
+        run: ./result/bin/sparkbtcbot help
