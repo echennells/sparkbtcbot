@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **`satsToFiat` and `maxSpendableFace` accept the balance shapes the wallet actually returns.** `SparkAgent.getBalance()` hands back `sats` as a **string** (`{ sats: "19932", tokens }`) and the raw SDK's `satsBalance.available` is a bigint; both helpers rejected the string, so the first live first-spend run reported ≈ $0 on a wallet holding 19,932 sats. Digit strings and bigints are now coerced; garbage still throws. `first-spend.md` now names the exact property on each object and warns against the `available ?? balance` guess that produced the 0.
+- **Bitrefill guest checkout still requires an email — documented.** `@bitrefill/cli` 0.3.0 declares `--email` as a required option on `buy-products` (`error: required option '--email <value>' not specified`, before any order exists), so "no account" never meant "no email". `bitrefill.md` says so explicitly; `first-spend.md` moves the email question into the price preview so a "yes" can complete the purchase in one turn instead of stalling at checkout, and repeats the PII rule: the user's address, never an invented or context-scraped one.
+
+### Changed
+
+- User-story evals judge wallet lore by position and role (leads / recommended / more than a sentence), not by keyword, and require decision-trace evidence behind any "I'll size it and confirm" promise; NOTES.md records the grading rules and the two false fails that motivated them.
+- Dev toolchain: vitest 4.1.11 (dev-only advisory); the Nix flake derives its dependency closure from `package-lock.json` via `importNpmLock` (no `npmDepsHash` to maintain) and is built in CI on every lockfile change.
+
 ## 0.8.0 — 2026-09-15
 
 ### Security
