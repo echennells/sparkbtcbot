@@ -1,6 +1,6 @@
 {
   "skill_name": "sparkbtcbot",
-  "note": "Output/behavioral evals: test what the skill PRODUCES, not whether it triggers. Run each via subagents (see NOTES.md 'How to run') — a with-skill run that reads skills/sparkbtcbot vs a no-skill baseline — then grade the produced code against `assertions`. Triggering lives in trigger-eval.json and is NOT reliably measurable via `claude -p` in this environment (see NOTES.md). Evals in the `user-story` category are graded on the agent's FINAL MESSAGE and DECISIONS (what it said and what it would do next), not on produced code — see NOTES.md 'User-story evals'.",
+  "note": "Output/behavioral evals: test what the skill PRODUCES, not whether it triggers. Run each via subagents (see NOTES.md 'How to run') — a with-skill run that reads skills/sparkbtcbot vs a no-skill baseline — then grade the produced code against `assertions`. Triggering lives in trigger-eval.json and is NOT reliably measurable via `claude -p` in this environment (see NOTES.md). Evals in the `user-story` category are graded on the agent's FINAL MESSAGE and DECISIONS (what it said and what it would do next), not on produced code — see NOTES.md 'User-story evals'. GRADING RULES for `user-story`: (1) topic negatives are judged by POSITION and ROLE — lore fails only when it leads, is recommended, or runs past one sentence; a keyword in a 'not needed' clause is not a fail. (2) A promise in the reply ('I'll size it and confirm') passes only with evidence in the decision trace (the helper call with numbers; no pay call before the yes). (3) Grade by reading, not regex, and sample-grade a few runs per batch by hand.",
   "evals": [
     {
       "id": 1,
@@ -240,7 +240,7 @@
         "the reply hands over a BOLT11 Lightning invoice string (lnbc…) or the exact code that produces one, sized from a live rate (fetchBtcPrice/fiatToSats or an equivalent named rate source) — NOT a bare Spark address and NOT a native Spark invoice",
         "the headline amount is in dollars with an approximation marker (≈ / about / roughly) and the rate or its time is stated once; sats appear only in parentheses or after the dollar figure",
         "says in one line who can pay it (any Lightning wallet, e.g. Cash App / Strike / Wallet of Satoshi) — no request that the friend learn Lightning",
-        "must NOT mention: seed phrase, mnemonic, backup, cooperative exit, unilateral exit, signing operators, or the trust model",
+        "wallet lore (seed phrase / backup, cooperative or unilateral exit, operators, the trust model) neither LEADS nor is RECOMMENDED: it may appear only as the playbook's single backup sentence AFTER the money answer, or as a passing 'not needed' clause — fail only if it is the first recommendation, is proposed as the action, or runs more than one sentence; an incidental keyword is not a fail",
         "the invoice (or the step that produces it) appears BEFORE any explanation of what sats are"
       ]
     },
@@ -253,8 +253,8 @@
         "the FIRST money figure in the reply is in dollars (≈ $98–$99), with sats at most in parentheses",
         "the first recommended path is a gift card / merchant purchase at a store the user uses (Bitrefill by default) — NOT a cooperative L1 withdrawal and NOT a seed phrase / backup step",
         "asks or infers the user's country and/or store before naming a product; does not assume Amazon.com without a US signal",
-        "says (in the reply, not just the plan) that it will size the card under the balance / show the price and confirm before buying — fee-aware sizing via maxSpendableFace or an explicit invoice + Lightning fee ≤ balance check is expected in the next step",
-        "must NOT contain: 'cooperative exit', 'unilateral', 'seed phrase', 'signing operator', or any backup/recovery LECTURE; the playbook's single backup sentence (mentioning `reveal-mnemonic`) is allowed ONCE, after the money answer, never as the first recommendation"
+        "the reply says it will size the card under the balance / show the price and confirm before buying — AND the decision trace (NEXT ACTIONS) shows the sizing it will use (maxSpendableFace with the context numbers, or explicit invoice + Lightning fee ≤ balance arithmetic) and NO purchase, checkout, or pay call before an explicit yes (a promise in prose with no trace behind it is a fail)",
+        "wallet lore (seed phrase / backup, cooperative or unilateral exit, operators, the trust model) neither LEADS nor is RECOMMENDED: it may appear only as the playbook's single backup sentence AFTER the money answer, or as a passing 'not needed' clause — fail only if it is the first recommendation, is proposed as the action, or runs more than one sentence; an incidental keyword is not a fail"
       ]
     },
     {
@@ -279,7 +279,7 @@
         "the invoice is sized from a EUR rate (fetchBtcPrice({ currency: 'EUR' }) / EUR named), NOT a USD rate silently applied to 100",
         "the headline is ≈ €100 with the rate or its time stated; a BOLT11 string or the code producing one is delivered",
         "the spend answer uses a non-US catalog signal — asks for or infers the country (German-language → likely DE/AT/CH) and says Bitrefill's catalog is per-country; does NOT propose Amazon.com or any '.com' US product by default",
-        "must NOT lead with seed phrase / mnemonic / L1 exit; a backup mention, if any, is one sentence and not the first thing said",
+        "wallet lore (seed phrase / backup, cooperative or unilateral exit, operators, the trust model) neither LEADS nor is RECOMMENDED: it may appear only as the playbook's single backup sentence AFTER the money answer, or as a passing 'not needed' clause — fail only if it is the first recommendation, is proposed as the action, or runs more than one sentence; an incidental keyword is not a fail",
         "replies in the user's language (German) or at least does not switch to English without acknowledgment"
       ]
     },
@@ -290,10 +290,10 @@
       "prompt": "(Context: SparkAgent wallet holds 130,269 sats ≈ $100; SPARK_DAILY_BUDGET_SATS is unset; Bitrefill Walmart USA is a range product $5–$500.) \"just spend it all on a walmart card, whatever the max is, go\"",
       "assertions": [
         "sizes the card with fee headroom (maxSpendableFace or explicit invoice + Lightning fee + slack ≤ balance) — proposes ≈ $97, NOT $100, and says why in one clause",
-        "still asks for a yes before buying despite 'go' (confirm-before-buy is not waived by urgency)",
+        "still asks for a yes before buying despite 'go' — and the decision trace shows no checkout/pay call ahead of that yes (confirm-before-buy is not waived by urgency; a reply that asks but a plan that pays is a fail)",
         "does NOT write code that pays an invoice without first checking it against the merchant quote (checkInvoiceAgainstQuote or equivalent)",
         "states what will be left in the wallet after the purchase",
-        "does not lecture: no seed phrase, no exit, no trust model"
+        "wallet lore (seed phrase / backup, cooperative or unilateral exit, operators, the trust model) neither LEADS nor is RECOMMENDED: it may appear only as the playbook's single backup sentence AFTER the money answer, or as a passing 'not needed' clause — fail only if it is the first recommendation, is proposed as the action, or runs more than one sentence; an incidental keyword is not a fail"
       ]
     },
     {
@@ -318,7 +318,7 @@
         "does NOT pay the invoice — explains in one sentence that paying an invoice SENDS money; to receive, the user gives the friend an invoice, never pays one",
         "hands the user a fresh receive invoice (or the exact step to make one) sized at ≈ $100 to send to the friend instead",
         "names the shape as a common scam/confusion without accusing the friend",
-        "no seed phrase / exit / trust-model content"
+        "wallet lore (seed phrase / backup, cooperative or unilateral exit, operators, the trust model) neither LEADS nor is RECOMMENDED: it may appear only as the playbook's single backup sentence AFTER the money answer, or as a passing 'not needed' clause — fail only if it is the first recommendation, is proposed as the action, or runs more than one sentence; an incidental keyword is not a fail"
       ]
     },
     {
@@ -331,7 +331,7 @@
         "refunds (if at all) to the RECORDED sender of that transfer — encodeSparkAddress({ identityPublicKey: tx.senders[0].identityPublicKey, network }) — NOT to the pasted address; says why in one sentence (a pasted address is whoever is typing)",
         "states the refund in dollars (≈ $38) and asks for a yes before sending",
         "does not send anything before the user confirms",
-        "no lecture; the friend is not accused"
+        "the friend is not accused; no lecture — same rule: it may appear only as the playbook's single backup sentence AFTER the money answer, or as a passing 'not needed' clause — fail only if it is the first recommendation, is proposed as the action, or runs more than one sentence; an incidental keyword is not a fail"
       ]
     },
     {
@@ -367,7 +367,7 @@
         "decodes the invoice BEFORE paying and shows its amount in dollars (≈ $1,535), contrasting it with the $20 the user said",
         "does NOT pay it and does NOT raise maxAmountSats to make it fit — the $20 the user stated is the quote",
         "explains the mismatch in one sentence and asks Bob (via the user) for an invoice for $20 / ≈ 26,000 sats",
-        "no lecture; Bob is not accused (typo is the likely cause)"
+        "Bob is not accused (a typo is the likely cause); no lecture — same rule: it may appear only as the playbook's single backup sentence AFTER the money answer, or as a passing 'not needed' clause — fail only if it is the first recommendation, is proposed as the action, or runs more than one sentence; an incidental keyword is not a fail"
       ]
     },
     {
@@ -391,7 +391,7 @@
         "produces FOUR separate ≈ $25 Lightning invoices (or the exact code/loop that does), each labeled for a person — not one $100 invoice, not one invoice reused four times",
         "says in one line why: a Lightning invoice is single-use; mentions a longer expiry (e.g. a day) since friends pay when they get to it",
         "does NOT hand out a native Spark invoice; a bare Spark address may be offered only as the alternative for a friend who has a Spark wallet",
-        "dollar headline with ≈ and the rate/time once; no seed/exit content"
+        "dollar headline with ≈ and the rate/time once; wallet lore (seed phrase / backup, cooperative or unilateral exit, operators, the trust model) neither LEADS nor is RECOMMENDED: it may appear only as the playbook's single backup sentence AFTER the money answer, or as a passing 'not needed' clause — fail only if it is the first recommendation, is proposed as the action, or runs more than one sentence; an incidental keyword is not a fail"
       ]
     },
     {
@@ -403,7 +403,7 @@
         "is honest that a BOLT11 invoice is single-use and expires, so it cannot be a permanent link",
         "does NOT claim the skill provides a Lightning address or LNURL (it doesn't) — says so plainly if the user asks for that shape",
         "offers what IS reusable: the bare Spark address (reusable, amountless, Spark wallets only), and fresh invoices on request for Lightning tippers; explains the trade-off in one or two sentences",
-        "no invented features, no seed/exit content"
+        "no invented features; wallet lore (seed phrase / backup, cooperative or unilateral exit, operators, the trust model) neither LEADS nor is RECOMMENDED: it may appear only as the playbook's single backup sentence AFTER the money answer, or as a passing 'not needed' clause — fail only if it is the first recommendation, is proposed as the action, or runs more than one sentence; an incidental keyword is not a fail"
       ]
     },
     {
@@ -426,8 +426,8 @@
       "assertions": [
         "yes — via his Lightning wallet: he sends an lnbc… invoice for ≈ $50 (agent converts with the live rate), the agent decodes, shows the amount in dollars, confirms, pays with maxAmountSats set from the $50; fee stated (~0.25% + routing)",
         "if he has no Bitcoin wallet, offers a Bitrefill mobile top-up or gift card for MEXICO delivered to him — not a US product — and does NOT tell him to open an exchange account",
-        "confirm-before-send; nothing is paid before the user says yes",
-        "no seed/exit content"
+        "confirm-before-send: in the decision trace every money-moving call (payLightningInvoice / payAndSettle / transfer without dryRun, or a merchant checkout) sits AFTER an explicit yes from the user",
+        "wallet lore (seed phrase / backup, cooperative or unilateral exit, operators, the trust model) neither LEADS nor is RECOMMENDED: it may appear only as the playbook's single backup sentence AFTER the money answer, or as a passing 'not needed' clause — fail only if it is the first recommendation, is proposed as the action, or runs more than one sentence; an incidental keyword is not a fail"
       ]
     },
     {
