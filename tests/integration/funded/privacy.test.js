@@ -26,13 +26,33 @@ describe("wallet privacy with a funded wallet (REGTEST)", () => {
     const pub = SparkReadonlyClient.createPublic(NET);
     const asViewer = await SparkReadonlyClient.createWithViewerKey(NET, viewerMn);
     const asStranger = await SparkReadonlyClient.createWithViewerKey(NET, strangerMn);
-    const snapshot = async () => ({
-      owner: (await owner.getBalance()).balance,
-      pub: await pub.getAvailableBalance(address),
-      viewer: await asViewer.getAvailableBalance(address),
-      stranger: await asStranger.getAvailableBalance(address),
-      pubTransfers: (await pub.getTransfers({ sparkAddress: address, limit: 5 })).transfers.length,
-    });
+    // The funded transfer/lightning tests run before this one in `test:all`,
+    // so the wallet's leaves are typically mid-reshuffle (the SDK's optimizer
+    // runs after every balance change). A single owner read and a single
+    // viewer read can then straddle a swap and differ by one leaf denomination
+    // (observed: 95,577 vs 96,601). Read until two consecutive owner readings
+    // agree, then take the other views inside that quiet window — the
+    // contract under test is who can SEE the balance, not the balance itself.
+    const settledOwner = async () => {
+      let prev = (await owner.getBalance()).satsBalance.available;
+      for (let i = 0; i < 20; i++) {
+        await new Promise((r) => setTimeout(r, 1500));
+        const cur = (await owner.getBalance()).satsBalance.available;
+        if (cur === prev) return cur;
+        prev = cur;
+      }
+      return prev;
+    };
+    const snapshot = async () => {
+      const own = await settledOwner();
+      return {
+        owner: own,
+        pub: await pub.getAvailableBalance(address),
+        viewer: await asViewer.getAvailableBalance(address),
+        stranger: await asStranger.getAvailableBalance(address),
+        pubTransfers: (await pub.getTransfers({ sparkAddress: address, limit: 5 })).transfers.length,
+      };
+    };
 
     try {
       await ensureWalletPrivacy(owner, { enabled: false });
@@ -64,5 +84,5 @@ describe("wallet privacy with a funded wallet (REGTEST)", () => {
     }
     const reopened = await snapshot();
     expect(reopened.pub).toBe(reopened.owner);
-  }, 60_000);
+  }, 180_000);
 });
