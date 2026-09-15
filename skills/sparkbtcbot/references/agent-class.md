@@ -43,6 +43,7 @@ import {
 } from "./lib/fee-guards.js";
 import { createSpendLedger } from "./lib/spend-ledger.js";
 import { createTransferIdStore } from "./lib/transfer-ids.js";
+import { ensureWalletPrivacy, privacyPreferenceFromEnv } from "./lib/wallet-privacy.js";
 import { enableLeafVault } from "./leaf-vault.js";
 
 // Best-effort BOLT11 amount in sats (undefined for amountless invoices or on a
@@ -280,6 +281,25 @@ export class SparkAgent {
         `   Set SPARK_LEAF_VAULT=off to silence, or see references/unilateral-exit.md.`,
       );
     }
+    // Spark wallets are PUBLICLY readable by default: anyone holding the
+    // address can query the balance and full transfer history with no auth
+    // (SparkReadonlyClient.createPublic, Sparkscan) — and an agent hands its
+    // address to every counterparty. Turn the per-wallet privacy setting on.
+    // It persists at the operators, so this is a self-heal on every boot, not
+    // a per-boot requirement; a failure must not block the wallet (the funds
+    // work either way) but must be loud. SPARK_PRIVACY=off opts out. Token
+    // balances stay public regardless — see references/security.md.
+    if (privacyPreferenceFromEnv()) {
+      try {
+        await ensureWalletPrivacy(wallet);
+      } catch (err) {
+        console.warn(
+          `⚠️  wallet privacy is NOT enabled: ${err?.message ?? err}\n` +
+          `   Balance and transfer history are publicly readable by address until this succeeds.\n` +
+          `   Set SPARK_PRIVACY=off to silence, or see references/security.md → Wallet privacy.`,
+        );
+      }
+    }
     return { agent, mnemonic: generated };
   }
 
@@ -431,7 +451,7 @@ export class SparkAgent {
     // The raw SDK takes ONE object ({ invoice, ... }); this wrapper takes a bare
     // BOLT11 string + options. The raw layer crashes opaquely on the mix-up
     // ("Cannot read properties of undefined (reading 'toLowerCase')" — no
-    // validation in spark-sdk through at least 0.11.0), so the wrapper
+    // validation in spark-sdk through at least 0.12.0), so the wrapper
     // direction at least must fail loud and name both shapes.
     if (typeof bolt11 !== "string") {
       throw new TypeError(

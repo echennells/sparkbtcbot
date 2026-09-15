@@ -9,6 +9,7 @@ import {
   checkInvoiceAgainstQuote,
   estimateOnrampDeposit,
   withdrawalTotalFee,
+  maxSpendableFace,
 } from "../../lib/fee-guards.js";
 
 describe("lightningEstimateSats", () => {
@@ -298,5 +299,65 @@ describe("estimateOnrampDeposit (fee composition across both legs)", () => {
   });
   it("rejects misspelled options instead of dropping them", () => {
     expect(() => estimateOnrampDeposit({ invoiceSats: 5000, claimSpreadBuffer: 500 })).toThrow(/unknown option/);
+  });
+});
+
+// maxSpendableFace — the spend-side twin of estimateOnrampDeposit. Pins the
+// planning-doc scenario: "$100 of sats" cannot buy a $100 Amazon card once
+// Bitrefill's markup and the Spark→LN fee are counted; the right answer is the
+// $50 pack, a $97-ish custom-amount card, or a small top-up — never an
+// attempted over-budget pay.
+describe("maxSpendableFace (size a gift card under the balance)", () => {
+  const price = 76_764; // USD/BTC
+  const usd = (n) => Math.round((n / price) * 1e8);
+  const amazon = [5, 10, 20, 50, 100, 200, 500];
+
+  it("$100 of sats snaps DOWN to the $50 Amazon pack, not $100", () => {
+    const r = maxSpendableFace({ availableSats: usd(100), pricePerBtc: price, denominations: amazon });
+    expect(r.face).toBe(50);
+    expect(r.rawFace).toBeGreaterThan(97);
+    expect(r.rawFace).toBeLessThan(98);
+    expect(r.breakdown.totalSats).toBeLessThanOrEqual(usd(100));
+  });
+
+  it("the same balance buys ~$97 of a range product (Walmart-style), with fee headroom left", () => {
+    const r = maxSpendableFace({ availableSats: usd(100), pricePerBtc: price, range: { min: 5, max: 500, step: 0.01 } });
+    expect(r.face).toBeCloseTo(97.47, 2);
+    expect(r.breakdown.totalSats).toBeLessThanOrEqual(usd(100));
+    expect(r.breakdown.leftoverSats).toBeGreaterThanOrEqual(0);
+  });
+
+  it("~$104 of sats DOES cover the $100 pack (markup 2% + fee 0.5% + slack)", () => {
+    expect(maxSpendableFace({ availableSats: usd(104), pricePerBtc: price, denominations: amazon }).face).toBe(100);
+    expect(maxSpendableFace({ availableSats: usd(102), pricePerBtc: price, denominations: amazon }).face).toBe(50);
+  });
+
+  it("never proposes a total above the balance, across a sweep of balances and markups", () => {
+    for (let sats = 2_000; sats <= 400_000; sats += 7_919) {
+      for (const merchantMarkupBps of [0, 200, 500]) {
+        const r = maxSpendableFace({ availableSats: sats, pricePerBtc: price, merchantMarkupBps, range: { min: 1, max: 10_000, step: 0.01 } });
+        if (r.face !== null) expect(r.breakdown.totalSats, `sats=${sats} markup=${merchantMarkupBps}`).toBeLessThanOrEqual(sats);
+      }
+    }
+  });
+
+  it("returns face:null with a reason when nothing fits, instead of a $0 card", () => {
+    expect(maxSpendableFace({ availableSats: 120, pricePerBtc: price, denominations: amazon })).toMatchObject({ face: null, reason: expect.stringMatching(/fee floor/) });
+    expect(maxSpendableFace({ availableSats: usd(3), pricePerBtc: price, denominations: amazon })).toMatchObject({ face: null, reason: expect.stringMatching(/below the smallest product size/) });
+    expect(maxSpendableFace({ availableSats: usd(3), pricePerBtc: price, range: { min: 5, max: 500 } }).face).toBeNull();
+  });
+
+  it("range results are clamped to max and floored to step", () => {
+    const r = maxSpendableFace({ availableSats: usd(1_000), pricePerBtc: price, range: { min: 5, max: 500, step: 5 } });
+    expect(r.face).toBe(500);
+    const s = maxSpendableFace({ availableSats: usd(100), pricePerBtc: price, range: { min: 5, max: 500, step: 5 } });
+    expect(s.face).toBe(95);
+  });
+
+  it("rejects misspelled options, both product shapes at once, and bad numbers", () => {
+    expect(() => maxSpendableFace({ availableSats: 1, pricePerBtc: price, denominatons: amazon })).toThrow(/unknown option "denominatons"/);
+    expect(() => maxSpendableFace({ availableSats: 1, pricePerBtc: price, denominations: amazon, range: { min: 1, max: 2 } })).toThrow(/not both/);
+    expect(() => maxSpendableFace({ availableSats: "lots", pricePerBtc: price })).toThrow(/availableSats must be a positive number/);
+    expect(() => maxSpendableFace({ availableSats: 1000, pricePerBtc: price, merchantMarkupBps: -1 })).toThrow(/non-negative/);
   });
 });

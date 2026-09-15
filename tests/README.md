@@ -25,6 +25,7 @@ tests/
     leaf-vault-fixes.test.js        # ToB regression pins — H-3 concurrency, M-1 content gate, M-2 transient-empty, shrink guard, H-2 marker, flush-on-dispose
     leaf-vault-hardening.test.js    # network derivation, identity guard, union rescue, skip accounting, re-arm, dispose races, atomic-writer failures, exports map
     spark-agent-vault.test.js       # SparkAgent vault wiring: opt-out normalization + enabled path
+    wallet-privacy.test.js          # per-wallet privacy: env opt-out, idempotent ensure, echo check, boot wiring warns-not-blocks
     fee-guards.test.js              # Lightning/L402/withdrawal fee + amount ceilings
     withdraw-fee-guard.test.js      # withdraw() fail-closed + feeQuote binding
     recipients-allowlist.test.js    # outbound allowlist guardrail
@@ -35,9 +36,12 @@ tests/
     deposit.test.js                 # static & single-use deposit addresses
     invoice.test.js                 # createSatsInvoice, createLightningInvoice
     message-signing.test.js         # sign/validate against own identity key
+    privacy.test.js                 # fresh wallet public by default → ensureWalletPrivacy flips + persists; public reader gets empty, not error
+    viewer-key.test.js              # grant → echoed → viewer reads with its own seed → revoke clears; second grant replaces
     funded/
       transfer.test.js              # spark-to-spark transfer
       lightning.test.js             # Lightning fee estimate, payment
+      privacy.test.js               # with real sats: private → public/stranger readers see 0; granted viewer sees the balance; revoke/off restore
 ```
 
 The layout mirrors `@buildonspark/spark-sdk/src/tests/integration/` (one file per capability). The SDK targets `Network.LOCAL` because it owns its operator stack; we target `REGTEST` because that is the only hosted network besides MAINNET.

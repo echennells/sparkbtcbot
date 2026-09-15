@@ -19,6 +19,7 @@ import { pathToFileURL } from "node:url";
 import "dotenv/config";
 import { stdout, stderr, exit, env } from "node:process";
 import { saveEncryptedMnemonic, DEFAULT_SEED_PATH, MIN_PASSPHRASE_CHARS } from "../../../lib/encrypted-seed.js";
+import { ensureWalletPrivacy, privacyPreferenceFromEnv } from "../../../lib/wallet-privacy.js";
 import { existsSync, realpathSync } from "node:fs";
 
 const SEED_PATH = env.SPARK_SEED_PATH || DEFAULT_SEED_PATH;
@@ -97,7 +98,8 @@ Options:
   -h, --help    Show this help and exit. No wallet is created.
 
 Environment: SPARK_PASSPHRASE (12+ chars; prompted if unset), SPARK_NETWORK,
-SPARK_SEED_PATH. Reads .env from the current directory.
+SPARK_SEED_PATH, SPARK_PRIVACY (off = leave balance/history publicly readable).
+Reads .env from the current directory.
 `;
 function gateArgs() {
   const args = process.argv.slice(2);
@@ -154,6 +156,22 @@ export async function main() {
     options: { network: NETWORK },
   });
   const address = await wallet.getSparkAddress();
+  // Spark wallets are PUBLICLY readable by default (balance + full history by
+  // address, no auth). Flip the per-wallet privacy setting now, while we have
+  // a live wallet — it persists at the operators, and SparkAgent re-asserts
+  // it on every boot. Best-effort here: setup must still complete (the seed
+  // is what matters), but say so loudly. SPARK_PRIVACY=off opts out.
+  let privacy = "off (SPARK_PRIVACY=off)";
+  if (privacyPreferenceFromEnv()) {
+    try {
+      await ensureWalletPrivacy(wallet);
+      privacy = "enabled (balance/history not publicly readable; token balances still are)";
+    } catch (err) {
+      privacy = `NOT enabled — ${err?.message ?? err}`;
+      info(`\n⚠️  Could not enable wallet privacy: ${err?.message ?? err}`);
+      info("   Balance and transfer history stay publicly readable by address; the agent retries at every boot.");
+    }
+  }
   await wallet.cleanup();
 
   info("\nEncrypting...");
@@ -165,6 +183,7 @@ export async function main() {
   stdout.write(`network:        ${NETWORK}\n`);
   stdout.write(`spark address:  ${address}\n`);
   stdout.write(`encrypted seed: ${SEED_PATH}\n`);
+  stdout.write(`privacy:        ${privacy}\n`);
 
   if (source === "generated") {
     // Do NOT print the mnemonic to stdout (an AI agent invoking setup over the

@@ -83,6 +83,44 @@ describe("leaf-vault-cli arg gate", () => {
   });
 });
 
+describe("viewer arg gate", () => {
+  // No SPARK_PASSPHRASE in any of these: every gate must fire BEFORE the seed
+  // is touched, so a decrypt attempt would surface as a different failure.
+  const noSeed = { SPARK_PASSPHRASE: "", SPARK_SEED_PATH: "/nonexistent/seed.enc" };
+  it("--help prints usage and exits 0", async () => {
+    const r = await exec("viewer-key.js", ["--help"], noSeed);
+    expect(r.code).toBe(0);
+    expect(r.stdout).toMatch(/Usage: sparkbtcbot viewer/);
+  });
+  it("no verb / typo'd verb / stray argument exit 2 with usage", async () => {
+    for (const args of [[], ["grnt"], ["status", "extra"], ["revoke", "now"]]) {
+      const r = await exec("viewer-key.js", args, noSeed);
+      expect(r.code, `args=${args}`).toBe(2);
+      expect(r.stderr).toMatch(/Usage: sparkbtcbot viewer/);
+    }
+  });
+  it("grant validates the key shape before anything else", async () => {
+    for (const bad of [[], ["02ab"], ["04" + "a".repeat(64)], ["zz" + "a".repeat(64)]]) {
+      const r = await exec("viewer-key.js", ["grant", ...bad], noSeed);
+      expect(r.code, `key=${bad}`).toBe(2);
+    }
+  });
+  it("grant with a valid key proceeds to the seed (no TTY wall — a consent step, not a seed-tier ceremony)", async () => {
+    // With no passphrase the next thing it hits is the seed decrypt, which is
+    // the proof the arg gate passed; exit 3 with the old TTY message would be
+    // the regression.
+    const r = await exec("viewer-key.js", ["grant", "02" + "a".repeat(64)], noSeed);
+    expect(r.code).toBe(1);
+    expect(r.stderr).not.toMatch(/interactive terminal/);
+    expect(r.stderr).toMatch(/SPARK_PASSPHRASE|seed/i);
+  });
+  it("balance validates the address shape", async () => {
+    const r = await exec("viewer-key.js", ["balance", "bc1qnotaspark"], noSeed);
+    expect(r.code).toBe(2);
+    expect(r.stderr).toMatch(/does not look like a Spark address/);
+  });
+});
+
 describe("sparkbtcbot dispatcher gate (one argument gate, no default action)", () => {
   it("no command prints the subcommand list and exits 1 — nothing runs by default", async () => {
     const r = await exec("cli.js", []);

@@ -38,6 +38,8 @@ Spark is a Bitcoin Layer 2 that lets you send and receive Bitcoin instantly with
 - **Message Signing** — Prove identity via cryptographic signatures
 - **L402 Paywalls** — Pay-per-request APIs via Lightning. Preview costs, pay invoices, cache tokens.
 - **Merchant Purchases** — Buy real-world goods and services (gift cards via [Bitrefill](https://www.bitrefill.com), eSIMs/VPNs/burner numbers via [nadanada](https://nadanada.me), 10,500+ brands including flights and hotels via [Cryptorefills](https://www.cryptorefills.com)) over Lightning, governed by a shared payment policy: invoice-vs-quote verification, amount ceilings, confirm-before-buy, PII consent, bearer-secret handling. Live-validated with real purchases at all three.
+- **First Spend** — The path for someone who doesn't know Bitcoin: a fiat-denominated Lightning invoice their friend can pay (live rate from two cross-checked sources), then a country-aware gift card sized under the balance with fees counted (`references/first-spend.md`)
+- **Wallet Privacy** — Spark wallets are publicly readable by default (balance + full history by address); setup and every boot enable the per-wallet privacy setting (`SPARK_PRIVACY=off` opts out; token balances stay public)
 - **Unilateral-Exit Backup** — Auto-maintained `spark.unilateral-exit-bundle.v1` recovery bundle, consumed by Blink's [spark-unilateral-exit](https://github.com/blinkbitcoin/spark-unilateral-exit) tool if the operators ever go dark. Verify with `npm run leaf-vault -- verify`.
 
 ## Installation
@@ -77,9 +79,9 @@ const instructions = await getSkillContent();
 // On-demand reference docs by name
 console.log(await listReferences());
 // → ['agent-class', 'architecture', 'bitrefill', 'cryptorefills',
-//    'encrypted-seed', 'extras', 'l402', 'lightning', 'merchant-spending',
-//    'nadanada', 'recovery-scenarios', 'security', 'spark-invoices',
-//    'tokens', 'unilateral-exit', 'wallet']
+//    'encrypted-seed', 'extras', 'first-spend', 'l402', 'lightning',
+//    'merchant-spending', 'nadanada', 'recovery-scenarios', 'security',
+//    'spark-invoices', 'supply-chain', 'tokens', 'unilateral-exit', 'wallet']
 const l402Doc = await getReference("l402");
 ```
 
@@ -110,6 +112,7 @@ npm install --ignore-scripts sparkbtcbot-skill    # once, in your project
 npm exec --no -- sparkbtcbot setup                # one-time wallet bootstrap
 npm exec --no -- sparkbtcbot reveal-mnemonic      # user-run seed backup (refuses non-interactive)
 npm exec --no -- sparkbtcbot leaf-vault verify
+npm exec --no -- sparkbtcbot viewer grant <pubkey> # one read-only key for a private wallet (asks y/N; spark-sdk ≥0.12)
 npm exec --no -- sparkbtcbot help                 # full subcommand list
 ```
 

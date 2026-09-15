@@ -5,14 +5,14 @@
     "url": "https://github.com/echennells"
   },
   "metadata": {
-    "description": "Spark Bitcoin L2 wallet skill for AI agents — encrypted-at-rest seed storage, Lightning interop, L402 paywall payment, BTKN/LRC20 tokens, Spark native invoices",
-    "version": "0.7.0"
+    "description": "A self-custodial Bitcoin wallet for AI agents on the Spark L2 — built like a hot wallet under adversarial input. Encrypted seed at rest, private by default, fee and spend ceilings, a recipient allowlist, payment dedup that makes retries safe, and a continuously fresh unilateral-exit backup so funds survive even if the operators vanish. Instant Spark and Lightning payments, L402 paywalls, BTKN tokens, and guarded real-world purchases (gift cards, eSIMs, top-ups) — including the path for someone who doesn't know Bitcoin: get paid in dollars, cash out to a gift card, no seed-phrase lecture.",
+    "version": "0.8.0"
   },
   "plugins": [
     {
       "name": "sparkbtcbot",
-      "description": "Set up Spark Bitcoin L2 wallet capabilities for AI agents — wallet initialization from BIP39 mnemonic with encrypted-at-rest storage, sats and BTKN/LRC20 token transfers, Lightning invoices (create and pay), Spark native invoices, L402 paywall payment, L1 deposits and cooperative withdrawals, message signing.",
-      "version": "0.7.0",
+      "description": "Give an AI agent its own Bitcoin wallet on Spark — and make it safe to leave running. Receive over Lightning or Spark, pay invoices and L402 paywalls, move BTKN tokens, buy gift cards and eSIMs at Bitrefill, Cryptorefills and nadanada under a quote-verified, confirm-before-buy policy. Security is the product: scrypt+AES seed encryption with a user-only reveal, wallet privacy on by default with optional read-only viewer keys, amount and fee caps, a signed daily spend budget, an outbound allowlist, per-invoice payment dedup, and a leaf-vault recovery bundle for unilateral exit — live-tested on mainnet, audited by Trail of Bits, and locked in with reply-graded evals for the moments real users hit (\"friend owes me $100\", \"how do I get my money out\", \"support wants my recovery words\").",
+      "version": "0.8.0",
       "author": {
         "name": "Eric Chennells",
         "url": "https://github.com/echennells"

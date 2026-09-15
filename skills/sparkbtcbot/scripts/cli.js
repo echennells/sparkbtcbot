@@ -24,6 +24,7 @@ export const COMMANDS = {
   "leaf-vault":      { module: "./leaf-vault-cli.js",       summary: "unilateral-exit recovery bundle: snapshot, or `verify`" },
   "set-policy":      { module: "./set-policy.js",           summary: "bind/change/remove the seed-bound spending budget (operator ceremony)" },
   "reset-ledger":    { module: "./reset-ledger.js",         summary: "write a fresh signed spend ledger — the legitimate reset (operator ceremony)" },
+  "viewer":          { module: "./viewer-key.js",           summary: "read-only access to a PRIVATE wallet without its seed: status, grant, revoke, pubkey, balance" },
 };
 
 export function usage() {

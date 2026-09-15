@@ -1,6 +1,6 @@
 ---
 name: sparkbtcbot
-description: Give an AI agent a self-custodial Bitcoin wallet on the Spark L2. Covers wallet init from a BIP39 mnemonic, zero-fee Spark and BTKN/LRC20 token transfers, Lightning invoices (create and pay), Spark native invoices, L402 paywall payment, L1 deposits and cooperative withdrawals, and message signing. Make sure to use this skill whenever the user wants an AI agent to send or receive Bitcoin/Lightning autonomously, mentions Spark, BTKN, BTC L2, or L402, asks how to give a bot a wallet or pay for API access from code, builds an agent that earns or spends sats, wants an agent to buy real-world goods or services with Bitcoin (gift cards, eSIMs, VPNs, burner numbers — e.g. via Bitrefill, nadanada, or Cryptorefills), sets up a non-custodial wallet for an LLM, or describes any agent that needs to move money on Bitcoin — even if they don't say "Spark" specifically.
+description: Give an AI agent a self-custodial Bitcoin wallet on the Spark L2. Covers wallet init from a BIP39 mnemonic, zero-fee Spark and BTKN/LRC20 token transfers, Lightning invoices (create and pay), Spark native invoices, L402 paywall payment, L1 deposits and cooperative withdrawals, and message signing. Make sure to use this skill whenever the user wants an AI agent to send or receive Bitcoin/Lightning autonomously, mentions Spark, BTKN, BTC L2, or L402, asks how to give a bot a wallet or pay for API access from code, builds an agent that earns or spends sats, wants an agent to buy real-world goods or services with Bitcoin (gift cards, eSIMs, VPNs, burner numbers — e.g. via Bitrefill, nadanada, or Cryptorefills), sets up a non-custodial wallet for an LLM, needs to get paid or settle a debt over Bitcoin/Lightning ("friend owes me $100, he said use sparkbtcbot", "make an invoice for €50"), has sats and asks how to spend, cash out, or "use this" (gift card with Lightning), or describes any agent that needs to move money on Bitcoin — even if they don't say "Spark" specifically.
 argument-hint: "[Optional: specify what to set up - wallet, payments, tokens, lightning, l402, or full]"
 requires:
   env:
@@ -13,22 +13,24 @@ requires:
     - name: SPARK_SEED_PATH
       description: Optional override for the encrypted-seed file location. Defaults to ~/.spark/seed.enc.
     - name: SPARK_LEAF_VAULT
-      description: Set to "off" to disable the automatic recovery-bundle backup (the "leaf-vault" — keeps a fresh spark.unilateral-exit-bundle.v1 bundle for Blink's unilateral-exit recovery tool). On by default.
+      description: Set to "off" to disable the automatic recovery-bundle backup (the "leaf-vault" consumed by Blink's unilateral-exit tool). On by default.
+    - name: SPARK_PRIVACY
+      description: Set to "off" to leave balance and transfer history publicly readable by address (Spark's default). On by default — setup and every boot enable per-wallet privacy.
     - name: SPARK_DAILY_BUDGET_SATS
       description: Opt-in rolling 24-hour cumulative spend budget in sats, enforced across Spark transfers, Lightning pays, Spark-invoice fulfillment, and L1 withdrawals. The one guard that stops a LOOP of individually-valid sends — strongly recommended for any autonomous agent. Unset = no budget.
     - name: SPARK_SPEND_LEDGER_PATH
       description: Optional override for the spend-ledger file backing SPARK_DAILY_BUDGET_SATS. Defaults to ~/.spark/spend-ledger.json.
 model-invocation: autonomous
-model-invocation-reason: This skill enables agents to autonomously send and receive Bitcoin payments. Autonomous invocation is intentional — agents need to pay invoices and respond to incoming transfers without human approval for each transaction. This path is full-custody-once-decrypted with no server-enforced spending caps; bound the blast radius with a dedicated small-float wallet, SPARK_DAILY_BUDGET_SATS, and the recipient allowlist.
+model-invocation-reason: Agents autonomously send and receive Bitcoin — paying invoices and answering incoming transfers without per-transaction human approval is the point. This path is full custody once decrypted, with no server-enforced spending caps; bound the blast radius with a dedicated small-float wallet, SPARK_DAILY_BUDGET_SATS, and the recipient allowlist.
 ---
 
 # Spark Bitcoin L2 for AI Agents
 
-You are an expert in setting up Spark Bitcoin L2 wallet capabilities for AI agents using `@buildonspark/spark-sdk` — and in spending those sats safely at Bitcoin-accepting merchants (see the merchant references and their shared payment policy in the navigator below).
+You are an expert in setting up Spark Bitcoin L2 wallet capabilities for AI agents using `@buildonspark/spark-sdk` — and in spending those sats safely at Bitcoin-accepting merchants (see the merchant references in the navigator below).
 
 > **Read this first — what you're handing an AI agent.** On the direct path, this skill gives an agent **full custody**: it can spend every sat in the wallet, and there is **no per-transaction limit in the SDK** that a buggy or prompt-injected agent can't reach. That's manageable, not scary — but only if you scope it. **Fund a dedicated wallet with an amount you'd be fine losing** (operational float, like cash in your pocket — not a savings account), set `SPARK_DAILY_BUDGET_SATS` to bound the daily damage, and populate the recipient allowlist. If the balance you'd need exceeds what you can afford to lose, this tool alone is not the right custody setup — there is no server-side enforcement on this path. You can't make an LLM immune to a malicious instruction; you *can* make sure a successful one only costs a little. The Custody Model section below and `references/security.md` explain the trade-offs in full.
 
-Spark is a Bitcoin Layer 2 that enables instant, low-fee self-custodial transfers of BTC and tokens, with native Lightning Network interoperability. A single BIP39 mnemonic gives an agent identity, wallet access, and payment capabilities. (Fees, the trust model, and the Spark-vs-Lightning-vs-onchain comparison are covered under **What is Spark** below and in `references/architecture.md`.)
+Spark is a Bitcoin Layer 2 that enables instant, low-fee self-custodial transfers of BTC and tokens, with native Lightning Network interoperability. A single BIP39 mnemonic gives an agent identity, wallet access, and payment capabilities.
 
 ## Custody Model
 
@@ -78,6 +80,7 @@ A Spark wallet can be paid five different ways, and most payers can only use som
 | User's word / situation | Give them | Who can pay it |
 |---|---|---|
 | "invoice", "payment request", or any amount-bearing ask | **BOLT11 Lightning invoice** via `createLightningInvoice` with `includeSparkAddress: true` | Any Lightning wallet (fees on the sender, ~0.15%); Spark wallets pay it free via the embedded fallback |
+| A **fiat** amount ("$100", "€50") — typically a user who doesn't know Bitcoin | Same BOLT11, sized with `fetchBtcPrice` → `fiatToSats`; headline in their currency with **≈** and the rate time, sats in parentheses; paste string always, QR only where the surface renders it | Same as above — `references/first-spend.md` for the wording and the post-receive path |
 | "address" (no amount semantics) | **Bare Spark address** from `getSparkAddress()` | Spark wallets only (incl. Xverse); reusable, amountless, never expires |
 | Payer is known to be another Spark-SDK agent | Native Spark invoice (`createSatsInvoice`) is fine | Only code calling `fulfillSparkInvoice` |
 | Payer is on-chain / amount is large | L1 static deposit address | Any Bitcoin wallet; small amounts are fee-dominated |
@@ -85,6 +88,7 @@ A Spark wallet can be paid five different ways, and most payers can only use som
 Rules:
 
 - **Never hand out a native Spark invoice by default.** It is address-*shaped* (same `spark1…` prefix as a bare address, ~3× longer) but **no consumer wallet can pay it** — only Spark-SDK code via `fulfillSparkInvoice`. Handing one to a human whose wallet is Xverse/Lightning/on-chain produces an unpayable string. This is a real incident, not a hypothetical.
+- **Post-receive "what is this / how do I get my money?" → `references/first-spend.md`, not wallet lore.** Balance in their currency, then a gift card at a store they use, sized under the balance — not a seed phrase, not an L1 exit.
 - "Address **for N sats**" is self-contradictory (addresses are amountless). Give the bare address plus "have the sender send N sats to it", or a BOLT11 for N sats if the payer uses Lightning — never the native invoice.
 - Attach ONE compact alternatives line to whatever you hand out (e.g. "any Lightning wallet can pay this; if the payer is on Spark they can instead send free to your address, and I can give an L1 address for on-chain"). No menu dumps, no interrogation.
 - **Lightning invoice expiry: default 1 hour** (`expirySeconds: 3600`, the wrapper's default). Don't mention the expiry unprompted — but when the user's ask implies a different lifetime ("for my tip page", "valid for a week") or they ask directly, set `expirySeconds` accordingly.
@@ -107,28 +111,17 @@ The full trust model (moment-in-time / forward-security detail, what operators c
 ## Required Libraries
 
 ```bash
-npm install @buildonspark/spark-sdk@^0.11.0 dotenv
+npm install @buildonspark/spark-sdk@^0.12.0 dotenv
 ```
 
 For token issuance (minting new tokens), additionally:
 ```bash
-npm install @buildonspark/issuer-sdk@^0.1.45
+npm install @buildonspark/issuer-sdk@^0.1.48
 ```
 
-The SDK bundles BIP39 mnemonic generation, cooperative signing, and gRPC communication internally.
+### Optional: supply-chain hardening — ONLY when *you* run the install
 
-### Optional: offer supply-chain hardening — ONLY when *you* run the install
-
-This skill owns the **when**, not the settings. It applies in exactly one case: **you (the agent) are running `git clone … && npm install` on the user's behalf** (npm pulls ~160 transitive deps — a real supply-chain surface). It does **not** apply to the Claude plugin path (`plugin marketplace add` / `plugin install` — no dependency install to harden) or to a user running `npm install sparkbtcbot-skill` themselves (their own tooling — out of scope, don't touch it).
-
-In that one case, **ask the user before installing** whether they want npm supply-chain hardening on this install, and offer two ways to apply it:
-- **Persistent** — write the hardening to their `~/.npmrc` (affects all future npm use; get explicit consent since it modifies their profile).
-- **Ephemeral** — the same keys as `NPM_CONFIG_*` environment variables on just this `npm install` (no files written).
-- Or **neither** — a plain `npm install`.
-
-**The settings themselves are NOT defined here — the source of truth is the [`echennells/supply-chain-hardening`](https://github.com/echennells/supply-chain-hardening) repo.** Read its npm config there — the template is `templates/npmrc.j2` (system-wide: `templates/etc-npmrc.j2`), values in `defaults/main.yml`; there is no `.npmrc` at the repo root — and apply those keys/values (they are version-sensitive — e.g. npm's `min-release-age` package cooldown only enforces on npm ≥ 11.10.0; `ignore-scripts` can break native-build deps though it is fine for this skill's pure-JS tree). Do not hard-code or invent a recipe here; if the user already has their own `~/.npmrc` policy, follow it instead of overriding.
-
-**npm version is best-effort, not a gate.** Prefer npm 12+ (disables install scripts by default), accept 11.10.0+ (the age-gate floor), and on older npm **proceed anyway** — tell the user the cooldown won't enforce and lean on `npm ci`/lockfile hardening. **No Node bundles npm 12** (Node 22.x LTS ships npm 10.x): meeting its engines floor (Node 22.22.2+/24.15+; the wallet itself needs only >=20) makes the upgrade possible, not automatic — `npm install -g npm@latest` (needs `sudo` or a user prefix/nvm on system-wide installs), then `npm --version` to confirm. No Node at all → install a current LTS from an official channel; provisioning detail is the hardening repo's job, don't improvise piped-to-root installers. Never block or refuse wallet setup over the npm version; it only hardens the dependency install, not the wallet.
+If you are running `git clone … && npm install` on the user's behalf, load `references/supply-chain.md` first: it says when to offer npm hardening (ask; persistent `~/.npmrc` vs ephemeral `NPM_CONFIG_*`), where the settings live (the `echennells/supply-chain-hardening` repo, never here), and that npm version is best-effort, never a gate on wallet setup. Not applicable to the plugin path or a user's own `npm install`.
 
 ## Setup
 
@@ -236,6 +229,7 @@ Load only what's needed for the user's task. Each reference is a self-contained 
 
 | Reference | Load when |
 |---|---|
+| `references/first-spend.md` | **The product path for a user who doesn't know Bitcoin**: "friend owes me $100, make something they can pay"; "I got paid — what is this / how do I spend it / cash out"; tips, split bills. Fiat-first invoice (live rate via `fetchBtcPrice`), then a country-aware gift card sized under the balance with `maxSpendableFace`. Load BEFORE answering any post-receive "what now" |
 | `references/architecture.md` | User asks how Spark works, weighs against Lightning/on-chain, or reasons about fees |
 | `references/wallet.md` | Sats operations: balance, deposits, transfers, list transfers, withdrawal |
 | `references/lightning.md` | Lightning interop — BOLT11 invoices, payments, fee estimation; the raw-vs-wrapper `payLightningInvoice` shape trap |
@@ -251,13 +245,14 @@ Load only what's needed for the user's task. Each reference is a self-contained 
 | `references/encrypted-seed.md` | Canonical guide to the encrypted-seed file (`~/.spark/seed.enc`): threat model, setup modes, file format, recovery scenarios. Load when configuring a new wallet or troubleshooting load errors. |
 | `references/security.md` | Full operational-security guide: full-custody threat model, protecting the seed/passphrase, sweeping, monitoring, and what the recipient allowlist does and does not bound. |
 | `references/unilateral-exit.md` | Recovering funds to L1 **without operators** — the leaf-vault backup (`scripts/leaf-vault.js`) that keeps a fresh recovery bundle, the exit performed by Blink's `spark-unilateral-exit` tool, CSV timelocks, and caveats. |
+| `references/supply-chain.md` | You are about to run `git clone … && npm install` for the user — whether/how to offer npm supply-chain hardening (settings live in the `echennells/supply-chain-hardening` repo) |
 | `references/recovery-scenarios.md` | Tested recovery behavior + conclusions: stale-backup failure modes, the justice / decrementing-timelock defense (verified on-chain), and what a backup can and cannot recover. |
 
-Runnable example scripts live in `skills/sparkbtcbot/scripts/` (run via `npm run setup`, `npm run example:balance`, `example:payments`, `example:tokens`, `example:agent`, `example:l402`).
+Runnable example scripts live in `skills/sparkbtcbot/scripts/` (run via `npm run example:balance`, `example:payments`, `example:tokens`, `example:agent`, `example:l402`).
 
 ## Security Best Practices
 
-The custody rules above are the core (hot wallet; operational float; never expose mnemonic/passphrase; in-process limits don't survive compromise). Additionally: **separate mnemonic per agent, separate `accountNumber` per wallet, `cleanup()` when done, and sweep earned funds out regularly** (no auto-sweeper ships). Full operational-security guide — threat detail, sweeping patterns, monitoring, allowlist bounds: `references/security.md`.
+The custody rules above are the core (hot wallet; operational float; never expose mnemonic/passphrase; in-process limits don't survive compromise). Additionally: **separate mnemonic per agent, separate `accountNumber` per wallet, `cleanup()` when done, and sweep earned funds out regularly** (no auto-sweeper ships). **Spark wallets are publicly readable by default** (balance + full history, by address); the runtime enables the per-wallet privacy setting — `SPARK_PRIVACY=off` opts out, token balances stay public; `sparkbtcbot viewer` grants one read-only key. Full guide — threat detail, sweeping, monitoring, allowlist bounds, privacy: `references/security.md`.
 
 ## Resources
 

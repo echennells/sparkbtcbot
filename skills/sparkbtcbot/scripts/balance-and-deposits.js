@@ -65,7 +65,11 @@ async function main() {
   if (transfers.length > 0) {
     console.log("\n=== Recent Transfers ===");
     for (const tx of transfers) {
-      console.log(`  ${tx.id}: ${tx.totalValue} sats [${tx.status}]`);
+      // valueReceivedByWallet / valueSentByWallet (SDK >= 0.12) are THIS wallet's
+      // share; the deprecated totalValue is the whole transfer across every
+      // receiver and over-reports on multi-receiver transfers.
+      const sats = tx.valueReceivedByWallet || tx.valueSentByWallet || 0;
+      console.log(`  ${tx.id}: ${sats} sats [${tx.status}]`);
     }
   } else {
     console.log("\nNo transfers yet.");

@@ -28,8 +28,10 @@ lib/
   encrypted-seed.js                   # scrypt + AES-256-GCM seed file helper
   leaf-vault.js                       # SDK-free recovery-bundle persistence + shape validation
   fee-guards.js                       # fee/amount ceilings for sends, claims, withdrawals
+  fiat-rate.js                        # BTC price from mempool.space + Coinbase, cross-checked (the number behind "$100")
   spend-ledger.js                     # rolling-window cumulative budget (bounds send LOOPS)
   transfer-ids.js                     # persisted per-invoice Lightning dedup transferId (safe retries)
+  wallet-privacy.js                   # SDK-free: turn the operators' per-wallet privacy setting on (wallets are public by default)
   recipients-allowlist.js             # opt-in outbound allowlist guardrail
   index.js / index.d.ts               # npm entry (also exports ./leaf-vault subpaths)
 skills/
@@ -38,19 +40,22 @@ skills/
     references/                       # Detail loaded on demand (SDK API, agent class, L402, etc.)
       encrypted-seed.md               # Threat model, setup modes, recovery
       unilateral-exit.md              # The leaf-vault backup + Blink's exit tool
+      first-spend.md                  # The product path: fiat invoice for a newbie → country-aware gift card sized under the balance
+      supply-chain.md                 # When/how to offer npm hardening (moved out of SKILL.md for the size ratchet)
       recovery-scenarios.md           # Recovery properties (staleness, justice, economics)
     scripts/                          # Runnable example scripts
       cli.js                          # `sparkbtcbot <command>` — the single published bin (dispatcher)
       setup-encrypted-seed.js         # `npm run setup` — one-time bootstrap
       leaf-vault.js                   # snapshotLeafVault / verifyVault / enableLeafVault (library)
       leaf-vault-cli.js               # `npm run leaf-vault [-- verify]` — snapshot/verify CLI
+      viewer-key.js                   # `sparkbtcbot viewer` — read-only access to a private wallet: status/grant(y/N)/revoke/pubkey/balance
       balance-and-deposits.js
       payment-flow.js
       token-operations.js
       spark-agent.js
       l402-paywalls.js
     evals/                            # Skill-quality evals (does the skill make Claude produce correct/safe code?)
-      evals.json                      # Output evals: SDK-correctness + security-behavior, with checkable assertions
+      evals.json                      # Output evals: SDK-correctness + security-behavior + user-story (graded on the reply), with checkable assertions
       trigger-eval.json               # Description-triggering queries (see NOTES: not measurable via claude -p here)
       NOTES.md                        # How to run (subagent output evals, with-skill vs baseline) + last results
 tests/                                # vitest suite for the LIBRARY code (unit, integration, funded tiers)
@@ -81,6 +86,7 @@ SPARK_PASSPHRASE=<at least 12 chars — decrypts ~/.spark/seed.enc at boot>
 SPARK_NETWORK=MAINNET
 # SPARK_SEED_PATH=/custom/path/seed.enc   # optional override
 # SPARK_LEAF_VAULT=off                    # opt out of the automatic recovery-bundle backup
+# SPARK_PRIVACY=off                       # leave balance/history publicly readable by address (Spark's default)
 # SPARK_LEAF_VAULT_PATH=/custom/path.json # recovery-bundle location (default ~/.spark/leaf-vault/current.json)
 # SPARK_DAILY_BUDGET_SATS=50000           # opt-in rolling-24h cumulative spend budget (bounds send loops)
 # SPARK_SPEND_LEDGER_PATH=/custom/path    # spend-ledger location (default ~/.spark/spend-ledger.json)
@@ -91,5 +97,7 @@ SPARK_NETWORK=MAINNET
 ## Security Note
 
 The mnemonic is encrypted at rest in `~/.spark/seed.enc` (scrypt + AES-256-GCM). The runtime reads `SPARK_PASSPHRASE` from env and decrypts at boot — there is no plaintext-mnemonic-in-`.env` path. Both passphrase and seed file together grant full wallet access (no permission scoping like NWC). Use dedicated wallets with limited funds for agents.
+
+Spark wallets are **publicly readable by default** (anyone with the address can query balance and full transfer history, no auth). Setup and every `SparkAgent` boot enable the operators' per-wallet privacy setting via `lib/wallet-privacy.js`; `SPARK_PRIVACY=off` opts out. Token balances and Spark invoices are not covered by that setting — see `references/security.md` → Wallet privacy.
 
 Fresh-wallet setup does **not** print the new mnemonic to stdout (which a Bash-invoked setup captures into the agent's transcript) and does **not** write a plaintext backup file — the words live only inside the encrypted `seed.enc`. To back up offline, the **user** runs `npm run reveal-mnemonic` in their **own** terminal; it decrypts and prints the words on demand and refuses to run non-interactively so an agent can't capture it. The agent does not run it unless the user explicitly asks. See SKILL.md for full security guidance.

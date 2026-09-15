@@ -102,5 +102,37 @@
   {
     "query": "best burner phone number app for iphone, want to pay with apple pay",
     "should_trigger": false
+  },
+  {
+    "query": "My friend owes me $100 and said to use sparkbtcbot — make something he can pay",
+    "should_trigger": true
+  },
+  {
+    "query": "Make me an invoice for €50 my coworker can pay with his Bitcoin app",
+    "should_trigger": true
+  },
+  {
+    "query": "I got paid some bitcoin through my bot, how do I actually use it / cash out?",
+    "should_trigger": true
+  },
+  {
+    "query": "Can I buy a gift card with Lightning from my agent's balance?",
+    "should_trigger": true
+  },
+  {
+    "query": "My friend owes me $100, remind him tomorrow",
+    "should_trigger": false
+  },
+  {
+    "query": "Split this restaurant bill four ways and tell me what everyone owes",
+    "should_trigger": false
+  },
+  {
+    "query": "How do I cash out my Robinhood account?",
+    "should_trigger": false
+  },
+  {
+    "query": "Buy me an Amazon gift card with my credit card",
+    "should_trigger": false
   }
 ]

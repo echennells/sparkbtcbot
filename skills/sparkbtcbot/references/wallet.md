@@ -116,7 +116,12 @@ Spark-to-Spark transfers are instant and zero-fee.
 ```javascript
 const { transfers } = await wallet.getTransfers(10, 0); // limit, offset
 for (const tx of transfers) {
-  console.log(`${tx.id}: ${tx.totalValue} sats — ${tx.status}`);
+  // valueReceivedByWallet / valueSentByWallet (SDK ≥0.12) are THIS wallet's share of a
+  // transfer; `totalValue` is deprecated — the whole transfer across every receiver.
+  // Both derive from leaves the operators return under include_all_participants; an
+  // operator too old to honor the flag projects the transfer down to this wallet and
+  // valueSentByWallet silently under-reports (the response is indistinguishable).
+  console.log(`${tx.id}: ${tx.valueReceivedByWallet || tx.valueSentByWallet} sats — ${tx.status}`);
 }
 ```
 

@@ -19,9 +19,9 @@ console.log("BOLT11:", invoiceRequest.invoice.encodedInvoice);
 
 Pass `includeSparkAddress: true` to embed a Spark address in the invoice's route hints. Spark-aware payers will then route via Spark (instant, free) instead of Lightning (0.15% + routing).
 
-Mind the expiry divergence: the **raw SDK's default `expirySeconds` is 30 days** (`3600 * 24 * 30`, verified in source through 0.11.0), while the `SparkAgent` wrapper pins 1 hour. An agent calling the raw wallet without `expirySeconds` hands out a month-lived invoice — pass it explicitly, as the example above does.
+Mind the expiry divergence: the **raw SDK's default `expirySeconds` is 30 days** (`3600 * 24 * 30`, verified in source through 0.12.0), while the `SparkAgent` wrapper pins 1 hour. An agent calling the raw wallet without `expirySeconds` hands out a month-lived invoice — pass it explicitly, as the example above does.
 
-As of SDK 0.10 a receive can pin the SSP's fee up front instead of trusting the worst-case figure: `getLightningReceiveQuote({ amountSats })` returns a signed fee manifest, passed back verbatim via `createLightningInvoice({ ..., quote })`. Without a partner JWT the quote comes back feeless (`attributionStatus` says why). Mind one asymmetry: a NET-basis quote issues the invoice for the manifest's *gross*, which can exceed the `amountSats` you asked for whenever a markup applies.
+Lightning receives are **fee-free for the receiver** — the signing operators refuse any fee on a receive preimage swap and release the preimage shares only against a transfer worth at least the invoice you deposited, so the full invoice amount lands. `getLightningReceiveQuote` (SDK ≥0.10) is not a fee *defence*; it is how a **Lightspark partner** holding a partner JWT adds a signed, receiver-consented markup to an invoice (`createLightningInvoice({ ..., quote })`). Without a JWT it returns a feeless manifest and the invoice is identical to an unquoted one, and on SDK 0.12 it throws on MAINNET unless the wallet was initialized with `sspClientOptions: { schemaEndpoint: MANIFEST_SCHEMA_ENDPOINT }`. Don't call it by default. If a user wires in a partner JWT, the agent's signature on the quote is the only consent in the flow (the payer never sees the fee — a NET-basis quote just issues a larger invoice), so never sign a quote whose `manifest.fees` is non-empty unless the user explicitly opted into that fee.
 
 ## Pay Lightning Invoice (Send)
 
@@ -53,7 +53,7 @@ For zero-amount invoices, also pass `amountSats`.
 > await agent.payLightningInvoice("lnbc...", { maxFeeSats: 30 });           // wrapper: bare BOLT11 string + options
 > ```
 >
-> A bare string at the **raw** layer crashes with the opaque `Cannot read properties of undefined (reading 'toLowerCase')` — the SDK destructures its argument with no validation (verified through 0.11.0), so the string becomes `invoice: undefined` and dies on the first line. **If you see that exact error from `payLightningInvoice`, this mis-shape is the cause.** It throws before any payment request leaves the process, so the invoice is **unpaid** — re-calling with the correct shape is safe and is not a double-pay risk. The reverse mix-up (`agent.payLightningInvoice({ invoice })`) fails loud: the wrapper throws a `TypeError` naming both shapes.
+> A bare string at the **raw** layer crashes with the opaque `Cannot read properties of undefined (reading 'toLowerCase')` — the SDK destructures its argument with no validation (verified through 0.12.0), so the string becomes `invoice: undefined` and dies on the first line. **If you see that exact error from `payLightningInvoice`, this mis-shape is the cause.** It throws before any payment request leaves the process, so the invoice is **unpaid** — re-calling with the correct shape is safe and is not a double-pay risk. The reverse mix-up (`agent.payLightningInvoice({ invoice })`) fails loud: the wrapper throws a `TypeError` naming both shapes.
 
 ```javascript
 const result = await wallet.payLightningInvoice({

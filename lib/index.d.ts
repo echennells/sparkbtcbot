@@ -363,6 +363,109 @@ export function createSpendLedger(options?: {
 /** Write a fresh EMPTY signed ledger — the legitimate reset that replaces `rm`. */
 export function initSignedLedger(options: { path?: string; hmacKey: Buffer }): Promise<string>;
 
+// --- Spend-side sizing: the largest gift-card face a balance can pay for ---
+
+export interface MaxSpendableFaceOptions {
+  availableSats: number;
+  /** BTC price in the merchant's fiat (from fetchBtcPrice). */
+  pricePerBtc: number;
+  /** Merchant markup over face, in basis points. Default 200 (2%). */
+  merchantMarkupBps?: number;
+  /** Sats to leave untouched. Default 100. */
+  slackSats?: number;
+  /** Fixed packs the product sells (e.g. [5, 10, 20, 50, 100]). Mutually exclusive with range. */
+  denominations?: number[];
+  /** Custom-amount product bounds. Mutually exclusive with denominations. */
+  range?: { min: number; max: number; step?: number };
+}
+
+export interface MaxSpendableFaceResult {
+  /** Face value to ask the merchant for, or null when nothing fits (see reason). */
+  face: number | null;
+  reason?: string;
+  rawFace?: number;
+  breakdown: Record<string, number>;
+}
+
+/** Largest face value whose marked-up invoice + Lightning fee + slack fits the balance, snapped to what the product sells. */
+export function maxSpendableFace(options: MaxSpendableFaceOptions): MaxSpendableFaceResult;
+
+// --- Fiat rate: BTC price from two keyless sources, cross-checked ---
+
+export interface PriceSource {
+  name: string;
+  url(currency: string): string;
+  parse(json: unknown, currency: string, ctx: { now: number; maxAgeMs: number }): { price: number; at: number };
+}
+
+export interface BtcPrice {
+  currency: string;
+  /** Mean of the agreeing sources (or the single answering source). */
+  price: number;
+  /** Epoch ms of the oldest answering source's timestamp. */
+  at: number;
+  sources: Array<{ name: string; price: number; at: number }>;
+  failed: Array<{ name: string; error: string }>;
+  singleSource: boolean;
+  disagreementBps: number | null;
+}
+
+export const DEFAULT_PRICE_SOURCES: PriceSource[];
+
+/**
+ * Query mempool.space and Coinbase in parallel. Throws when no source answers
+ * or when two answers disagree by more than maxDisagreementBps (default 300).
+ */
+export function fetchBtcPrice(options?: {
+  currency?: string;
+  fetch?: typeof fetch;
+  sources?: PriceSource[];
+  timeoutMs?: number;
+  maxAgeMs?: number;
+  maxDisagreementBps?: number;
+  now?: number;
+}): Promise<BtcPrice>;
+
+/** Whole sats for a fiat amount at a BTC price (nearest sat). */
+export function fiatToSats(amountFiat: number | string, pricePerBtc: number | string): number;
+/** Fiat value of a sats amount at a BTC price. */
+export function satsToFiat(sats: number | bigint, pricePerBtc: number | string): number;
+/** One-line, honest description of a rate: "76,764 USD/BTC (mempool.space + coinbase, 2026-09-15 12:04 UTC)". */
+export function describeRate(rate: BtcPrice, options?: { locale?: string }): string;
+
+// --- Wallet privacy (Spark wallets are publicly readable by default) ---
+
+/** The SDK's WalletSettings, as returned by getWalletSettings()/setPrivacyEnabled(). */
+export interface WalletSettingsLike {
+  ownerIdentityPublicKey: string;
+  privateEnabled: boolean;
+  /** Identity key granted read-only access while private (spark-sdk >= 0.12). */
+  viewerIdentityPublicKey?: string;
+}
+
+/** The two wallet methods ensureWalletPrivacy needs (a SparkWallet satisfies this). */
+export interface PrivacyCapableWallet {
+  getWalletSettings(): Promise<WalletSettingsLike | undefined>;
+  setPrivacyEnabled(enabled: boolean): Promise<WalletSettingsLike | undefined>;
+}
+
+/**
+ * True unless SPARK_PRIVACY is "off" | "false" | "0" | "no" (case-insensitive).
+ * Unset or unrecognised means ON.
+ */
+export function privacyPreferenceFromEnv(env?: NodeJS.ProcessEnv): boolean;
+
+/**
+ * Read the wallet's per-identity privacy setting at the operators and set it to
+ * `enabled` (default true) if it differs. Idempotent. Throws on an unknown
+ * option, a wallet without the SDK >= 0.11 methods, or a write the operators
+ * did not record.
+ */
+export function ensureWalletPrivacy(
+  wallet: PrivacyCapableWallet,
+  options?: { enabled?: boolean },
+): Promise<{ changed: boolean; settings: WalletSettingsLike | undefined }>;
+
 // --- Skill-content helpers (for non-Claude LLM frameworks) ---
 
 /** Absolute path to the bundled SKILL.md inside this npm package. */

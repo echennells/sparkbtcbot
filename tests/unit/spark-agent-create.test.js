@@ -28,14 +28,18 @@ describe("SparkAgent.create missing-mnemonic guard", () => {
 // this plumbing would re-expose every one-shot value-mover to the race.
 describe("SparkAgent.create leaf-optimization plumbing", () => {
   const origVault = process.env.SPARK_LEAF_VAULT;
+  const origPrivacy = process.env.SPARK_PRIVACY;
   afterEach(() => {
     vi.restoreAllMocks();
     if (origVault === undefined) delete process.env.SPARK_LEAF_VAULT;
     else process.env.SPARK_LEAF_VAULT = origVault;
+    if (origPrivacy === undefined) delete process.env.SPARK_PRIVACY;
+    else process.env.SPARK_PRIVACY = origPrivacy;
   });
 
   const initOptions = async (createArgs) => {
     process.env.SPARK_LEAF_VAULT = "off"; // skip vault so a bare fake wallet suffices
+    process.env.SPARK_PRIVACY = "off"; // likewise the privacy self-heal (pinned in wallet-privacy.test.js)
     const spy = vi.spyOn(SparkWallet, "initialize").mockResolvedValue({ wallet: {}, mnemonic: undefined });
     await SparkAgent.create(...createArgs);
     return spy.mock.calls[0][0].options;

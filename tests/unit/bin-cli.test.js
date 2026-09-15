@@ -37,9 +37,9 @@ describe("published CLI (plugin-path lifeline)", () => {
     await access(join(ROOT, "stub/sparkbtcbot/cli.js"));
   });
 
-  it("dispatcher covers the five ceremonies", () => {
+  it("dispatcher covers the five ceremonies plus viewer", () => {
     expect(Object.keys(COMMANDS).sort()).toEqual(
-      ["leaf-vault", "reset-ledger", "reveal-mnemonic", "set-policy", "setup"],
+      ["leaf-vault", "reset-ledger", "reveal-mnemonic", "set-policy", "setup", "viewer"],
     );
   });
 
