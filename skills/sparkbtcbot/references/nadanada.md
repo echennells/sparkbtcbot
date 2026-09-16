@@ -19,7 +19,7 @@ No accounts anywhere, no API key, no OAuth, no cart: purchase endpoints return a
 2. **Pay the BOLT11 from Spark** — guard first (below).
 3. **Complete** — eSIM: `POST /api/v2/esim/complete` with `paymentHash` **or `checkoutId`** (either handle works — verified 2026-08-05; both return 402 while unpaid), documented idempotent. VPN: see the one-shot warning below.
 
-Catalog/pricing lookups are unauthenticated GETs; rental-phone tools (only — see phone note below) also live on a keyless MCP endpoint (`https://mcp.nadanada.me/mcp`).
+Catalog/pricing lookups are unauthenticated GETs; rental-phone tools (only — see phone note below) also live on a keyless MCP endpoint (`https://mcp.nadanada.me/mcp`). If you reach the v2 REST API with `curl` rather than their MCP, the product ids, country codes and order ids you splice into the URL or body are merchant-returned strings: validate (`^[A-Za-z0-9._-]+$`, ISO country codes) and pass as argv / `--data @file`, never interpolated (`merchant-spending.md` §1a).
 
 ## Paying — guard first
 
