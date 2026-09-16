@@ -9,6 +9,7 @@
 
 ### Changed
 
+- `references/l402.md`: the providers table is now a directory guide (verified 2026-09-16) — Satring (`satring.com/api/v1`, 58 live L402 services with sats pricing and verification; service details are themselves L402-gated at 100 sats, a real first spend for `fetchL402`) and 402 Index (~177 verified L402 among a mostly-x402 index, MCP-only). Sulu removed (host no longer resolves); the faucet relabeled as a demo; `awesome-lnurl` and Lightning Labs' `l402.tech` kept for reference with the note that their tooling assumes an `lnd` node. Adds the rule to `curl -sI` for a 402 before promising a listing, and the funnel-user line: L402 is where an agent spends on APIs, not where a person's $0.28 goes.
 - User-story evals judge wallet lore by position and role (leads / recommended / more than a sentence), not by keyword, and require decision-trace evidence behind any "I'll size it and confirm" promise; NOTES.md records the grading rules and the two false fails that motivated them.
 - Dev toolchain: vitest 4.1.11 (dev-only advisory); the Nix flake derives its dependency closure from `package-lock.json` via `importNpmLock` (no `npmDepsHash` to maintain) and is built in CI on every lockfile change.
 
