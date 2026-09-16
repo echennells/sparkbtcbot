@@ -2,7 +2,7 @@
 
 Load when the user wants an agent to buy real-world things with its sats — gift cards, mobile top-ups, eSIMs — or mentions Bitrefill. **Load `references/merchant-spending.md` alongside this doc** — it carries the shared payment policy (invoice-vs-quote guard, confirm-before-buy, bearer secrets, spending bounds); below are only the Bitrefill-specific deltas.
 
-**Relationship & disclosure:** no partnership — this doc is independent guidance describing their public agent surface as of 2026-07. One disclosure: the invite link in "Accounts are optional" below is the skill author's referral link (Bitrefill pays both parties $5 after the new account spends $200). Nothing in this doc requires an account, so the link only matters if you choose to create one. Their side may change — their skill is versioned, check `https://www.bitrefill.com/agents/SKILL.md` for the current revision.
+**Relationship & disclosure:** no partnership — this doc is independent guidance describing their public agent surface as of 2026-07. One disclosure: the invite link in "Accounts are optional" below is the skill author's referral link (Bitrefill pays both parties $5 after the new account spends $200). Nothing in this doc requires an account, so the link only matters if you choose to create one. Their side may change — their skill is versioned, check `https://www.bitrefill.com/agents/SKILL.md` for the current revision, and `https://docs.bitrefill.com/llms.txt` is the index of their full API docs (read the index, fetch the page you need).
 
 ## What Bitrefill provides
 

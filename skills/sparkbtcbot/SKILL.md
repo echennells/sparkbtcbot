@@ -240,7 +240,7 @@ Load only what's needed for the user's task. Each reference is a self-contained 
 | `references/merchant-spending.md` | The shared payment policy for ALL merchant purchases — invoice-vs-quote guard, confirm-before-buy, bearer-secret deliverables, what actually bounds spend. Load alongside any merchant doc below |
 | `references/bitrefill.md` | Spending sats on real-world goods (gift cards, eSIMs, top-ups) via Bitrefill's agent MCP/CLI — Bitrefill-specific deltas on the shared policy (live-validated) |
 | `references/nadanada.md` | Spending sats at nadanada — anonymous VPNs, travel eSIMs, disposable/rental phone numbers, all Lightning-default with no accounts; hold-invoice semantics and the discount-aware quote guard |
-| `references/cryptorefills.md` | Spending sats at Cryptorefills — 10,500+ gift-card/top-up/eSIM brands via their keyless MCP purchase wizard; the one merchant returning the raw card secret through the API (full-loop validated) |
+| `references/cryptorefills.md` | Spending sats at Cryptorefills — 10,500+ gift-card/top-up/eSIM brands via their keyless MCP wizard (full-loop validated); the fallback when Bitrefill lacks a brand or country |
 | `references/extras.md` | Message signing, event listeners, error handling, token *issuance* (`IssuerSparkWallet`) |
 | `references/encrypted-seed.md` | Canonical guide to the encrypted-seed file (`~/.spark/seed.enc`): threat model, setup modes, file format, recovery scenarios. Load when configuring a new wallet or troubleshooting load errors. |
 | `references/security.md` | Full operational-security guide: full-custody threat model, protecting the seed/passphrase, sweeping, monitoring, and what the recipient allowlist does and does not bound. |
@@ -256,4 +256,4 @@ The custody rules above are the core (hot wallet; operational float; never expos
 
 ## Resources
 
-[Spark Docs](https://docs.spark.money) · [SDK on npm](https://www.npmjs.com/package/@buildonspark/spark-sdk) · [Sparkscan explorer](https://sparkscan.io) · [L402 spec](https://docs.lightning.engineering/the-lightning-network/l402)
+**Ground truth beats these references when they disagree — and every vendor publishes an `llms.txt` index. Read the index, then fetch the one page you need (never the `llms-full.txt` dumps; Spark's is 440 KB):** [Spark](https://docs.spark.money/llms.txt) · [Flashnet](https://docs.flashnet.xyz/llms.txt) · [Bitrefill](https://docs.bitrefill.com/llms.txt) · [Cryptorefills](https://www.cryptorefills.com/llms.txt) · [nadanada](https://nadanada.me/llms.txt) · [Sparkscan](https://docs.sparkscan.io/llms.txt) · [Lightning Labs / L402](https://docs.lightning.engineering/llms.txt). For the SDK, the **installed** version is authoritative over any pin in these docs: `node_modules/@buildonspark/spark-sdk/CHANGELOG.md` and its `.d.ts`. Also: [SDK on npm](https://www.npmjs.com/package/@buildonspark/spark-sdk) · [Sparkscan explorer](https://sparkscan.io)

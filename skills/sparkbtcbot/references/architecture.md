@@ -93,5 +93,7 @@ Exiting Spark to L1 Bitcoin carries **unpredictable costs** that agents and user
 |------|---------|-----|
 | Spark SDK | TypeScript wallet SDK | https://www.npmjs.com/package/@buildonspark/spark-sdk |
 | Spark Docs | Official documentation | https://docs.spark.money |
-| Sparkscan | Block explorer | https://sparkscan.io |
+| Sparkscan | Block explorer | https://sparkscan.io (API docs index: https://docs.sparkscan.io/llms.txt) |
+| Spark docs index | `llms.txt` — the entry point for anything these references don't cover; read it, then fetch one page | https://docs.spark.money/llms.txt |
+| Flashnet docs index | AMM, USDB, Orchestra | https://docs.flashnet.xyz/llms.txt |
 | Spark CLI | Command-line interface | https://docs.spark.money/tools/cli |
