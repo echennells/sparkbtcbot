@@ -46,3 +46,8 @@ jobs:
 
       - name: Smoke the built CLI
         run: ./result/bin/sparkbtcbot help
+
+      # Runs checks.unit-tests: tests/unit inside the Nix sandbox (no network,
+      # pinned toolchain). Not part of `nix build` on purpose — see flake.nix.
+      - name: Run the flake checks
+        run: nix flake check --print-build-logs
