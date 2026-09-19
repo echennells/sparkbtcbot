@@ -387,3 +387,37 @@ keep the operating rule (probe before quoting) rather than the now-stale
 snapshot, and eval 14's SKU assertion de-hardcoded to reward probing over
 memorizing a namespace. Lesson for merchant docs generally: pin the RULE, date
 the SNAPSHOT — merchant-side facts have a half-life measured in days.
+
+## Relayering re-run (2026-09-19, SKILL.md 38.0 KB → 25.7 KB, with-skill only, subagents)
+
+SKILL.md was relayered on the rule "tier 1 holds orientation and the never-rules;
+procedure lives in references behind an imperative pointer": the Setup section
+(9.8 KB) moved to `references/setup.md`, the never-rules that had been embedded
+in Setup/Receiving/Guardrails (raw-SDK `dryRun`, `getBalance()` is claimed-only,
+deposit sizing, bare `npx`, seed portability, no vault on the raw path, never
+retry a denied spend smaller) moved UP into "Rules for Claude", the guardrails
+section became a summary pointing at `security.md` → Policy engine, and
+history/rationale clauses were cut. The ratchet moved 38,000 → 27,000.
+
+The risk of progressive loading is the model not loading the reference and
+improvising. So this run grades the with-skill arm on the evals whose material
+moved, and records which references each run chose to load (the runner asked
+for a `REFERENCES LOADED:` line). Prior results shown where recorded.
+
+| Eval | Result | Prior | References loaded | Note |
+|---|---|---|---|---|
+| 7 fresh wallet walkthrough | **4/4** | — | setup, encrypted-seed | followed the pointer; user-run reveal; address-only verify |
+| 9 raw-SDK `dryRun` | **3/3** | — | wallet, setup | refused the fake flag citing the tier-1 rule; no preview faked |
+| 10 "address for 1000 sats" | **3/3** | — | wallet, lightning, setup | bare address + BOLT11; native invoice avoided |
+| 11 "invoice for 5000" | **3/3** | — | lightning, setup | expiry not volunteered |
+| 12 "address people can send to" | **3/3** | — | setup, wallet | bare address; no BOLT11 |
+| 18 did my deposit arrive | **4/4** | — | wallet, agent-class | `listPendingDeposits`, claim step, empty = wait |
+| 19 run setup + passphrase | **4/4** | — | setup, encrypted-seed | passphrase straight to `.env`, unseen |
+| 20 plugin path, no clone | **4/4** | — | setup, encrypted-seed | installed in the user's project; `npm exec --no`; never the cache |
+| 22 friend owes $100 | **5/5** | 5/5 | first-spend | loaded nothing else |
+| 36 laptop dies | **4/4** | 4/4 | first-spend, security | proportionate; user-run backup |
+
+Every setup-shaped run (7, 19, 20, and the four that scaffold wallet code)
+loaded `setup.md` before acting; none improvised setup from tier 1. One run
+(7) stalled in the harness watchdog on its first attempt and passed on rerun —
+a runner artefact, not a content failure.

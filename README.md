@@ -81,7 +81,7 @@ console.log(await listReferences());
 // → ['agent-class', 'architecture', 'bitrefill', 'cryptorefills',
 //    'encrypted-seed', 'extras', 'first-spend', 'l402', 'lightning',
 //    'merchant-spending', 'nadanada', 'recovery-scenarios', 'security',
-//    'spark-invoices', 'supply-chain', 'tokens', 'unilateral-exit', 'wallet']
+//    'setup', 'spark-invoices', 'supply-chain', 'tokens', 'unilateral-exit', 'wallet']
 const l402Doc = await getReference("l402");
 ```
 

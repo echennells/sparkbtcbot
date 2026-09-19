@@ -14,9 +14,13 @@ import { fileURLToPath } from "node:url";
 
 const SKILL = join(dirname(fileURLToPath(import.meta.url)), "../../skills/sparkbtcbot/SKILL.md");
 
-// Current size ~35.9KB (~9.0k tokens). Cap set with ~6% headroom for normal
-// editing churn — raising it is a deliberate act, not a drive-by.
-const MAX_BYTES = 38_000;
+// The layering rule the cap enforces: SKILL.md holds ORIENTATION (custody
+// model, the never-rules, the navigator); PROCEDURE (commands, code, option
+// tables, step lists) lives in references/ behind an imperative pointer. The
+// 2026-09-19 relayering moved Setup out on that rule (~38.0 KB -> ~25.7 KB).
+// Cap set with ~5% headroom for normal editing churn — raising it is a
+// deliberate act, not a drive-by, and "it's procedure" is never the reason.
+const MAX_BYTES = 27_000;
 
 describe("SKILL.md size ratchet", () => {
   it(`always-loaded body stays under ${MAX_BYTES} bytes (one in, one out)`, async () => {
