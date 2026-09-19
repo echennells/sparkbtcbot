@@ -81,11 +81,17 @@ The script verifies by initializing a wallet from the encrypted seed and printin
 
 The guard files are agent-writable — `rm ~/.spark/spend-ledger.json` used to silently restore the full daily budget, and truncating it to an empty ledger was the smarter version of the same attack. Binding the policy to the seed closes that class:
 
-- **The policy lives inside the encrypted payload.** `npx sparkbtcbot set-policy` (user-run, TTY-gated, needs the passphrase) rewrites `seed.enc` as **v2**: the ciphertext holds `{ mnemonic, policy: { dailyBudgetSats } }`. It inherits the seed's protections — reading needs the passphrase, tampering fails the GCM tag, and deleting it deletes the wallet. The agent can't remove the budget without removing the money. A seed-bound budget **wins over `SPARK_DAILY_BUDGET_SATS` absolutely** (the env var is agent-writable; the boot warns if they disagree).
+- **The policy lives inside the encrypted payload.** `npx sparkbtcbot set-policy` (user-run, TTY-gated, needs the passphrase) rewrites `seed.enc` as **v2**: the ciphertext holds `{ mnemonic, policy }`, where `policy` is `{ dailyBudgetSats, maxPerTxSats, allowedOps, allowedRecipients, expiresAt, exec: { path, sha256 } }` — every key optional, unknown keys refused at boot (`lib/policy.js`; what each rule bounds and the fail-closed table: `references/security.md` → Policy engine). It inherits the seed's protections — reading needs the passphrase, tampering fails the GCM tag, and deleting it deletes the wallet. The agent can't remove the budget without removing the money. A seed-bound budget **wins over `SPARK_DAILY_BUDGET_SATS` absolutely** (the env var is agent-writable; the boot warns if they disagree). `set-policy` alone edits the budget and preserves the other rules; `set-policy --file policy.json` seals the whole object (and pins `exec.path`'s sha256 from the file on disk); `set-policy --show` prints the current one. Changing the budget resets the signed ledger; changing any other rule leaves it alone.
 - **The ledger becomes HMAC-signed.** The signing key derives from the mnemonic via HKDF (its own context — never the AES key). Under a bound policy: missing ledger → throws; unsigned/replaced ledger → throws; edited entries → signature fails → throws. The legitimate reset is `npx sparkbtcbot reset-ledger` — it needs the passphrase, which is exactly what lets the code tell reset from attack (previously `rm` was both).
 - **v1 files are unchanged.** No policy → setup keeps writing v1, env-var budget semantics apply, the ledger stays unsigned. Nothing changes for wallets that don't opt in.
 
 **Honest limits** (the bar moves from `rm` to code execution — not to impossibility): an agent steered into *executing code* can re-derive the key or rebuild an unbound seed (it holds passphrase + mnemonic in-process); **replay** — restoring a snapshotted, validly-signed old ledger — rolls the window back and is undefendable client-side; and guards only bind wrapper calls (raw SDK calls bypass them). The funded balance remains the only cap that survives everything.
+
+## Changing the passphrase (`sparkbtcbot rekey`)
+
+`npx sparkbtcbot rekey` (user-run, TTY-gated; `--generate` mints a random 24-character passphrase and shows it once) decrypts `seed.enc` under the current passphrase — typed, never read from `.env` — and re-encrypts the same mnemonic and the same sealed policy under the new one with a fresh salt and IV, atomically. Nothing else under `~/.spark` is passphrase-bound: the spend ledger's HMAC key and the leaf-vault derive from the *mnemonic*, so the seed file is the whole job. Afterwards update `SPARK_PASSPHRASE` everywhere it is stored (`.env`, `SPARK_PASSPHRASE_FILE`, systemd/Docker secrets, a hosted deploy's secret) and boot the agent once. Use it when the **passphrase** leaked and the file stayed put. It does not protect copies: every backup or synced copy of the old `seed.enc` still opens with the old passphrase — if the *file* may have been copied, or you can't say which leaked, the answer is a new wallet (sweep and retire), not a new passphrase.
+
+**Passphrase from a file.** `SPARK_PASSPHRASE_FILE=/run/secrets/spark` reads the passphrase from a file (trailing newline stripped) instead of the environment — what systemd `LoadCredential` and Docker/Kubernetes secrets hand you, and the option that never appears in `/proc/[pid]/environ` or a child process's inherited env. `SPARK_PASSPHRASE`, if also set, wins.
 
 ## Seed compatibility — not all "Spark wallets" derive the same keys
 
@@ -121,6 +127,8 @@ The decrypt happens once at boot (~250ms scrypt). After that, performance is ide
 | Scenario | What's needed | Action |
 |---|---|---|
 | Lose passphrase | Mnemonic backup | Re-run setup with `--import`, paste mnemonic, choose new passphrase |
+| Passphrase leaked, file intact | Passphrase + `seed.enc` | `sparkbtcbot rekey`, then update it everywhere it's stored |
+| `seed.enc` / a backup / the words leaked | Passphrase + `seed.enc` | `sparkbtcbot rotate --execute` — sweep to a fresh seed; the old one is kept under `~/.spark/retired/` (`references/security.md` → Rekey vs. rotate) |
 | Lose `seed.enc` | Mnemonic backup | Re-run setup with `--import`, paste mnemonic |
 | Lose entire machine | Mnemonic backup | Install on new machine, re-run setup with `--import` |
 | Lose mnemonic backup | Have passphrase + `seed.enc` | Decrypt to recover mnemonic, save offline this time |
@@ -134,7 +142,7 @@ The mnemonic remains the ultimate backup. Encryption defends the seed file at re
 
 - **Doesn't protect against memory dumps** of the running process — the mnemonic is in memory after `loadMnemonicFromEnv()` returns. To attack this an attacker needs shell on the host with the same UID as the agent.
 - **Doesn't protect against the host being compromised** while running — same as above.
-- **Doesn't provide scoped or revocable access.** Encryption-at-rest is all-or-nothing: whoever can decrypt the seed has full custody, and access can't be revoked without sweeping to a new wallet.
+- **Doesn't provide scoped or revocable access.** Encryption-at-rest is all-or-nothing: whoever can decrypt the seed has full custody, and access can't be revoked without sweeping to a new wallet — which is what `sparkbtcbot rotate` does.
 
 ## When this skill alone is not enough
 

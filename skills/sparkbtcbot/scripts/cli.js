@@ -22,7 +22,9 @@ export const COMMANDS = {
   "setup":           { module: "./setup-encrypted-seed.js", summary: "one-time wallet bootstrap — encrypt a new/imported mnemonic to seed.enc" },
   "reveal-mnemonic": { module: "./reveal-mnemonic.js",      summary: "display the seed phrase once for offline backup (USER-run, TTY only)" },
   "leaf-vault":      { module: "./leaf-vault-cli.js",       summary: "unilateral-exit recovery bundle: snapshot, or `verify`" },
-  "set-policy":      { module: "./set-policy.js",           summary: "bind/change/remove the seed-bound spending budget (operator ceremony)" },
+  "set-policy":      { module: "./set-policy.js",           summary: "bind/change/remove the sealed spending policy: budget, caps, ops, recipients, expiry, exec hook (operator ceremony)" },
+  "rekey":           { module: "./rekey.js",                summary: "change the seed.enc passphrase — same mnemonic, same sealed policy (operator ceremony)" },
+  "rotate":          { module: "./rotate.js",               summary: "retire the seed: sweep everything to a fresh wallet, keep the old seed under retired/ (dry run unless --execute)" },
   "reset-ledger":    { module: "./reset-ledger.js",         summary: "write a fresh signed spend ledger — the legitimate reset (operator ceremony)" },
   "viewer":          { module: "./viewer-key.js",           summary: "read-only access to a PRIVATE wallet without its seed: status, grant, revoke, pubkey, balance" },
 };

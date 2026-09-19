@@ -6,6 +6,7 @@ Load when building an agent that wraps `SparkWallet` with a higher-level API for
 
 The `SparkAgent` class exposes these (all `async` unless noted); full signatures and bodies are in the code below.
 
+- **Policy & limits** — `policy()` (the sealed rules, live budget, allowlist + audit-log paths — read-only; call it to say what you may spend *before* trying). Every money-moving method below runs the policy gate first: file allowlist, then the sealed `{ dailyBudgetSats, maxPerTxSats, allowedOps, allowedRecipients, expiresAt, exec }` — a denial throws `PolicyDeniedError { code: "POLICY_DENIED", rule, reason }`; relay `reason`, never retry with a smaller amount. Every denial and live outcome is appended to `~/.spark/audit.jsonl` (`SPARK_AUDIT_LOG=off` to disable). Detail: `references/security.md` → Policy engine.
 - **Identity & balance** — `getIdentity()`, `getBalance()` (returns normalized `{ sats, tokens }` — the raw `wallet.getBalance()` returns `{ satsBalance, tokenBalances }`; same name, different shape, not interchangeable)
 - **Deposits** — `getDepositAddress()`, `getSingleUseDepositAddress()`, `listPendingDeposits()`, `claimDeposit(...)`
 - **Send** — `transfer(...)`, `transferTokens(...)`, `batchTransferTokens(transfers)`, `withdraw(...)` (L1 cooperative exit), `getWithdrawalFeeQuote(amountSats, address)`, `getTransfers(limit, offset)`
@@ -42,6 +43,8 @@ import {
   withdrawalTotalFee,
 } from "./lib/fee-guards.js";
 import { createSpendLedger } from "./lib/spend-ledger.js";
+import { evaluateDeclarativeRules, runPolicyExec, PolicyDeniedError, OUTBOUND_OPS } from "./lib/policy.js";
+import { auditLogFromEnv } from "./lib/audit-log.js";
 import { createTransferIdStore } from "./lib/transfer-ids.js";
 import { ensureWalletPrivacy, privacyPreferenceFromEnv } from "./lib/wallet-privacy.js";
 import { enableLeafVault } from "./leaf-vault.js";
@@ -131,7 +134,7 @@ function spendLedgerFromEnv(seedCtx = getLoadedSeedContext()) {
   // escape. Causes: the wallet was opened with loadMnemonic (not *FromEnv), or
   // two copies of lib/ are loaded, or SparkAgent was constructed before the
   // seed was read. All are bugs; none may degrade quietly.
-  if (seedFileIsSealed(process.env.SPARK_SEED_PATH || undefined)) {
+  if (seedCtx?.policy == null && seedFileIsSealed(process.env.SPARK_SEED_PATH || undefined)) {
     throw new Error(
       "SparkAgent: the encrypted seed carries a SEALED spending policy, but this process did not " +
         "receive it — refusing to run with the policy silently unenforced. Open the wallet with " +
@@ -204,6 +207,13 @@ function assertSparkReceiverAllowed(receiver, invoice, allowlist) {
   throw e;
 }
 
+// The audit record for a policy context: the request as the policy saw it —
+// it never held a secret (no mnemonic, passphrase, preimage, or raw invoice).
+function auditFields(ctx) {
+  const { v, walletAddress, timestamp, ...rest } = ctx;
+  return rest;
+}
+
 // L402 exchanges a bearer credential (macaroon:preimage) and pays an invoice
 // carried in the challenge. Over plaintext http a MITM can swap the invoice or
 // capture the credential, so require TLS unless the caller is explicitly
@@ -230,6 +240,9 @@ export class SparkAgent {
   #vault = null;
   #ledger = null;
   #lnDedup = null;
+  #policy = null;
+  #audit = null;
+  #auditWarned = false;
 
   // seedContext (tests / non-env callers only): overrides the seed-bound
   // policy context normally observed by loadMnemonicFromEnv — shape
@@ -237,8 +250,11 @@ export class SparkAgent {
   constructor(wallet, network, { seedContext } = {}) {
     this.#wallet = wallet;
     this.#network = network;
-    this.#ledger = spendLedgerFromEnv(seedContext !== undefined ? seedContext : getLoadedSeedContext());
+    const seedCtx = seedContext !== undefined ? seedContext : getLoadedSeedContext();
+    this.#policy = seedCtx?.policy ?? null;
+    this.#ledger = spendLedgerFromEnv(seedCtx);
     this.#lnDedup = lnDedupFromEnv();
+    this.#audit = auditLogFromEnv();
     // Automatically mirror the unilateral-exit material to disk so funds stay
     // recoverable if the Spark operators go offline — snapshots on boot and on
     // every leaf change (send/receive/deposit) + a refresh safety timer. Opt out
@@ -303,16 +319,114 @@ export class SparkAgent {
     return { agent, mnemonic: generated };
   }
 
-  // --- Outbound safety check (allowlist gate, called by transfer/withdraw)
-  //
-  // Reads ~/.spark/recipients.allow on every send. If the file is missing
-  // or empty, no enforcement. If it contains addresses, the destination
-  // MUST match one of them. Bypass = edit the file. This is a guardrail
-  // against the agent surprising the operator, NOT a defense against a
-  // compromised agent — anything with FS access to ~/.spark can edit it.
-  async #assertAllowed(address) {
-    const allowlist = await loadRecipientsAllowlist();
-    assertRecipientAllowed(address, allowlist);
+  // --- Policy gate (lib/policy.js) — the ONE check every money-moving method
+  // runs FIRST, before any network I/O: (1) the file allowlist at
+  // ~/.spark/recipients.allow (missing/empty = no enforcement), then (2) the
+  // SEALED policy from the encrypted seed: expiresAt → allowedOps →
+  // allowedRecipients → maxPerTxSats → the operator's exec hook (live calls
+  // only). Every configured source must allow (AND). Fee ceilings and the
+  // cumulative budget stay in the methods — they need the quote and the signed
+  // ledger: policy sees the request, fee guards see the quote. A denial is a
+  // PolicyDeniedError { rule, reason } (code POLICY_DENIED): relay `reason`;
+  // never retry a denied spend with a smaller amount. Enforced in dryRun mode
+  // too. A guardrail against surprising the operator, not a defense against a
+  // compromised agent — anything with the passphrase can bypass it in code.
+  async #authorize({
+    op, amountSats = null, unit = "sats", recipients = [], tokenIdentifier, tokenAmount, invoiceHash,
+    dryRun = false, assertFileAllowlist, matchSealed,
+  }) {
+    const outbound = OUTBOUND_OPS.has(op);
+    const budget = this.#ledger ? await this.#ledger.status().catch(() => null) : null;
+    const ctx = {
+      v: 1, op, outbound, amountSats, unit,
+      ...(tokenIdentifier !== undefined ? { tokenIdentifier } : {}),
+      ...(tokenAmount !== undefined ? { tokenAmount } : {}),
+      recipients,
+      ...(invoiceHash ? { invoiceHash } : {}),
+      dailyTotalSats: budget?.spentSats ?? null,
+      dailyBudgetSats: budget?.budgetSats ?? null,
+      remainingSats: budget?.remainingSats ?? null,
+      walletAddress: await this.#safeAddress(),
+      network: this.#network, dryRun, timestamp: new Date().toISOString(),
+    };
+    if (outbound && recipients.length && op !== "lightning_pay") {
+      const allowlist = await loadRecipientsAllowlist();
+      try {
+        if (assertFileAllowlist) assertFileAllowlist(allowlist);
+        else for (const r of recipients) assertRecipientAllowed(r, allowlist);
+      } catch (err) {
+        await this.#auditWrite({ ...auditFields(ctx), verdict: "deny", rule: "recipients.allow", reason: err?.message ?? String(err) });
+        throw err;
+      }
+    }
+    const matchRecipient = matchSealed ?? ((recipient, list) => {
+      try { assertRecipientAllowed(recipient, list); return true; } catch { return false; }
+    });
+    const deny = async (verdict) => {
+      await this.#auditWrite({ ...auditFields(ctx), verdict: "deny", rule: verdict.rule, reason: verdict.reason });
+      throw new PolicyDeniedError({ op, rule: verdict.rule, reason: verdict.reason, context: ctx });
+    };
+    const declarative = evaluateDeclarativeRules(ctx, this.#policy, { matchRecipient });
+    if (!declarative.allow) await deny(declarative);
+    // 3. the cumulative budget, BEFORE the hook: a spend the ledger will refuse
+    // must not page a human. This is a pre-check; #recordSpend re-checks under
+    // the serialized critical section when it records. Same error as always
+    // (SPEND_BUDGET_EXCEEDED / SPEND_LEDGER_* from lib/spend-ledger.js), now
+    // audited. Dry runs never touch the ledger.
+    if (!dryRun && this.#ledger && outbound && unit === "sats") {
+      try {
+        await this.#ledger.assertCanSpend(amountSats, op);
+      } catch (err) {
+        await this.#auditWrite({ ...auditFields(ctx), verdict: "deny", rule: "dailyBudgetSats", reason: err?.message ?? String(err) });
+        throw err;
+      }
+    }
+    // 4. the operator's hook — live calls only (a preview must not page anyone).
+    if (this.#policy?.exec && !dryRun) {
+      const verdict = await runPolicyExec(this.#policy.exec, ctx);
+      if (!verdict.allow) await deny(verdict);
+    }
+    return ctx;
+  }
+
+  async #safeAddress() {
+    try { return (await this.#wallet.getSparkAddress()) ?? null; } catch { return null; }
+  }
+
+  // Audit the outcome of a LIVE call (dry runs are previews, not events).
+  async #auditOutcome(ctx, { ok, id, error }) {
+    await this.#auditWrite({
+      ...auditFields(ctx), verdict: "allow", result: ok ? "ok" : "error",
+      ...(id != null ? { id: String(id) } : {}),
+      ...(error ? { error: String(error?.message ?? error).slice(0, 300) } : {}),
+    });
+  }
+
+  async #auditWrite(entry) {
+    if (!this.#audit) return;
+    try { await this.#audit.append(entry); } catch (err) {
+      if (!this.#auditWarned) {
+        this.#auditWarned = true;
+        console.warn(`spark-agent: audit log write failed (${err?.message ?? err}) — continuing; set SPARK_AUDIT_LOG=off to silence`);
+      }
+    }
+  }
+
+  // The active limits, read-only — say what you may spend BEFORE trying.
+  async policy() {
+    // A ledger in a fail-closed state (missing/unsigned under a bound budget)
+    // is REPORTED here, not thrown: this call exists so the model can tell the
+    // operator what is going on. Spends still refuse (assertCanSpend throws).
+    const budget = await this.spendStatus().catch((err) => ({
+      error: err?.code ?? "SPEND_LEDGER_ERROR",
+      message: String(err?.message ?? err),
+    }));
+    return {
+      sealed: this.#policy ? structuredClone(this.#policy) : null,
+      budget,
+      allowlistPath: DEFAULT_ALLOWLIST_PATH,
+      auditLogPath: this.#audit?.path ?? null,
+    };
   }
 
   // Budget gate + PRE-commit record for a sats spend. Recording before the
@@ -401,7 +515,7 @@ export class SparkAgent {
 
   async transfer({ to, amount, dryRun = false, ...rest }) {
     rejectUnknownOptions("transfer", rest);
-    await this.#assertAllowed(to);
+    const ctx = await this.#authorize({ op: "spark_transfer", amountSats: Number(amount), recipients: [to], dryRun });
     if (dryRun) {
       return {
         dryRun: true,
@@ -416,12 +530,15 @@ export class SparkAgent {
     }
     const spend = await this.#recordSpend(Number(amount), "spark_transfer");
     try {
-      return await this.#wallet.transfer({
+      const result = await this.#wallet.transfer({
         receiverSparkAddress: to,
         amountSats: amount,
       });
+      await this.#auditOutcome(ctx, { ok: true, id: result?.id });
+      return result;
     } catch (err) {
       await spend.undo().catch(() => {});
+      await this.#auditOutcome(ctx, { ok: false, error: err });
       throw err;
     }
   }
@@ -482,11 +599,6 @@ export class SparkAgent {
     const maxFee = requireNumericOption("payLightningInvoice", "maxFeeSats", maxFeeSats);
     const maxAmt = requireNumericOption("payLightningInvoice", "maxAmountSats", maxAmountSats) ?? 10_000;
     const invoiceAmt = invoiceAmountSats(bolt11); // embedded amount; undefined for amountless/undecodable
-    const est = await this.#wallet.getLightningSendFeeEstimate({
-      encodedInvoice: bolt11,
-      amountSats,
-    });
-    const estimatedFee = lightningEstimateSats(est);
     // The INVOICE wins over the caller's number. For an amount-bearing invoice
     // the SDK pays the embedded amount (it rejects amountSatsToSend for those,
     // see below), so checking a caller-supplied figure would guard a number
@@ -502,6 +614,16 @@ export class SparkAgent {
       );
     }
     const amt = invoiceAmt ?? amountSats;
+    // Policy gate before the first network call (Lightning pays a node pubkey:
+    // no recipient; the payment hash identifies the invoice in the audit log).
+    const ctx = await this.#authorize({
+      op: "lightning_pay", amountSats: amt ?? null, invoiceHash: invoicePaymentHash(bolt11) ?? undefined, dryRun,
+    });
+    const est = await this.#wallet.getLightningSendFeeEstimate({
+      encodedInvoice: bolt11,
+      amountSats,
+    });
+    const estimatedFee = lightningEstimateSats(est);
     // Fee cap: amount-aware (0.5% of amount, min 25 sats — Spark's flat fee
     // component alone hit 25 on a live 4.5k-sat send). Explicit maxFeeSats wins.
     const cap = maxFee ?? lightningFeeCap({ amountSats: amt, estimatedFeeSats: estimatedFee });
@@ -574,6 +696,7 @@ export class SparkAgent {
       });
     } catch (err) {
       await spend.undo().catch(() => {});
+      await this.#auditOutcome(ctx, { ok: false, error: err });
       // AlreadyExists on a KNOWN retry (the store proved this id was already
       // used for THIS invoice) is proof of settlement, not failure — the
       // Spark-fallback rail dedupes via a DB uniqueness constraint and
@@ -599,6 +722,7 @@ export class SparkAgent {
     if (resolved) {
       try { result.dedupReused = resolved.reused; } catch { /* frozen result — flag lost, payment fine */ }
     }
+    await this.#auditOutcome(ctx, { ok: true, id: result?.id });
     return result;
   }
 
@@ -709,7 +833,7 @@ export class SparkAgent {
         "SparkAgent.fulfillInvoice: pass an array of { invoice, amount } entries (see references/spark-invoices.md).",
       );
     }
-    const allowlist = await loadRecipientsAllowlist();
+    const receivers = [];
     const entries = invoices.map((entry) => {
       const invoice = entry?.invoice;
       if (typeof invoice !== "string" || !invoice) {
@@ -718,7 +842,7 @@ export class SparkAgent {
         );
       }
       const receiver = sparkInvoiceReceiver(invoice, this.#network);
-      assertSparkReceiverAllowed(receiver, invoice, allowlist);
+      receivers.push({ receiver, invoice });
       const embedded = receiver.invoiceFields?.paymentType;
       // Same doctrine as payLightningInvoice: the INVOICE's embedded amount
       // is the authoritative figure. A caller amount that disagrees with it
@@ -739,6 +863,29 @@ export class SparkAgent {
         type: embedded?.type ?? "unknown",
       };
     });
+    // Budget: sum the sats entries (token invoices aren't sats). An unreadable
+    // sats amount fails closed when a budget or per-tx cap is set.
+    const satsTotal = entries.reduce((sum, e) => {
+      if (e.type === "tokens") return sum;
+      const n = Number(e.amount);
+      return Number.isFinite(n) ? sum + n : NaN;
+    }, 0);
+    // Both allowlists match Spark-invoice receivers by identity key.
+    const byAddress = new Map(receivers.map((r) => [r.receiver.address, r]));
+    const ctx = await this.#authorize({
+      op: "fulfill_spark_invoice",
+      amountSats: Number.isFinite(satsTotal) ? satsTotal : null,
+      recipients: entries.map((e) => e.to),
+      dryRun,
+      assertFileAllowlist: (allowlist) => {
+        for (const { receiver, invoice } of receivers) assertSparkReceiverAllowed(receiver, invoice, allowlist);
+      },
+      matchSealed: (address, list) => {
+        const r = byAddress.get(address);
+        if (!r) return false;
+        try { assertSparkReceiverAllowed(r.receiver, r.invoice, list); return true; } catch { return false; }
+      },
+    });
     if (dryRun) {
       return {
         dryRun: true,
@@ -748,20 +895,14 @@ export class SparkAgent {
         network: this.#network,
       };
     }
-    // Budget: sum the sats entries (token invoices aren't sats and are
-    // bounded by the allowlist above, not the sat budget). A sats invoice
-    // whose amount can't be read fails closed when a budget is set — a spend
-    // the ledger can't count is a spend the budget can't bound.
-    const satsTotal = entries.reduce((sum, e) => {
-      if (e.type === "tokens") return sum;
-      const n = Number(e.amount);
-      return Number.isFinite(n) ? sum + n : NaN;
-    }, 0);
     const spend = await this.#recordSpend(satsTotal, "fulfill_spark_invoice");
     try {
-      return await this.#wallet.fulfillSparkInvoice(invoices);
+      const result = await this.#wallet.fulfillSparkInvoice(invoices);
+      await this.#auditOutcome(ctx, { ok: true, id: result?.id });
+      return result;
     } catch (err) {
       await spend.undo().catch(() => {});
+      await this.#auditOutcome(ctx, { ok: false, error: err });
       throw err;
     }
   }
@@ -770,7 +911,9 @@ export class SparkAgent {
 
   async transferTokens({ tokenIdentifier, amount, to, dryRun = false, ...rest }) {
     rejectUnknownOptions("transferTokens", rest);
-    await this.#assertAllowed(to);
+    const ctx = await this.#authorize({
+      op: "token_transfer", unit: "tokens", tokenIdentifier, tokenAmount: String(amount), recipients: [to], dryRun,
+    });
     if (dryRun) {
       return {
         dryRun: true,
@@ -784,11 +927,18 @@ export class SparkAgent {
         network: this.#network,
       };
     }
-    return await this.#wallet.transferTokens({
-      tokenIdentifier,
-      tokenAmount: amount,
-      receiverSparkAddress: to,
-    });
+    try {
+      const result = await this.#wallet.transferTokens({
+        tokenIdentifier,
+        tokenAmount: amount,
+        receiverSparkAddress: to,
+      });
+      await this.#auditOutcome(ctx, { ok: true, id: result?.id ?? result });
+      return result;
+    } catch (err) {
+      await this.#auditOutcome(ctx, { ok: false, error: err });
+      throw err;
+    }
   }
 
   // Allowlist applies to every receiver in the batch. One disallowed
@@ -796,6 +946,7 @@ export class SparkAgent {
   // whose receiver can't be read can't be checked: fail CLOSED like
   // fulfillInvoice, never skip the gate for that entry.
   async batchTransferTokens(transfers) {
+    const recipients = [];
     for (const t of transfers) {
       const to = t.receiverSparkAddress ?? t.to;
       if (!to) {
@@ -804,9 +955,17 @@ export class SparkAgent {
             "refusing to forward an entry whose receiver cannot be checked.",
         );
       }
-      await this.#assertAllowed(to);
+      recipients.push(to);
     }
-    return await this.#wallet.batchTransferTokens(transfers);
+    const ctx = await this.#authorize({ op: "token_transfer", unit: "tokens", recipients });
+    try {
+      const result = await this.#wallet.batchTransferTokens(transfers);
+      await this.#auditOutcome(ctx, { ok: true });
+      return result;
+    } catch (err) {
+      await this.#auditOutcome(ctx, { ok: false, error: err });
+      throw err;
+    }
   }
 
   // --- Deposits (claim to Spark) ---
@@ -829,6 +988,8 @@ export class SparkAgent {
     // would silently remove the ceiling entirely.
     const explicit = requireNumericOption("claimDeposit", "maxFeeSats", maxFeeSats) ?? null;
     const pct = requireNumericOption("claimDeposit", "maxFeePct", maxFeePct) ?? 10;
+    // Inbound: only allowedOps and the exec hook apply. Before the quote.
+    const ctx = await this.#authorize({ op: "claim_deposit", dryRun });
     let cap = explicit;
     let credit = null;
     if (cap === null || dryRun) {
@@ -858,11 +1019,18 @@ export class SparkAgent {
         network: this.#network,
       };
     }
-    return await this.#wallet.claimStaticDepositWithMaxFee({
-      transactionId: txid,
-      maxFee: cap,
-      outputIndex: vout,
-    });
+    try {
+      const result = await this.#wallet.claimStaticDepositWithMaxFee({
+        transactionId: txid,
+        maxFee: cap,
+        outputIndex: vout,
+      });
+      await this.#auditOutcome(ctx, { ok: true, id: result?.id ?? txid });
+      return result;
+    } catch (err) {
+      await this.#auditOutcome(ctx, { ok: false, error: err });
+      throw err;
+    }
   }
 
   // --- Withdrawal ---
@@ -883,7 +1051,7 @@ export class SparkAgent {
     // fetch itself is not side-effect-free (it can restructure leaves).
     const pct = requireNumericOption("withdraw", "maxFeePct", maxFeePct) ?? 10;
     const abs = requireNumericOption("withdraw", "maxFeeSats", maxFeeSats);
-    await this.#assertAllowed(to);
+    const ctx = await this.#authorize({ op: "l1_withdraw", amountSats: Number(amount), recipients: [to], dryRun });
     const quote = await this.#wallet.getWithdrawalFeeQuote({
       amountSats: amount,
       withdrawalAddress: to,
@@ -934,7 +1102,7 @@ export class SparkAgent {
       // (closes the TOCTOU gap). feeQuoteId + feeAmountSats is the current SDK
       // API; the `feeQuote` object param does the same but is @deprecated — kept
       // only as the fallback when our reader couldn't extract a scalar fee.
-      return await this.#wallet.withdraw({
+      const result = await this.#wallet.withdraw({
         onchainAddress: to,
         exitSpeed: speed,
         amountSats: amount,
@@ -942,8 +1110,11 @@ export class SparkAgent {
           ? { feeQuoteId: quote.id, feeAmountSats: check.fee }
           : { feeQuote: quote }),
       });
+      await this.#auditOutcome(ctx, { ok: true, id: result?.id });
+      return result;
     } catch (err) {
       await spend.undo().catch(() => {});
+      await this.#auditOutcome(ctx, { ok: false, error: err });
       throw err;
     }
   }

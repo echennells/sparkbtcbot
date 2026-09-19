@@ -7,7 +7,7 @@
 // and exits 0 BEFORE any side effect (no seed file appears), and unknown args
 // fail closed (exit 2) instead of running the default.
 import { describe, it, expect } from "vitest";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -52,6 +52,59 @@ describe("setup-encrypted-seed arg gate (the QA wallet-on---help bug)", () => {
       expect(await readdir(dir)).toEqual([]);
     } finally { await rm(dir, { recursive: true, force: true }); }
   });
+});
+
+// The prompt on a pipe (an agent's Bash tool, a CI step) must never turn into
+// a silent no-op or a hang. Before: stdin at EOF with no passphrase left the
+// prompt pending and Node exited 0 with NOTHING written — an agent reads that
+// as "wallet set up". An open-but-silent pipe hung until something killed it.
+// Every run here uses a scratch cwd (no .env for dotenv to load) and an EMPTY
+// SPARK_PASSPHRASE (dotenv never overrides a key that is present), so nothing
+// can supply the passphrase behind the prompt's back.
+describe("setup on a pipe (no TTY) fails loud, never silently", () => {
+  const spawnSetup = (args, { stdinLines = null, env = {} } = {}) => new Promise(async (resolve) => {
+    const dir = await mkdtemp(join(tmpdir(), "cli-pipe-"));
+    const child = spawn("node", [join(SCRIPTS, "setup-encrypted-seed.js"), ...args], {
+      cwd: dir,
+      env: { ...process.env, SPARK_NETWORK: "REGTEST", SPARK_PRIVACY: "off", SPARK_PASSPHRASE: "", SPARK_SEED_PATH: join(dir, "seed.enc"), ...env },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let stdout = "", stderr = "";
+    child.stdout.on("data", (d) => { stdout += d; });
+    child.stderr.on("data", (d) => { stderr += d; });
+    child.on("close", async (code) => {
+      const files = await readdir(dir);
+      await rm(dir, { recursive: true, force: true });
+      resolve({ code, stdout, stderr, files });
+    });
+    if (stdinLines === null) child.stdin.end();            // EOF, nothing written
+    else if (stdinLines.length) child.stdin.end(stdinLines.join("\n") + "\n");
+    // stdinLines === [] → leave the pipe open and silent
+  });
+
+  it("stdin at EOF with no passphrase → exit 1 with a reason, nothing created (the silent-no-op regression)", async () => {
+    const r = await spawnSetup([]);
+    expect(r.code).toBe(1);
+    expect(r.stderr).toMatch(/stdin is not a terminal and closed \(EOF\)/);
+    expect(r.stderr).toMatch(/SPARK_PASSPHRASE/);
+    expect(r.files).toEqual([]);
+  }, 30_000);
+
+  it("an open pipe that never writes → exit 1 after the prompt timeout, nothing created (the agent-stall shape)", async () => {
+    const r = await spawnSetup([], { stdinLines: [], env: { SPARK_PROMPT_TIMEOUT_MS: "500" } });
+    expect(r.code).toBe(1);
+    expect(r.stderr).toMatch(/sent nothing for 1 s/);
+    expect(r.files).toEqual([]);
+  }, 30_000);
+
+  it("a piped passphrase (the CI path) still creates the seed; a short one is still refused", async () => {
+    const ok = await spawnSetup([], { stdinLines: ["correct horse battery staple", "correct horse battery staple"] });
+    expect(ok.code).toBe(0);
+    expect(ok.files).toEqual(["seed.enc"]);
+    const short = await spawnSetup([], { stdinLines: ["short", "short"] });
+    expect(short.code).toBe(1);
+    expect(short.files).toEqual([]);
+  }, 60_000);
 });
 
 describe("reveal-mnemonic arg gate", () => {

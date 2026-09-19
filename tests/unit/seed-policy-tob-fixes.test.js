@@ -145,6 +145,10 @@ describe("F-A: the reference class doc matches the shipped resolver", () => {
     const doc = await readFile(fileURLToPath(new URL("../../skills/sparkbtcbot/references/agent-class.md", import.meta.url)), "utf8");
     expect(doc).toMatch(/getLoadedSeedContext/);
     expect(doc).toMatch(/seedFileIsSealed/);
-    expect(doc).toMatch(/spendLedgerFromEnv\(seedContext !== undefined/);
+    // The seed context is resolved once (tests may inject it) and feeds BOTH the
+    // ledger and the sealed policy — the pre-seal doc had an env-only ledger.
+    expect(doc).toMatch(/const seedCtx = seedContext !== undefined \? seedContext : getLoadedSeedContext\(\)/);
+    expect(doc).toMatch(/spendLedgerFromEnv\(seedCtx\)/);
+    expect(doc).toMatch(/this\.#policy = seedCtx\?\.policy \?\? null/);
   });
 });

@@ -27,6 +27,8 @@ lib/
   atomic-file.js                      # the one atomic writer (temp+fsync+link/rename+dir-fsync)
   encrypted-seed.js                   # scrypt + AES-256-GCM seed file helper
   leaf-vault.js                       # SDK-free recovery-bundle persistence + shape validation
+  policy.js                           # SDK-free sealed-policy evaluator: rules + sha256-pinned exec hook, fail-closed
+  audit-log.js                        # append-only ~/.spark/audit.jsonl of every denial + live outcome (never a secret)
   fee-guards.js                       # fee/amount ceilings for sends, claims, withdrawals
   fiat-rate.js                        # BTC price from mempool.space + Coinbase, cross-checked (the number behind "$100")
   spend-ledger.js                     # rolling-window cumulative budget (bounds send LOOPS)
@@ -38,6 +40,7 @@ skills/
   sparkbtcbot/
     SKILL.md                          # Always-loaded skill body (security, setup, navigator)
     references/                       # Detail loaded on demand (SDK API, agent class, L402, etc.)
+      setup.md                        # Install paths, the bootstrap, .env, loading the seed in code (moved out of SKILL.md: procedure, not orientation)
       encrypted-seed.md               # Threat model, setup modes, recovery
       unilateral-exit.md              # The leaf-vault backup + Blink's exit tool
       first-spend.md                  # The product path: fiat invoice for a newbie → country-aware gift card sized under the balance
@@ -46,6 +49,9 @@ skills/
     scripts/                          # Runnable example scripts
       cli.js                          # `sparkbtcbot <command>` — the single published bin (dispatcher)
       setup-encrypted-seed.js         # `npm run setup` — one-time bootstrap
+      set-policy.js                   # `sparkbtcbot set-policy [--file|--show]` — seal/change the policy (TTY ceremony)
+      rekey.js                        # `sparkbtcbot rekey [--generate]` — change the seed.enc passphrase (TTY ceremony)
+      rotate.js                       # `sparkbtcbot rotate [--execute]` — sweep to a fresh seed, retire the old under ~/.spark/retired/ (TTY ceremony)
       leaf-vault.js                   # snapshotLeafVault / verifyVault / enableLeafVault (library)
       leaf-vault-cli.js               # `npm run leaf-vault [-- verify]` — snapshot/verify CLI
       viewer-key.js                   # `sparkbtcbot viewer` — read-only access to a private wallet: status/grant(y/N)/revoke/pubkey/balance
@@ -92,6 +98,9 @@ SPARK_NETWORK=MAINNET
 # SPARK_SPEND_LEDGER_PATH=/custom/path    # spend-ledger location (default ~/.spark/spend-ledger.json)
 # SPARK_LN_DEDUP=off                      # opt out of the persisted Lightning payment-dedup transferId
 # SPARK_LN_DEDUP_PATH=/custom/dir         # dedup-store directory (default ~/.spark/ln-dedup/)
+# SPARK_PASSPHRASE_FILE=/run/secrets/x    # read the passphrase from a file (systemd/Docker secrets) instead of env
+# SPARK_AUDIT_LOG=off                     # opt out of the append-only audit log (default ~/.spark/audit.jsonl)
+# SPARK_AUDIT_LOG_PATH=/custom/path       # audit-log location
 ```
 
 ## Security Note

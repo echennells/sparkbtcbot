@@ -2,11 +2,108 @@
 
 // --- Encryption library ---
 
-/** Guard policy bound INSIDE the encrypted seed payload (v2 seed files). */
+/** Canonical operation names a policy can name (the ledger / dry-run vocabulary). */
+export type PolicyOp =
+  | "spark_transfer"
+  | "lightning_pay"
+  | "fulfill_spark_invoice"
+  | "token_transfer"
+  | "claim_deposit"
+  | "l1_withdraw";
+
+/**
+ * Guard policy bound INSIDE the encrypted seed payload (v2 seed files). Every
+ * key is optional; unknown keys are refused at boot. Managed only by the
+ * TTY-gated `sparkbtcbot set-policy` ceremony. See references/security.md →
+ * Policy engine for what each rule bounds and the fail-closed table.
+ */
 export interface SeedPolicy {
   /** Rolling 24h spend budget, sats. Wins absolutely over SPARK_DAILY_BUDGET_SATS. */
-  dailyBudgetSats: number;
+  dailyBudgetSats?: number;
+  /** Per-transaction cap on outbound sats ops; an unreadable amount fails closed. */
+  maxPerTxSats?: number;
+  /** Operations permitted at all (claims included). Absent = every op. */
+  allowedOps?: PolicyOp[];
+  /** Tamper-proof recipient allowlist (AND-ed with ~/.spark/recipients.allow). Not Lightning. */
+  allowedRecipients?: string[];
+  /** ISO-8601; after it, outbound spends are denied (reads and claims continue). */
+  expiresAt?: string;
+  /** Operator executable, pinned by sha256: stdin PolicyContext JSON → stdout {allow, reason?}. */
+  exec?: { path: string; sha256: string };
 }
+
+/** What a policy rule or the exec hook sees for one request. Never holds a secret. */
+export interface PolicyContext {
+  v: 1;
+  op: PolicyOp;
+  outbound: boolean;
+  amountSats: number | null;
+  unit: "sats" | "tokens";
+  tokenIdentifier?: string;
+  tokenAmount?: string;
+  recipients: string[];
+  invoiceHash?: string;
+  dailyTotalSats: number | null;
+  dailyBudgetSats: number | null;
+  remainingSats: number | null;
+  walletAddress: string | null;
+  network: string;
+  dryRun: boolean;
+  timestamp: string;
+}
+
+export type PolicyVerdict = { allow: true } | { allow: false; rule: string; reason: string };
+
+/** Thrown by SparkAgent when the policy denies a money-moving call. */
+export class PolicyDeniedError extends Error {
+  code: "POLICY_DENIED";
+  op: PolicyOp;
+  rule: string;
+  reason: string;
+  context: PolicyContext | null;
+}
+
+export const POLICY_OPS: readonly PolicyOp[];
+export const OUTBOUND_OPS: ReadonlySet<PolicyOp>;
+export const POLICY_EXEC_TIMEOUT_MS: number;
+/** Validates/normalizes a policy object; throws on unknown keys or unreadable values. */
+export function validatePolicyObject(policy: unknown): SeedPolicy | null;
+/** Declarative rules only (expiresAt → allowedOps → allowedRecipients → maxPerTxSats). */
+export function evaluateDeclarativeRules(
+  ctx: PolicyContext,
+  policy: SeedPolicy | null,
+  deps?: { matchRecipient?: (recipient: string, list: string[]) => boolean; now?: number },
+): PolicyVerdict;
+/** Declarative rules, then (live calls only) the exec hook. Never throws. */
+export function evaluatePolicy(
+  ctx: PolicyContext,
+  policy: SeedPolicy | null,
+  deps?: { matchRecipient?: (recipient: string, list: string[]) => boolean; now?: number; timeoutMs?: number },
+): Promise<PolicyVerdict>;
+/** Run the pinned executable with the context on stdin; every failure class is a deny. */
+export function runPolicyExec(
+  exec: { path: string; sha256: string },
+  ctx: PolicyContext,
+  opts?: { timeoutMs?: number },
+): Promise<PolicyVerdict>;
+export function sha256File(path: string): Promise<string>;
+
+/** Append-only JSONL audit log (~/.spark/audit.jsonl). append() refuses secret-shaped keys. */
+export interface AuditLog {
+  path: string;
+  append(entry: Record<string, unknown>): Promise<void>;
+}
+export function createAuditLog(options?: { path?: string; clock?: () => number }): AuditLog;
+/** null when SPARK_AUDIT_LOG=off. */
+export function auditLogFromEnv(): AuditLog | null;
+export const DEFAULT_AUDIT_LOG_PATH: string;
+
+/** Re-encrypt seed.enc (mnemonic + sealed policy, unchanged) under a new passphrase, atomically. */
+export function rekeyEncryptedSeed(options: {
+  path?: string;
+  passphrase: string;
+  newPassphrase: string;
+}): Promise<{ version: 1 | 2; policy: SeedPolicy | null }>;
 
 export interface SaveEncryptedMnemonicOptions {
   mnemonic: string;
@@ -30,7 +127,7 @@ export function loadSeedPayload(options: LoadMnemonicOptions): Promise<SeedPaylo
 export function loadSeedPayloadFromEnv(options?: { clearEnv?: boolean }): Promise<SeedPayload>;
 /** Seed context from the last *FromEnv load: null before any load / for v1 seeds. */
 export function getLoadedSeedContext(): { policy: SeedPolicy; ledgerHmacKey: Buffer } | null;
-/** Validates/normalizes a policy object; throws on unknown keys or garbage budgets. */
+/** Alias of validatePolicyObject — the validator the seal uses. */
 export function validateSeedPolicy(policy: unknown): SeedPolicy | null;
 /** HKDF-derived (never the AES key) HMAC key for the signed spend ledger. */
 export function deriveLedgerHmacKey(mnemonic: string): Buffer;

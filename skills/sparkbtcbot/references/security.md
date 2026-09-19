@@ -54,3 +54,61 @@ Every Spark wallet has a per-identity setting at the operators, `private_enabled
 ## What the allowlist does and does not bound
 
 The optional recipient allowlist (`~/.spark/recipients.allow`) gates Spark transfers, token transfers, and L1 withdrawals to addresses on the list. It does **not** gate Lightning or L402 payments — those pay a node pubkey embedded in a BOLT11 invoice, not an address, so there is no address for the allowlist to check. There is no hard cap on Lightning/L402 outflow — the wrapper's `maxAmountSats` ceiling and `SPARK_DAILY_BUDGET_SATS` bound it in-process only, so the funded balance is the ultimate limit.
+
+## Policy engine: what the sealed policy bounds
+
+Every money-moving `SparkAgent` method runs one gate first, before any network call: the file allowlist above, then the **sealed policy** — an object bound inside the encrypted seed payload (`references/encrypted-seed.md` → Seed-bound policy) and managed only through the TTY-gated `sparkbtcbot set-policy` ceremony:
+
+```json
+{
+  "dailyBudgetSats": 50000,
+  "maxPerTxSats": 10000,
+  "allowedOps": ["spark_transfer", "lightning_pay", "fulfill_spark_invoice", "token_transfer", "claim_deposit", "l1_withdraw"],
+  "allowedRecipients": ["sp1p…", "bc1q…"],
+  "expiresAt": "2026-12-31T23:59:59Z",
+  "exec": { "path": "/home/me/.spark/approve.sh", "sha256": "…" }
+}
+```
+
+Every key is optional. Rules run cheapest first, first deny wins, and every configured source must allow (AND):
+
+| Rule | Applies to | Denies when |
+|---|---|---|
+| `expiresAt` | outbound ops | now is past the timestamp — reads, deposits, and claims keep working; an expired agent can still report and stay recoverable |
+| `allowedOps` | every op, claims included | the op is not listed (e.g. forbid `l1_withdraw` and `token_transfer` for a Lightning-only bot) |
+| `allowedRecipients` | transfers, token sends, Spark-invoice fulfilment, L1 withdrawals | any recipient is not on the list (same matching as `recipients.allow`, including identity-key matching for Spark invoices); when both lists exist, both must contain the recipient. Not Lightning — it pays a node pubkey |
+| `maxPerTxSats` | outbound sats ops | the amount exceeds the cap, **or the amount is unreadable** (an amountless Lightning invoice with no `amountSats`) — fail closed |
+| `dailyBudgetSats` | outbound sats ops | the rolling-24h ledger would exceed the budget (the pre-existing signed ledger; `agent.spendStatus()`) |
+| `exec` | every op, **live calls only** | the operator's executable says no — see below |
+
+Fee ceilings (`maxFeeSats`, `maxFeePct`, the Lightning `maxAmountSats` default) stay in the methods: they need the live quote. Policy sees the *request*; the fee guards see the *quote*.
+
+**The executable hook.** `exec` names a program the ceremony pins by sha256; the agent's process cannot repoint it or swap the file — a modified script fails every spend closed until `set-policy` re-pins it. The wire contract is the one MoonPay's Open Wallet Standard documents for executable policies (MIT): the request context as one JSON object on **stdin**, one JSON object `{"allow": true}` or `{"allow": false, "reason": "…"}` on **stdout**. The context carries `op`, `amountSats`, `unit`, `recipients`, `invoiceHash` (Lightning), the wallet's *real* `dailyTotalSats` / `dailyBudgetSats` / `remainingSats`, `network`, `dryRun`, and `timestamp` — never the mnemonic, passphrase, a preimage, or a raw invoice, and the child never inherits `SPARK_PASSPHRASE`. Typical hooks: page a human (Telegram/Slack) and wait for a 👍 above some size; business rules (hours, per-merchant caps, "three gift cards a day"); an external kill-switch or rate limiter; or forwarding the context to a server-side policy, which makes the local hook the client of a real boundary. Dry runs evaluate the built-in rules truthfully but do **not** fire the hook — a preview must not page anyone.
+
+**Fail-closed table** — a contract, not a comment:
+
+| Condition | Verdict |
+|---|---|
+| hook exits non-zero, prints anything but a JSON object with a boolean `allow`, takes longer than 5 s, is missing, is not executable, or its sha256 no longer matches | **deny** (the reason names which) |
+| an unknown key or unreadable value in the sealed policy | **refuse to boot** — a typo must not mean "no rule" |
+| the signed spend ledger is missing, unsigned, or edited (bound budget) | **deny** |
+| `recipients.allow` is present but unreadable | **deny** — unreadable must not look like missing (missing = not enforced) |
+| the amount cannot be read while `maxPerTxSats` or a budget is set | **deny** |
+| `expiresAt` has passed | **deny every outbound spend**; reads and claims continue |
+| the audit log cannot be written | spend proceeds; one warning; `SPARK_AUDIT_LOG=off` to silence deliberately |
+
+**What the agent sees.** `await agent.policy()` returns the sealed rules, the live budget, and the allowlist/audit paths, read-only — call it to say what you may spend *before* trying. A denial throws `PolicyDeniedError { code: "POLICY_DENIED", rule, reason }`; relay `reason` to the operator verbatim and **never retry a denied spend with a smaller amount** — splitting a 12,000-sat payment into two 6,000s is exactly what the cap exists to stop. Every denial and every live outcome (ok or error) is one line in `~/.spark/audit.jsonl` (`SPARK_AUDIT_LOG_PATH` to relocate, `SPARK_AUDIT_LOG=off` to disable); the file never contains a secret.
+
+**Two tiers, stated plainly.** Everything in this section runs inside the agent's own process. It bounds a *mistaken or steered* agent — almost every bad spend starts as one bad tool call, and those are caught — and it turns "edit the budget" into a terminal ceremony the agent cannot perform. It does not bound a *compromised* process: one that holds the passphrase can decrypt the seed with its own code and drive the raw SDK past every rule. The control that survives that is the funded balance, or a deployment where the seed lives somewhere the agent cannot read — the hosted proxy (`sparkbtcbot-proxy`: server holds the seed, the agent gets a scoped bearer token, limits are enforced next to the key) or the same design on localhost under a separate OS user. Choose the tier by threat model and size the balance to it.
+
+## Rekey vs. rotate
+
+| What leaked | Command |
+|---|---|
+| The passphrase only — the file stayed on the box | `sparkbtcbot rekey` (new passphrase, same mnemonic, same sealed policy; the ledger and leaf-vault are keyed by the mnemonic and are untouched) |
+| `seed.enc` itself, or a backup of it, with or without the passphrase | `sparkbtcbot rotate --execute` — sweep everything to a fresh seed and retire the old one; a new passphrase does not protect old copies |
+| The words (a `reveal-mnemonic` screen, a paper backup) | `rotate` |
+| Not sure | `rotate` — rekey is never sufficient in doubt |
+
+**What `rotate` does** (dry run without `--execute`; TTY-gated; run it from a machine you trust — running it *from* a compromised process hands the attacker the new seed): boots the current wallet and a freshly generated one; refuses while an unclaimed L1 deposit is waiting; writes the new seed to `seed.enc.next` and the old seed to `~/.spark/retired/<date>-<pubkey>/seed.enc` **before moving a sat** (an interrupted run leaves both seeds complete on disk, and says how to finish by hand); enables privacy on the new wallet before it receives anything; sweeps sats and every token (Spark-to-Spark, instant, free) and waits for the new wallet to claim them; then renames `seed.enc.next` into place, files the old leaf-vault beside the retired seed, resets the signed ledger if a budget is sealed (the sealed policy itself carries over), snapshots a fresh vault, and prints what went stale: the old **static L1 deposit address stays valid forever** and anyone holding an old Spark invoice can still pay it — update wherever you published them. The retired seed is an ordinary `seed.enc` under the same passphrase; every command works on it via `SPARK_SEED_PATH=~/.spark/retired/<id>/seed.enc` (check a late arrival's balance, sweep it, `reveal-mnemonic`, `leaf-vault`). In the compromise case keeping it does not *protect* late funds — the attacker has that seed too — it lets you race for them and exit. No auto-purge: deleting a key that might still receive money is your call.
+
