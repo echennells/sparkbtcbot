@@ -2,6 +2,8 @@
 
 Load when building an agent that wraps `SparkWallet` with a higher-level API for identity, balance, transfers, Lightning, Spark invoices, tokens, withdrawal, message signing, L402 paywalls, and event listeners. Drop-in implementation.
 
+Import it — no need to copy the listing: `import { SparkAgent } from "sparkbtcbot-skill/agent"` from a project with the npm package, or `./skills/sparkbtcbot/scripts/spark-agent.js` in the cloned tree. The listing below is that file, for reading.
+
 ## Methods at a glance
 
 The `SparkAgent` class exposes these (all `async` unless noted); full signatures and bodies are in the code below.

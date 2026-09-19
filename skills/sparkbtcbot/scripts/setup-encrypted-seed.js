@@ -8,7 +8,7 @@ import { pathToFileURL } from "node:url";
 //   3. default → generate a fresh mnemonic via @buildonspark/spark-sdk
 //
 // Passphrase comes from:
-//   - SPARK_PASSPHRASE env var if set
+//   - SPARK_PASSPHRASE env var if set, else SPARK_PASSPHRASE_FILE (path to a file holding it)
 //   - otherwise prompted on stderr (with confirmation)
 //
 // On success, writes ~/.spark/seed.enc with mode 0600 (or SPARK_SEED_PATH).
@@ -18,7 +18,7 @@ import { pathToFileURL } from "node:url";
 
 import "dotenv/config";
 import { stdout, stderr, exit, env } from "node:process";
-import { saveEncryptedMnemonic, DEFAULT_SEED_PATH, MIN_PASSPHRASE_CHARS } from "../../../lib/encrypted-seed.js";
+import { saveEncryptedMnemonic, DEFAULT_SEED_PATH, MIN_PASSPHRASE_CHARS, readPassphraseFile } from "../../../lib/encrypted-seed.js";
 import { ensureWalletPrivacy, privacyPreferenceFromEnv } from "../../../lib/wallet-privacy.js";
 import { existsSync, realpathSync } from "node:fs";
 
@@ -39,6 +39,13 @@ async function getPassphrase() {
   if (env.SPARK_PASSPHRASE) {
     info("Using SPARK_PASSPHRASE from env.");
     return env.SPARK_PASSPHRASE;
+  }
+  // Same second source the runtime honors: a file (systemd LoadCredential,
+  // Docker/Kubernetes secrets, or a file an agent wrote at mode 0600 so the
+  // passphrase never appears in a command line, an env dump, or the chat).
+  if (env.SPARK_PASSPHRASE_FILE) {
+    info(`Using the passphrase from SPARK_PASSPHRASE_FILE (${env.SPARK_PASSPHRASE_FILE}).`);
+    return readPassphraseFile(env.SPARK_PASSPHRASE_FILE);
   }
   const a = await promptStderr(`Set encryption passphrase (>= ${MIN_PASSPHRASE_CHARS} chars): `, { hidden: true });
   const b = await promptStderr("Confirm passphrase: ", { hidden: true });

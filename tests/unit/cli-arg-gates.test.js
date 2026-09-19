@@ -12,7 +12,7 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
-import { mkdtemp, rm, readdir } from "node:fs/promises";
+import { mkdtemp, rm, readdir, writeFile } from "node:fs/promises";
 
 const run = promisify(execFile);
 const SCRIPTS = join(dirname(fileURLToPath(import.meta.url)), "../../skills/sparkbtcbot/scripts");
@@ -96,6 +96,19 @@ describe("setup on a pipe (no TTY) fails loud, never silently", () => {
     expect(r.stderr).toMatch(/sent nothing for 1 s/);
     expect(r.files).toEqual([]);
   }, 30_000);
+
+  it("SPARK_PASSPHRASE_FILE is honored by setup (the agent writes a 0600 file, nothing typed, nothing echoed)", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "cli-pf-"));
+    try {
+      const pf = join(dir, "passphrase");
+      await writeFile(pf, "correct horse battery staple\n", { mode: 0o600 });
+      const r = await spawnSetup([], { stdinLines: null, env: { SPARK_PASSPHRASE_FILE: pf } });
+      expect(r.code).toBe(0);
+      expect(r.files).toEqual(["seed.enc"]);
+      expect(r.stderr).toMatch(/SPARK_PASSPHRASE_FILE/);
+      expect(r.stderr).not.toMatch(/correct horse/);
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  }, 60_000);
 
   it("a piped passphrase (the CI path) still creates the seed; a short one is still refused", async () => {
     const ok = await spawnSetup([], { stdinLines: ["correct horse battery staple", "correct horse battery staple"] });

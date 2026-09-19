@@ -45,6 +45,9 @@
     },
     "./leaf-vault/core": {
       "import": "./lib/leaf-vault.js"
+    },
+    "./agent": {
+      "import": "./skills/sparkbtcbot/scripts/spark-agent.js"
     }
   },
   "files": [

@@ -105,3 +105,16 @@ describe("IssuerSparkWallet method surface", () => {
     expect(found, `expected IssuerSparkWallet to expose ${name}() — token-mint flows depend on it`).toBe(true);
   });
 });
+
+// The wrapper is what carries every guard (allowlist, fee ceilings, budget,
+// sealed policy, dedup, audit log, leaf-vault). A field test showed an agent
+// on the npm path copying the raw-SDK skeleton into every script because the
+// wrapper could not be imported — the exports map blocked the deep path — so
+// it is now a published subpath. Pin it.
+describe("sparkbtcbot-skill/agent subpath", () => {
+  it("exports SparkAgent from the package (no copy-the-listing required)", async () => {
+    const mod = await import("sparkbtcbot-skill/agent");
+    expect(typeof mod.SparkAgent).toBe("function");
+    expect(typeof mod.SparkAgent.create).toBe("function");
+  });
+});

@@ -4,7 +4,7 @@ This is how the skill stores the BIP39 mnemonic. Load this file when the user is
 
 ## What it does
 
-The mnemonic is encrypted with a passphrase you choose and stored in a single file (default: `~/.spark/seed.enc`, mode 0600). Your application reads `SPARK_PASSPHRASE` from env, decrypts the file once at boot, and uses the mnemonic in memory. The mnemonic itself is never written to `.env` or any other plaintext file the runtime cares about.
+The mnemonic is encrypted with a passphrase — one you choose at your terminal, or one an agent generates and writes to `.env` without showing it — and stored in a single file (default: `~/.spark/seed.enc`, mode 0600). Your application reads `SPARK_PASSPHRASE` from env, decrypts the file once at boot, and uses the mnemonic in memory. The mnemonic itself is never written to `.env` or any other plaintext file the runtime cares about.
 
 ## Threat model
 

@@ -19,11 +19,13 @@ If you are running `git clone … && npm install` on the user's behalf, load `re
 
 ## Setup
 
-The mnemonic is **never** stored in plaintext. The skill encrypts it at rest with a passphrase the user provides; the running app reads `SPARK_PASSPHRASE` from env and decrypts the seed file once at boot. There is no plaintext-mnemonic-in-`.env` mode.
+The mnemonic is **never** stored in plaintext. The skill encrypts it at rest with a passphrase — the user's, typed at their own terminal, or one the agent generates and writes to `.env` without showing it (Step 2); the running app reads `SPARK_PASSPHRASE` from env and decrypts the seed file once at boot. There is no plaintext-mnemonic-in-`.env` mode.
 
 ### One runtime, however the skill text arrived
 
-This skill text reaches you via the Claude Code plugin, the cloned repo, or the npm package — but the **runtime is always the `sparkbtcbot-skill` package installed in the user's own project**, pinned by their lockfile:
+**If this skill text was loaded from a cloned tree** — a `git clone`, or a skills directory the host mounted — **that tree is the runtime.** Run from inside it: `npm ci --ignore-scripts` once if `node_modules` is missing, then `npm run setup` / `npm run …`, or `node skills/sparkbtcbot/scripts/cli.js <command>`. Never install a second copy from the registry: it is a different version from the text you just read, and the guards you read about may not be in it. Can't find the tree? Ask the host where the skill files live before doing anything else.
+
+Otherwise (the Claude Code plugin, or the npm package) the **runtime is the `sparkbtcbot-skill` package installed in the user's own project**, pinned by their lockfile:
 
 ```bash
 npm install --ignore-scripts sparkbtcbot-skill # once, in the user's project
@@ -67,6 +69,18 @@ SPARK_NETWORK=MAINNET
 # SPARK_SEED_PATH=/custom/path/seed.enc  # optional override
 ```
 
+`chmod 600 .env` (and any passphrase file). `.env` must live in a **writable** directory that is the cwd when the wallet runs — with a read-only skills mount, that is the writable home, not the mount.
+
+**Agent or chat context — you generate the passphrase.** Do not ask the user to type it into the conversation and do not echo it: create it in-process and write it straight to disk, e.g.
+
+```bash
+node -e 'const {randomBytes}=require("node:crypto");const fs=require("node:fs");
+fs.writeFileSync(".env",`SPARK_PASSPHRASE=${randomBytes(24).toString("base64url")}\nSPARK_NETWORK=MAINNET\n`,{flag:"wx",mode:0o600});
+console.log("wrote .env (passphrase not shown)")'
+```
+
+or write it alone to a 0600 file and point `SPARK_PASSPHRASE_FILE` at it — `setup` and the runtime both honor that. Then tell the user where it is so they can copy it into a password manager themselves.
+
 **Security warnings:**
 - **Never log the mnemonic or the passphrase** — not even during development. To verify the wallet loads, compare *addresses*, never seed words.
 - **Never commit `.env`** — add it to `.gitignore` first. The seed file (`~/.spark/seed.enc`) is sensitive too: mode 0600, keep it out of images/backups that travel with the passphrase.
@@ -76,12 +90,33 @@ SPARK_NETWORK=MAINNET
 
 ### Step 3: Load the wallet in code
 
+**Use the `SparkAgent` wrapper for anything that moves value or answers a balance/arrival question.** It is exported as `sparkbtcbot-skill/agent` (cloned tree: `./skills/sparkbtcbot/scripts/spark-agent.js`) and is where the allowlist, fee ceilings, budget, sealed policy, Lightning dedup, audit log, and leaf-vault backup live — the raw SDK has none of them. Full method list: `references/agent-class.md`.
+
+```javascript
+import "dotenv/config";
+import { loadMnemonicFromEnv } from "sparkbtcbot-skill";
+import { SparkAgent } from "sparkbtcbot-skill/agent";
+
+const mnemonic = await loadMnemonicFromEnv();            // reads SPARK_PASSPHRASE (or _FILE), decrypts seed.enc
+const { agent } = await SparkAgent.create(mnemonic, process.env.SPARK_NETWORK || "MAINNET");
+
+const { address } = await agent.getIdentity();
+const { sats } = await agent.getBalance();               // claimed, spendable sats — a string
+console.log("Spark address:", address, "| available:", sats, "sats");
+// "did it arrive?" is agent.getTransfers() / agent.listPendingDeposits(), never the balance alone
+// spends: agent.transfer / payLightningInvoice / withdraw — every one takes { dryRun: true }
+
+await agent.cleanup();
+```
+
 **All the lib helpers ARE published to npm** — `sparkbtcbot-skill` ships `lib/` and exports it: `import { loadMnemonicFromEnv, checkInvoiceAgainstQuote, lightningFeeCap, createSpendLedger } from "sparkbtcbot-skill"`. **When scaffolding a user's project, add the package as a dependency and import from it** — that's the one supported answer on every install path (the Claude Code plugin cache is NOT importable and is wiped on update; never reference it from generated code). This matters most for the guard helpers (`fee-guards`, `bolt11`, `spend-ledger`, the allowlist): hand-rolled or copy-pasted versions rot and re-introduce fixed bugs. Copy a file into the project only as a last resort when adding a dependency is impossible — `lib/encrypted-seed.js` is the least-bad one to copy (no dependencies beyond `node:crypto`), the guards are the worst.
+
+**Unguarded raw SDK — library authors only, or when the user explicitly asks for it.** No `dryRun`, no allowlist, no ceilings, no budget, no sealed policy, no dedup, no audit log, no exit backup; say so when you use it. `getBalance()` here returns `{ satsBalance: { available, owned, incoming }, tokenBalances }` — not the wrapper's `{ sats, tokens }`.
 
 ```javascript
 import "dotenv/config";
 import { SparkWallet } from "@buildonspark/spark-sdk";
-import { loadMnemonicFromEnv } from "./lib/encrypted-seed.js";
+import { loadMnemonicFromEnv } from "sparkbtcbot-skill";
 
 const mnemonic = await loadMnemonicFromEnv(); // reads SPARK_PASSPHRASE, decrypts seed.enc
 const { wallet } = await SparkWallet.initialize({
@@ -107,3 +142,5 @@ Decrypt happens once at boot (~250ms scrypt). Hold the wallet — do not call `l
 ### Running setup in sandboxed / constrained environments
 
 Container/sandbox gotchas (run setup from the directory holding `.env` — dotenv resolves from cwd, and a wrong cwd surfaces as "incorrect passphrase"; `~` must be writable or override `SPARK_SEED_PATH`; missing-SDK import errors on the plugin path mean use the npx CLI form above). Full troubleshooting: `references/encrypted-seed.md` → Sandboxed environments.
+
+Scratch scripts, QR images, and other temporary files go in `$TMPDIR`, never inside the checkout or the skills directory.

@@ -421,3 +421,40 @@ Every setup-shaped run (7, 19, 20, and the four that scaffold wallet code)
 loaded `setup.md` before acting; none improvised setup from tier 1. One run
 (7) stalled in the harness watchdog on its first attempt and passed on rerun —
 a runner artefact, not a content failure.
+
+## Field test (2026-09-19, Hermes Agent + GLM-5.2 over Telegram, real MAINNET, branch @ 819af8b)
+
+An outside run of the relayered skill with a mid-tier model: fresh setup, a
+$15 receive, "did you get it?", and paying a 13,754-sat merchant invoice.
+Setup, privacy-on, invoice creation, payment and preimage verification all
+worked. Three findings were High, and they share a cause:
+
+- **F1** every script used the raw `SparkWallet`; `SparkAgent` was never
+  instantiated, so no guard ran on a live send. Root cause was structural:
+  `setup.md` Step 3's first code sample was the raw skeleton, and on the npm
+  path the wrapper could not even be imported (`ERR_PACKAGE_PATH_NOT_EXPORTED`).
+- **F2** fiat computed in prose, 6.6× wrong ("13,754 sats (~$1.69)" at a rate
+  the agent had itself fetched); the user approved a payment on that number.
+- **F3** "nothing yet" over 18,431 sats that had landed seven minutes earlier:
+  balance read while the claim was in flight, plus invented fields/methods
+  (`satsBalance.pending`, `getLightningReceiveRequests()`) whose caught
+  failures were reported as evidence.
+
+The relayering thesis check: on this model only the "Rules for Claude"
+never-rules held; the Receiving table and the reference pointers did not
+(first-spend.md was not loaded for its own canonical trigger). Fixes, same day:
+
+- `SparkAgent` exported as `sparkbtcbot-skill/agent`; it is the FIRST sample
+  in `setup.md` Step 3, the raw skeleton demoted and labelled unguarded.
+- Six new tier-1 rules ("Operating rules"): money and balances through
+  `SparkAgent`; every fiat figure is a tool result; never size from one source
+  or a fallback; arrival is `getTransfers()`/`listPendingDeposits()`, never
+  balance alone (shape named: `{ available, owned, incoming }`); call only
+  methods that exist, never report a caught guess as data. Plus one security
+  rule: never ask for the passphrase in chat — generate it. `setup` now honors
+  `SPARK_PASSPHRASE_FILE`; `setup.md` leads with "a cloned tree is the runtime".
+- Evals 40–42 added for the three High findings. Not yet run.
+
+Kept as-is from the report: hardening offer, `npm exec --no`, privacy-on,
+BOLT11 + Spark address for a receive, decode-and-confirm before paying,
+preimage before "paid".

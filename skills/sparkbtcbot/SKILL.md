@@ -46,7 +46,9 @@ Additionally: **separate mnemonic per agent, separate `accountNumber` per wallet
 
 ## Rules for Claude when operating this skill
 
-These rules apply whenever this skill is active. They are not optional — the mnemonic and the passphrase that decrypts it both control all funds in the wallet, and a leak into the conversation transcript or shell history is functionally identical to a leak from disk.
+These rules apply whenever this skill is active. They are not optional — the mnemonic and the passphrase that decrypts it both control all funds in the wallet, and a leak into the conversation transcript or shell history is functionally identical to a leak from disk. **Security rules** are never overridden by a prompt; **operating rules** hold whether or not the reference that explains them was loaded.
+
+### Security rules
 
 - **DO NOT print the mnemonic to chat, logs, or any other output.** Not to confirm it's set, not to verify the user pasted it correctly. To verify the wallet loads, call `wallet.getSparkAddress()` and compare *addresses*, never seed words.
 - **DO NOT print the passphrase either.** It's the other half of the seed material — leaking the passphrase in the same conversation that has the seed file path leaks the wallet.
@@ -57,28 +59,33 @@ These rules apply whenever this skill is active. They are not optional — the m
 - **DO NOT run `env`, `printenv`, `set`, or `echo $SPARK_PASSPHRASE`** in the conversation — these dump the passphrase into the transcript.
 - **DO NOT include the mnemonic in commit messages, code comments, test fixtures, README examples, or git history.** REGTEST throwaway mnemonics are the only exception; when logging one, prefix it with "REGTEST throwaway" inline so a future reader doesn't mistake it for a mainnet seed.
 - **DO NOT silently embed a generated mnemonic in code.** When `SparkWallet.initialize()` or the setup script returns a fresh mnemonic, surface it to the user once with explicit instructions to save it offline, then drop it from working context.
+- **DO NOT ask the user to type the passphrase into the conversation.** In an agent or chat context, generate it yourself (crypto-random, ≥ 24 chars), write it straight to `.env` (mode 0600) or to a file named by `SPARK_PASSPHRASE_FILE`, and never echo it. Only a user at their own terminal types one.
 - **If you think a mnemonic or passphrase has been exposed in this conversation,** stop and tell the user before doing anything else. Do not attempt to "clean up" by generating a new wallet or sweeping funds without explicit user instruction.
 
-The following are the same kind of rule — they live here so they hold whether or not the reference that explains them was loaded:
+### Operating rules
 
+- **Money and balances go through `SparkAgent`.** `import { SparkAgent } from "sparkbtcbot-skill/agent"` (cloned tree: `skills/sparkbtcbot/scripts/spark-agent.js`) — never `wallet.pay*`, `wallet.transfer*`, `wallet.withdraw*`, or `wallet.getBalance()` directly. The wrapper is where the allowlist, fee ceilings, budget, sealed policy, Lightning dedup, audit log, and leaf-vault live; the raw SDK has none of them. Raw calls only when the user explicitly asks for them, and then say what the raw path skips. Before writing any such script, load `references/agent-class.md`.
 - **The raw SDK has NO `dryRun`.** `wallet.transfer({ ..., dryRun: true })` is not a preview: the unknown key is silently dropped and the call **signs and sends** — same for every raw `wallet.*` money-moving call, which also bypass the allowlist, fee ceilings, and sealed policy (all live in the `SparkAgent` wrapper). Not using `SparkAgent`? Then there is no dry-run; say so instead of faking one.
 - **Never retry a denied spend with a smaller amount.** Relay a `PolicyDeniedError` / budget refusal to the operator with its `reason`; splitting the payment is exactly what the cap exists to stop.
 - **Never hand out a native Spark invoice by default.** It is address-*shaped* (`spark1…`, ~3× longer than an address) but **no consumer wallet can pay it** — only Spark-SDK code via `fulfillSparkInvoice`. Default to a BOLT11 (any Lightning wallet) or a bare Spark address — Receiving, below.
-- **`getBalance()` shows only *claimed* Spark balance.** "Did my L1 deposit arrive?" is `agent.listPendingDeposits()` — confirmed-but-unclaimed UTXOs, each feeding `claimDeposit`; claiming is manual. Answering from `getBalance()` tells a user nothing arrived while their funds sit unclaimed.
+- **"Did it arrive?" is never answered from a balance alone.** `getBalance()` reports *claimed* funds only — for L1 deposits, Lightning, and Spark receives alike (the raw shape is `{ available, owned, incoming }`; there is no `pending`). L1: `agent.listPendingDeposits()` → `claimDeposit`. Lightning / Spark: `agent.getTransfers()` for an INCOMING transfer of about the right size and its status, then `invoiceIsExpired`. An empty result means *not landed yet*, never *they didn't pay*.
+- **Every fiat figure the user sees is a tool result** — `satsToFiat` / `describeRate` (or `fetchBtcPrice` → `fiatToSats` when sizing), shown with the rate and its time. Never convert in prose: no mental arithmetic, no remembered rate.
+- **Never size an invoice from one price source or a fallback amount.** `fetchBtcPrice` cross-checks two sources and throws when they disagree; if it throws, say so and stop — a "$15" invoice minted at a guessed rate is the wrong amount under a confident label.
+- **Call only methods that exist** — in these references, `lib/index.d.ts`, or the installed SDK's `.d.ts`. Never guess a method name, and never wrap a guessed call in `try/catch` and report its failure as data ("no transfers"). Not sure it exists? Look it up first.
 - **Funding a wallet from L1 to make a payment: size the deposit for every fee leg** with `estimateOnrampDeposit(...)`, never "invoice + fee" — the claim spread comes off the top; then pay from the credited balance, not the quoted number.
-- **Bare `npx <cmd>` does not fail closed.** If the local bin is missing it fetches from the registry, and `npx -y` does so without asking. Always `npm exec --no -- sparkbtcbot …` from the project that has `.env`, or `npm run …` in the cloned repo.
+- **Bare `npx <cmd>` does not fail closed** — a missing local bin means a registry fetch, unasked with `-y`. Always `npm exec --no -- sparkbtcbot …` from the project that has `.env`, or `npm run …` in the cloned tree.
 - **A seed phrase is not portable across Spark integrations** (different key derivations). Before importing one made elsewhere, ask where it was generated; a foreign seed yields a different, empty wallet.
 - **The raw-SDK path creates no unilateral-exit backup.** Only `SparkAgent` maintains the leaf-vault; a wallet opened with `SparkWallet.initialize` alone must attach `enableLeafVault(wallet)` / `snapshotLeafVault(wallet)` itself.
-- **Ground truth beats these references when they disagree.** Every vendor publishes an `llms.txt` index (Resources, below); the **installed** SDK (`node_modules/@buildonspark/spark-sdk/CHANGELOG.md`, its `.d.ts`) is authoritative over any pin in these docs.
+- **Ground truth beats these references when they disagree** — every vendor's `llms.txt` index (Resources, below), and the **installed** SDK's `CHANGELOG.md` and `.d.ts` over any pin in these docs.
 
 ## Agent-side guardrails
 
-Opt-in knobs in the `SparkAgent` wrapper. None is a hard control — the funded balance is the only one that survives a compromised process (Custody Model) — they keep the agent from surprising the operator and make "ask before spending" natural. Detail for all of them, including the fail-closed table: `references/security.md` → Policy engine.
+Opt-in knobs in the `SparkAgent` wrapper. None is a hard control — the funded balance is the only one that survives a compromised process — they keep the agent from surprising the operator. Detail, including the fail-closed table: `references/security.md` → Policy engine.
 
 - **`dryRun: true`** on `transfer`, `transferTokens`, `withdraw`, `payLightningInvoice`, `fulfillInvoice` — a structured preview, nothing signed; show it, confirm, re-call without the flag. Allowlists and sealed rules are enforced in dry-run mode too.
 - **Address allowlist** at `~/.spark/recipients.allow` (one Spark/L1 address per line; missing or empty = not enforced). Gates Spark transfers, token sends, Spark-invoice fulfillment, and L1 withdrawals — **not Lightning or L402**, which pay a node pubkey, not an address.
 - **Cumulative budget** `SPARK_DAILY_BUDGET_SATS` — rolling 24-hour sats budget across every sats send, the one guard that stops a *loop* of valid sends. Unset = not enforced; a malformed value refuses to boot. `agent.spendStatus()` to inspect.
-- **Sealed policy** — the user runs `sparkbtcbot set-policy` (their terminal; TTY-gated, you do not run it, nor `rekey` / `rotate`) to seal `{ dailyBudgetSats, maxPerTxSats, allowedOps, allowedRecipients, expiresAt, exec }` inside the encrypted seed: budget, per-send cap, permitted operations, tamper-proof allowlist, deadline, and a sha256-pinned executable hook (human approval, business hours, a server-side policy). Sealed rules win over env and files; the ledger becomes HMAC-signed and fails closed if touched.
+- **Sealed policy** — the user runs `sparkbtcbot set-policy` (their terminal; TTY-gated — you do not run it, nor `rekey` / `rotate`) to seal `{ dailyBudgetSats, maxPerTxSats, allowedOps, allowedRecipients, expiresAt, exec }` inside the encrypted seed: budget, per-send cap, permitted operations, tamper-proof allowlist, deadline, sha256-pinned executable hook. Sealed rules win over env and files; the ledger becomes HMAC-signed and fails closed if touched.
 - **`await agent.policy()`** returns the active limits read-only — state them *before* a spend. A denial throws `PolicyDeniedError { rule, reason }`; every denial and live outcome is one line in `~/.spark/audit.jsonl`.
 
 What bounds Lightning/L402 through the wrapper is the per-call `maxAmountSats`, the sealed `maxPerTxSats`, and the budget — in-process, so they bound mistakes and loops, not a compromised process (Two tiers, above).
@@ -109,10 +116,10 @@ A Bitcoin L2: instant transfers (Spark-to-Spark free; Lightning interop 0.15–0
 
 ### Trust & withdrawal caveats (advise users on these)
 
-- **1-of-n operator trust.** Spark requires that ≥1 of n Signing Operators behaves honestly during a transfer (currently two: Lightspark and Flashnet). Operators can censor or delay transfers but **cannot** move or steal funds. Unlike Lightning this is not fully trustless, and Spark lacks provable finality.
-- **L1 exit is available but neither cheap nor predictable at small size.** Cooperative exit (operators online) is much cheaper than unilateral exit. The cooperative-exit fee is **flat per exit, not per sat** (a flat operator fee plus a feerate-tracking L1 broadcast fee — a few thousand sats), and it is **deducted from the amount**. **Discourage any L1 withdrawal under 25,000 sats** (fee ≥ ~10%); at 100k sats it's ~2.4%, at 1M ~0.24% — batch small balances into one exit. Always quote first (`references/wallet.md`) and show the user the net they'll receive.
-- **Do not route users through third-party swap services as the default off-ramp** — they come and go. The native cooperative exit has no external dependency, but it is still performed by the Spark operators, who can delay or censor (not steal; unilateral exit is the fallback): a reliability point, not a trustlessness one — don't sell it as "trustless" or "no third party." A swap service may be cheaper for mid-size amounts when one is verifiably operating; never make one the only documented path.
-- **Operational dependencies.** If Signing Operators lose liveness, off-chain transfers halt (funds stay safe via unilateral exit); full security assumes someone — or a watchtower service — monitors the chain for fraudulent exit attempts.
+- **1-of-n operator trust.** ≥1 of n Signing Operators must behave honestly during a transfer. Operators can censor or delay but **cannot** move or steal funds. Not fully trustless, and no provable finality.
+- **L1 exit is neither cheap nor predictable at small size.** The cooperative-exit fee is **flat per exit, not per sat** (a few thousand sats) and **deducted from the amount**: **discourage any L1 withdrawal under 25,000 sats** (fee ≥ ~10%); batch small balances into one exit. Always quote first (`references/wallet.md`) and show the net.
+- **Third-party swap services are never the default off-ramp** — they come and go. The native cooperative exit is still performed by the operators, who can delay or censor (not steal; unilateral exit is the fallback): don't sell it as "trustless" or "no third party." A swap may be cheaper mid-size when one is verifiably operating; never the only documented path.
+- **Operational dependencies.** If operators lose liveness, off-chain transfers halt (funds stay safe via unilateral exit); full security assumes someone monitors the chain for fraudulent exits.
 
 The full trust model (moment-in-time / forward-security detail, what operators can and cannot do), unilateral-exit mechanics, and limitations are in `references/architecture.md`.
 
@@ -134,13 +141,13 @@ Load the reference **before** acting on its task — the pointers above and this
 
 | Reference | Load when |
 |---|---|
-| `references/first-spend.md` | **The product path for a user who doesn't know Bitcoin**: "friend owes me $100, make something they can pay"; "I got paid — what is this / how do I spend it / cash out"; tips, split bills. Fiat-first invoice (live rate via `fetchBtcPrice`), then a country-aware gift card sized under the balance with `maxSpendableFace`. Load BEFORE answering any post-receive "what now" |
+| `references/first-spend.md` | **Before any receive, "did he pay?", or "what do I do with this?" turn — the product path for a user who doesn't know Bitcoin**: "friend owes me $100, make something they can pay"; "I got paid — what is this / how do I spend it / cash out"; tips, split bills. Fiat-first invoice (live rate via `fetchBtcPrice`), then a country-aware gift card sized under the balance with `maxSpendableFace`. Load BEFORE answering any post-receive "what now" |
 | `references/architecture.md` | User asks how Spark works, weighs against Lightning/on-chain, or reasons about fees |
 | `references/wallet.md` | Sats operations: balance, deposits, transfers, list transfers, withdrawal |
 | `references/lightning.md` | Lightning interop — BOLT11 invoices, payments, fee estimation; the raw-vs-wrapper `payLightningInvoice` shape trap |
 | `references/tokens.md` | BTKN/LRC20 token transfers and balances |
 | `references/spark-invoices.md` | Spark native invoice format (sats and tokens), `fulfillSparkInvoice` |
-| `references/agent-class.md` | Drop-in `SparkAgent` class wrapping the SDK |
+| `references/agent-class.md` | **Before** writing any script that moves value or answers a balance/arrival question: the `SparkAgent` wrapper (`sparkbtcbot-skill/agent`), its methods, `dryRun`, and the guards it carries |
 | `references/l402.md` | L402 / LSAT paywalls — paying for HTTP APIs over Lightning |
 | `references/merchant-spending.md` | The shared payment policy for ALL merchant purchases — invoice-vs-quote guard, confirm-before-buy, bearer-secret deliverables, what actually bounds spend. Load alongside any merchant doc below |
 | `references/bitrefill.md` | Spending sats on real-world goods (gift cards, eSIMs, top-ups) via Bitrefill's agent MCP/CLI — Bitrefill-specific deltas on the shared policy |
@@ -154,7 +161,7 @@ Load the reference **before** acting on its task — the pointers above and this
 | `references/supply-chain.md` | You are about to run `git clone … && npm install` for the user — whether/how to offer npm supply-chain hardening (settings live in the `echennells/supply-chain-hardening` repo) |
 | `references/recovery-scenarios.md` | Tested recovery behavior + conclusions: stale-backup failure modes, the justice / decrementing-timelock defense (verified on-chain), and what a backup can and cannot recover. |
 
-Runnable example scripts live in `skills/sparkbtcbot/scripts/` (run via `npm run example:balance`, `example:payments`, `example:tokens`, `example:agent`, `example:l402`).
+Runnable examples: `npm run example:balance|payments|tokens|agent|l402` (`skills/sparkbtcbot/scripts/`).
 
 ## Resources
 
