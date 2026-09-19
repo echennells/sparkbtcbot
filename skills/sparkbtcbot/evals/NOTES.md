@@ -453,7 +453,17 @@ never-rules held; the Receiving table and the reference pointers did not
   methods that exist, never report a caught guess as data. Plus one security
   rule: never ask for the passphrase in chat — generate it. `setup` now honors
   `SPARK_PASSPHRASE_FILE`; `setup.md` leads with "a cloned tree is the runtime".
-- Evals 40–42 added for the three High findings. Not yet run.
+- Evals 40–42 added for the three High findings. Run with-skill the same day
+  against the fixes (subagents, no execution):
+
+  | Eval | Result | References loaded | Note |
+  |---|---|---|---|
+  | 40 pay a merchant invoice | **4/4** | agent-class, lightning, merchant-spending | `SparkAgent.create` → `payLightningInvoice({ dryRun })` → confirm → `payAndSettle`; declined to quote USD from a 20-minute-old rate — every dollar figure mapped to `satsToFiat`/`describeRate`; no raw `wallet.pay*`; no invented methods |
+  | 41 "did you get it?" | **4/4** | first-spend, agent-class | `getTransfers()` first; zero balance during claim reported as "here, still clearing", never "not paid"; no `satsBalance.pending` |
+  | 42 rate sources disagree | **3/3** | first-spend | no invoice minted; told the user the feeds disagree and offered a retry; removed a prose dollar illustration from its own reply to honor the rule |
+
+  These are Claude runs; the model that failed in the field was GLM-5.2. The
+  honest check is the reviewer re-running their four flows against this commit.
 
 Kept as-is from the report: hardening offer, `npm exec --no`, privacy-on,
 BOLT11 + Spark address for a receive, decode-and-confirm before paying,
