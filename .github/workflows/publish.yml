@@ -46,10 +46,18 @@ jobs:
       # toolcache to PATH and would shadow the hardening; and AFTER the npm
       # upgrade, because min-release-age landed in npm 11.10.0 and on the
       # runner's stock npm the age gate is written and enforced by nothing.
+      #
+      # `intel: sfw` additionally routes the install through Socket Firewall's
+      # known-malware blocklist -- the axis the age gate and script blocking
+      # cannot cover (a 30-day-old package with no install script). Fail-open:
+      # if Socket is unreachable it warns and the install proceeds unfiltered,
+      # so it cannot itself block a release; verify only expects it when the
+      # harden step reports it installed.
       - name: Harden package managers
         uses: echennells/supply-chain-hardening/action@v2
         with:
           ecosystems: npm
+          intel: sfw
 
       - name: Install dependencies
         run: npm ci
