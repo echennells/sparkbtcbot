@@ -1,8 +1,15 @@
 {
   "name": "sparkbtcbot",
-  "version": "0.1.0",
-  "description": "Name-reservation stub for the sparkbtcbot project. The real package is sparkbtcbot-skill; this package exists so a wrong-directory `npx sparkbtcbot` registry fallback lands on project-owned code that refuses and explains, instead of a squatter's code, at wallet-bootstrap time.",
-  "keywords": ["sparkbtcbot", "name-reservation"],
+  "version": "0.2.0",
+  "description": "Forwarder for sparkbtcbot-skill. `npx sparkbtcbot` installs and runs the real Spark Bitcoin L2 wallet skill; this package exists so the short name is owned by the project rather than a squatter, and so a wrong-name install still works.",
+  "keywords": [
+    "sparkbtcbot",
+    "spark",
+    "bitcoin",
+    "lightning",
+    "wallet",
+    "claude-skill"
+  ],
   "homepage": "https://github.com/echennells/sparkbtcbot",
   "repository": {
     "type": "git",
@@ -12,12 +19,14 @@
   "bugs": "https://github.com/echennells/sparkbtcbot/issues",
   "license": "MIT",
   "author": "Eric Chennells",
-  "type": "module",
   "bin": {
     "sparkbtcbot": "cli.js"
   },
   "files": [
     "cli.js",
     "README.md"
-  ]
+  ],
+  "dependencies": {
+    "sparkbtcbot-skill": "0.7.0"
+  }
 }
