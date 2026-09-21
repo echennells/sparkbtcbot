@@ -12,6 +12,7 @@
 
 ### Fixed
 
+- **`bitrefill.md`'s account pitch no longer promises what the guest flow can't deliver.** It said an account would make "your orders and redemption codes findable later" and dangled the referral credit — but every order this skill places is a guest order, which is attached to no account (Bitrefill's agent docs describe no way to attach one afterwards), and the referral credit accrues only to spend made while signed in, so under our flow it accrued to nobody. The pitch now says what an account does (balance payments, cashback, history for orders placed *through* it), states the credit's sign-in condition, and tells the agent never to imply signing up changes where today's codes live. The authenticated purchase path remains unvalidated in this skill and is labelled as such.
 - **`setup` on a pipe no longer succeeds silently or hangs.** With stdin at EOF and no `SPARK_PASSPHRASE`, the passphrase prompt was left pending and Node exited **0 with nothing written**. An open-but-silent pipe hung until something killed it. The shared prompt helper now rejects on EOF (`PROMPT_EOF`) and after `SPARK_PROMPT_TIMEOUT_MS` of silence (default 30 s, `PROMPT_TIMEOUT`), so setup exits 1 with the reason and the fix. Piped input — the CI path — is unchanged.
 
 ### Changed
