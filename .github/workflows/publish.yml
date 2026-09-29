@@ -1,46 +1,125 @@
 name: Publish
 
 # Publishes to npm with Sigstore provenance whenever a version tag is pushed.
-# Releases become: bump version -> tag -> push tag; CI does the rest. No npm
-# token lives on any laptop or in any repo secret — auth is npm "trusted
+# Releases become: bump version -> tag -> push tag -> approve; CI does the rest.
+# No npm token lives on any laptop or in any repo secret — auth is npm "trusted
 # publishing" (OIDC): npmjs.com is configured (package settings -> Trusted
-# Publisher) to accept publishes ONLY from this workflow file in this repo.
-# The id-token permission below is what lets the job prove that identity, and
-# it's also what signs the provenance attestation linking the tarball to this
-# exact commit + workflow run.
+# Publisher) to accept publishes only from this workflow file in this repo,
+# running in the `release` environment. The id-token permission is what lets a
+# job prove that identity, and it also signs the provenance attestation linking
+# the tarball to this exact commit + workflow run.
+#
+# PREREQUISITES (settings, not code — the workflow can't enforce them):
+#   - GitHub environment `release`: required reviewer, deployment rule allowing
+#     only tags matching v*. If it doesn't exist when a tag is pushed, GitHub
+#     creates it with NO protection and the publish runs unapproved.
+#   - npm trusted publisher on the package: echennells/sparkbtcbot, workflow
+#     publish.yml, environment `release`, "npm publish" allowed. Connections are
+#     additive, so an older one without the environment bypasses the gate.
+#
+# Four jobs, so the credential never shares a job with project or dependency
+# code, and the code that runs tests never touches the bytes that ship:
+#
+#   pack     contents:read. Checks out the tag and packs it — no `npm ci`, no
+#            dependency code, no lifecycle scripts. Records the tarball's
+#            sha256. These are the bytes that ship.
+#   test     contents:read. Hardened install + the full suite. Gates the
+#            release; its filesystem is not the one `pack` packed.
+#   publish  id-token only, in the `release` environment (a human approves).
+#            No checkout, no install. Verifies the downloaded tarball against
+#            pack's sha256, checks the name and version INSIDE the tarball
+#            against this workflow's allowlist and the tag, then publishes
+#            exactly those bytes. Skips a version npm already has, so a release
+#            that failed after its publish can be re-run.
+#   release  contents:write. Cuts the GitHub Release once npm has the version.
+#
+# GitHub-owned actions are pinned to commit SHAs (no Dependabot here — bump by
+# hand, keeping the version comment in sync).
 
 on:
   push:
     tags: ["v*"]
 
-permissions:
-  contents: write # create the GitHub Release for the tag
-  id-token: write # OIDC: trusted-publishing auth + provenance signing
+# Nothing at the workflow level; every job asks for exactly what it uses.
+permissions: {}
 
 jobs:
-  publish:
+  pack:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      tarball: ${{ steps.pack.outputs.tarball }}
+      sha256: ${{ steps.pack.outputs.sha256 }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-node@v4
+      # No `cache: npm` anywhere in this workflow: a cache restored from the
+      # default branch is an input nobody reviewed, and releases are rare
+      # enough that the seconds it saves don't matter.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
-          registry-url: "https://registry.npmjs.org"
-          cache: npm
 
-      # Trusted publishing needs a current npm (the runner's bundled one is too
-      # old to speak OIDC to the registry).
+      # Refuse to publish if the tag and package.json disagree — a mismatched
+      # tag would otherwise silently publish the wrong version.
+      - name: Check tag matches package.json version
+        run: |
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match package.json version $PKG_VERSION" >&2
+            exit 1
+          fi
+
+      # Packing needs no node_modules: package.json's `files` allowlist picks
+      # the contents and there are no bundled deps. --ignore-scripts so no
+      # pre/postpack hook can run even if one is added later. `npm pack --json`
+      # printed an array through npm 11 and an object keyed by package name
+      # from npm 12, so accept either. set -e alone doesn't catch a failed
+      # $(...) inside echo's arguments — assign first, then assert.
+      - name: Pack
+        id: pack
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/dist"
+          npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP/dist" --json > "$RUNNER_TEMP/pack.json"
+          TARBALL="$(node -p "const j = require(process.env.RUNNER_TEMP + '/pack.json'); (Array.isArray(j) ? j[0] : Object.values(j)[0]).filename")"
+          test -n "$TARBALL"
+          test -f "$RUNNER_TEMP/dist/$TARBALL"
+          SHA256="$(sha256sum "$RUNNER_TEMP/dist/$TARBALL" | cut -d' ' -f1)"
+          echo "Packed $TARBALL sha256=$SHA256"
+          { echo "tarball=$TARBALL"; echo "sha256=$SHA256"; } >> "$GITHUB_OUTPUT"
+
+      - name: Upload tarball
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: npm-tarball
+          path: ${{ runner.temp }}/dist/${{ steps.pack.outputs.tarball }}
+          if-no-files-found: error
+
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+
+      # A current npm, for the hardening below: min-release-age landed in npm
+      # 11.10.0, and the runner's bundled npm is older. Pinned rather than
+      # @latest so the npm that runs the install can't change between releases.
       - name: Update npm
-        run: npm install -g npm@latest
+        run: npm install -g npm@12.0.2
 
       # Harden the runner before anything is installed.
-      #
-      # Trusted publishing already removes the stolen-token risk, but `npm ci`
-      # runs BEFORE `npm publish`, so a dependency lifecycle script could alter
-      # the tree that then ships -- under this workflow's own provenance
-      # attestation. A signed artifact attesting to a commit whose contents
-      # changed after checkout is worse than a leaked token.
       #
       # Placement is load-bearing twice: AFTER setup-node, which prepends its
       # toolcache to PATH and would shadow the hardening; and AFTER the npm
@@ -71,19 +150,79 @@ jobs:
       - name: Run tests
         run: npm test
 
-      # Refuse to publish if the tag and package.json disagree — a mismatched
-      # tag would otherwise silently publish the wrong version.
-      - name: Check tag matches package.json version
+  publish:
+    needs: [pack, test]
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      id-token: write # OIDC: trusted-publishing auth + provenance signing
+    steps:
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          registry-url: "https://registry.npmjs.org"
+
+      # Trusted publishing needs npm >= 11.5.1 (the runner's bundled npm can't
+      # speak OIDC to the registry). Pinned exactly: this is the only
+      # third-party code that runs next to the credential. 12.0.2 is the version
+      # that published 0.5.0 through 0.8.0 through this workflow.
+      - name: Update npm
+        run: npm install -g npm@12.0.2
+
+      - name: Download tarball
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: npm-tarball
+          path: ${{ runner.temp }}/dist
+
+      # Every other job in this run can write artifacts, so trust pack's
+      # sha256 (a job output no other job can change), not the artifact name.
+      # npm takes the package name for the OIDC exchange from the tarball's own
+      # package.json, so check that name against the allowlist below — this
+      # workflow publishes sparkbtcbot-skill and nothing else. The rename to
+      # `sparkbtcbot` changes EXPECTED_NAME deliberately, in the same PR.
+      #
+      # npm spends name@version permanently, so publishing a version it already
+      # has is a hard 403. Skip it instead, so a run whose publish succeeded
+      # but whose Release step failed can be re-run end to end. Compares the
+      # output, not the exit code: `npm view` of a missing version is an E404.
+      - name: Verify tarball and publish to npm (with provenance)
+        env:
+          EXPECTED_NAME: sparkbtcbot-skill
+          TARBALL: ${{ needs.pack.outputs.tarball }}
+          SHA256: ${{ needs.pack.outputs.sha256 }}
         run: |
-          PKG_VERSION="$(node -p "require('./package.json').version")"
-          TAG_VERSION="${GITHUB_REF_NAME#v}"
-          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
-            echo "Tag $GITHUB_REF_NAME does not match package.json version $PKG_VERSION" >&2
+          set -euo pipefail
+          FILE="$RUNNER_TEMP/dist/$TARBALL"
+          test -n "$TARBALL"
+          test -n "$SHA256"
+          echo "$SHA256  $FILE" | sha256sum -c -
+          MANIFEST="$(tar -xzOf "$FILE" package/package.json)"
+          NAME="$(printf '%s' "$MANIFEST" | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).name")"
+          VERSION="$(printf '%s' "$MANIFEST" | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).version")"
+          if [ "$NAME" != "$EXPECTED_NAME" ]; then
+            echo "Tarball is $NAME, but this workflow only publishes $EXPECTED_NAME" >&2
             exit 1
           fi
+          if [ "$VERSION" != "${GITHUB_REF_NAME#v}" ]; then
+            echo "Tarball is version $VERSION, but the tag is $GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+          if [ "$(npm view "$NAME@$VERSION" version 2>/dev/null)" = "$VERSION" ]; then
+            echo "$NAME@$VERSION is already on npm; skipping publish."
+            exit 0
+          fi
+          npm publish "$FILE" --provenance --access public
 
-      - name: Publish to npm (with provenance)
-        run: npm publish --provenance --access public
+  release:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the GitHub Release for the tag
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       # Cut the GitHub Release from the same tag, so the Releases page cannot
       # drift behind npm the way it did from 0.4.3 through 0.6.3 — five tagged,
@@ -94,6 +233,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "Release $GITHUB_REF_NAME already exists; nothing to do."
+            exit 0
+          fi
           VERSION="${GITHUB_REF_NAME#v}"
           # Release notes are this version's CHANGELOG section: everything
           # between its own "## <version> " heading and the next heading.
