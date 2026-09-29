@@ -114,7 +114,7 @@ function spendLedgerFromEnv(seedCtx = getLoadedSeedContext()) {
       console.warn(
         `spark-agent: SPARK_DAILY_BUDGET_SATS (${raw}) differs from the SEED-BOUND budget ` +
           `(${seedCtx.policy.dailyBudgetSats} sats) — the seed-bound value wins. Change it with ` +
-          `\`npx sparkbtcbot set-policy\` (requires the passphrase), not the env var.`,
+          `\`npm exec --no -- sparkbtcbot set-policy\` (requires the passphrase), not the env var.`,
       );
     }
     return createSpendLedger({
@@ -137,7 +137,7 @@ function spendLedgerFromEnv(seedCtx = getLoadedSeedContext()) {
         "receive it — refusing to run with the policy silently unenforced. Open the wallet with " +
         "loadMnemonicFromEnv() (which reads the policy) before constructing SparkAgent, and make sure " +
         "only ONE copy of lib/encrypted-seed.js is loaded (import from the npm package, don't mix it " +
-        "with a copied lib/). To remove the policy deliberately, run `npx sparkbtcbot set-policy`.",
+        "with a copied lib/). To remove the policy deliberately, run `npm exec --no -- sparkbtcbot set-policy`.",
     );
   }
   if (raw == null || String(raw).trim() === "") return null;

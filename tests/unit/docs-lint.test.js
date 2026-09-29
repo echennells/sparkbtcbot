@@ -25,7 +25,31 @@ describe("docs lint", () => {
     const refs = (await readdir(refDir)).filter((f) => f.endsWith(".md")).map((f) => join("skills/sparkbtcbot/references", f));
     for (const rel of [...DOCS, ...refs, "skills/sparkbtcbot/evals/evals.json"]) {
       const text = await readFile(join(ROOT, rel), "utf8");
-      expect(text.includes("npx -y --package"), `${rel} teaches the remote-fetch npx form — use local resolution (npm install sparkbtcbot-skill, then npx <cli>)`).toBe(false);
+      expect(text.includes("npx -y --package"), `${rel} teaches the remote-fetch npx form — use local resolution (npm install --ignore-scripts sparkbtcbot-skill, then npm exec --no -- sparkbtcbot <command>)`).toBe(false);
+    }
+  });
+
+  it("nothing tells the user to run a subcommand through bare npx or npm exec without --no", async () => {
+    // `npx sparkbtcbot <command>` falls back to a registry fetch when the local
+    // bin is missing (wrong directory), and with no TTY it installs and runs
+    // silently. `npm exec` without `--no` is the same thing, and `-y`,
+    // `sparkbtcbot-skill` or an `@version` make the fetch explicit. The taught
+    // form is `npm exec --no -- sparkbtcbot <command>`. Runtime error messages
+    // count: an agent copies the command a thrown error hands it. Prose that
+    // explains the bare form (`npx sparkbtcbot ...`) is fine; a subcommand or
+    // `<command>` placeholder after it is the instruction this catches.
+    const BARE = /\b(?:npx|npm\s+(?:exec|x))\s+(?:(?!--no\b)-\S+\s+)*(?:--\s+)?sparkbtcbot(?:-skill)?(?:@\S+)?\s+[<a-z]/i;
+    const refDir = join(ROOT, "skills/sparkbtcbot/references");
+    const refs = (await readdir(refDir)).filter((f) => f.endsWith(".md")).map((f) => join("skills/sparkbtcbot/references", f));
+    const code = [];
+    for (const dir of ["lib", "skills/sparkbtcbot/scripts"]) {
+      const files = (await readdir(join(ROOT, dir))).filter((f) => /\.(js|d\.ts)$/.test(f));
+      code.push(...files.map((f) => join(dir, f)));
+    }
+    for (const rel of [...DOCS, "SECURITY.md", ...refs, "skills/sparkbtcbot/evals/evals.json", ...code]) {
+      const text = await readFile(join(ROOT, rel), "utf8");
+      const hit = text.match(BARE);
+      expect(hit, `${rel} has \`${hit?.[0]}…\` — use \`npm exec --no -- sparkbtcbot <command>\``).toBeNull();
     }
   });
 
@@ -68,10 +92,11 @@ describe("docs lint", () => {
   });
 
   it("no living doc references the retired per-command bins", async () => {
-    // 0.6.0 collapsed five bins (sparkbtcbot-setup, ...) into one `sparkbtcbot`
+    // 0.6 collapsed five bins (sparkbtcbot-setup, ...) into one `sparkbtcbot`
     // dispatcher whose name matches a registry package we own. The old names
-    // are unregistered registry strings — a doc that resurrects one recreates
-    // the typosquat landing spot. (CHANGELOG is history and exempt.)
+    // are owned too (0.6.3 published refusing stubs for them), but a doc that
+    // resurrects one still teaches a command that no longer exists and sends
+    // readers to the registry for it. (CHANGELOG is history and exempt.)
     const RETIRED = ["sparkbtcbot-setup", "sparkbtcbot-reveal-mnemonic", "sparkbtcbot-leaf-vault", "sparkbtcbot-set-policy", "sparkbtcbot-reset-ledger"];
     const refDir = join(ROOT, "skills/sparkbtcbot/references");
     const refs = (await readdir(refDir)).filter((f) => f.endsWith(".md")).map((f) => join("skills/sparkbtcbot/references", f));
