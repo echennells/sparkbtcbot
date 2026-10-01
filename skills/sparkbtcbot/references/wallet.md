@@ -202,7 +202,7 @@ Two ways to avoid it, in order of preference:
    ```javascript
    const { wallet } = await SparkWallet.initialize({
      mnemonicOrSeed: mnemonic,
-     options: { network, optimizationOptions: { auto: false } },
+     options: sparkWalletOptions(network, { optimizationOptions: { auto: false } }), // from sparkbtcbot-skill; ladders off
    });
    ```
 2. **Let it settle before cleanup** if you *want* the optimization to happen in-process — a few seconds is usually enough, but it's a timing guess, not a guarantee (a multi-swap optimization can take longer):

@@ -1,4 +1,5 @@
 import { IssuerSparkWallet } from "@buildonspark/issuer-sdk";
+import { sparkWalletOptions } from "../../lib/wallet-options.js";
 
 const NETWORK = "REGTEST";
 
@@ -18,7 +19,7 @@ export async function getOrCreateIssuerToken({
 }) {
   const { wallet } = await IssuerSparkWallet.initialize({
     mnemonicOrSeed: mnemonic,
-    options: { network: NETWORK, optimizationOptions: { auto: false } }, // see helpers/wallet.js
+    options: sparkWalletOptions(NETWORK, { optimizationOptions: { auto: false } }), // see helpers/wallet.js
   });
   trackedIssuers.add(wallet);
 

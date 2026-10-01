@@ -53,6 +53,7 @@ import { atomicWriteFile } from "../../../lib/atomic-file.js";
 import { ensureWalletPrivacy, privacyPreferenceFromEnv } from "../../../lib/wallet-privacy.js";
 import { snapshotLeafVault, defaultVaultPath } from "./leaf-vault.js";
 import { promptStderr } from "./prompt.js";
+import { sparkWalletOptions } from "../../../lib/wallet-options.js";
 
 const USAGE =
   "Usage: sparkbtcbot rotate [--execute]\n\n" +
@@ -229,7 +230,7 @@ export async function main() {
   const oldPayload = await loadSeedPayload({ passphrase, path: seedPath });
 
   stderr.write(`Booting the current wallet on ${network}…\n`);
-  const { wallet: oldWallet } = await SparkWallet.initialize({ mnemonicOrSeed: oldPayload.mnemonic, options: { network } });
+  const { wallet: oldWallet } = await SparkWallet.initialize({ mnemonicOrSeed: oldPayload.mnemonic, options: sparkWalletOptions(network) });
   let newWallet = null;
   let newMnemonic = null;
   // Everything below RETURNS an exit code instead of calling exit(): the
@@ -251,7 +252,7 @@ export async function main() {
 
     // A fresh wallet: the SDK generates the mnemonic; it exists only in this
     // process until stageSeeds writes it, which happens before any sweep.
-    const fresh = await SparkWallet.initialize({ options: { network } });
+    const fresh = await SparkWallet.initialize({ options: sparkWalletOptions(network) });
     newWallet = fresh.wallet;
     newMnemonic = fresh.mnemonic;
     const newAddress = await newWallet.getSparkAddress();

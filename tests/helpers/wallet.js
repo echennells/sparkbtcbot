@@ -1,4 +1,5 @@
 import { SparkWallet } from "@buildonspark/spark-sdk";
+import { sparkWalletOptions } from "../../lib/wallet-options.js";
 
 const NETWORK = "REGTEST";
 
@@ -9,11 +10,11 @@ const tracked = new Set();
 // leaves TRANSFER_LOCKED for a while, and the next file's send on the shared
 // funded wallet fails ("leaf … is not available to transfer, status:
 // TRANSFER_LOCKED" — seen 2026-09-30). Same remedy wallet.md → Cleanup gives
-// one-shot scripts.
+// one-shot scripts. Fee ladders off like every wallet the package opens.
 export async function createTestWallet(opts = {}) {
   const { wallet, mnemonic } = await SparkWallet.initialize({
     mnemonicOrSeed: opts.mnemonic,
-    options: { network: NETWORK, optimizationOptions: { auto: false } },
+    options: sparkWalletOptions(NETWORK, { optimizationOptions: { auto: false } }),
   });
   tracked.add(wallet);
   return { wallet, mnemonic };

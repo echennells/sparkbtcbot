@@ -116,12 +116,13 @@ await agent.cleanup();
 ```javascript
 import "dotenv/config";
 import { SparkWallet } from "@buildonspark/spark-sdk";
-import { loadMnemonicFromEnv } from "sparkbtcbot-skill";
+import { loadMnemonicFromEnv, sparkWalletOptions } from "sparkbtcbot-skill";
 
 const mnemonic = await loadMnemonicFromEnv(); // reads SPARK_PASSPHRASE, decrypts seed.enc
 const { wallet } = await SparkWallet.initialize({
   mnemonicOrSeed: mnemonic,
-  options: { network: process.env.SPARK_NETWORK || "MAINNET" },
+  // network + SDK 0.13's fee ladders OFF, so the exit backup stays exitable (unilateral-exit.md)
+  options: sparkWalletOptions(process.env.SPARK_NETWORK || "MAINNET"),
 });
 
 const address = await wallet.getSparkAddress();

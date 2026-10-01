@@ -18,7 +18,7 @@
 // bundle carries `leaves[]` (which leaves to exit) plus `nodes[]` (their ancestor
 // tree nodes), which Blink's createBundleSparkClient serves to the SDK offline to
 // rebuild each exit chain; the ancestors are REQUIRED for any multi-level tree.
-import { buildUnilateralExitChain, Network } from "@buildonspark/spark-sdk";
+import { buildUnilateralExitChain, Network, getTxFromRawTxBytes, isEphemeralAnchorOutput } from "@buildonspark/spark-sdk";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
@@ -435,9 +435,35 @@ export function judgeMissingVault(sats) {
   return { level: "OK", exitCode: 0 };
 }
 
+// Leaves whose refund has no fee-bump anchor: SDK 0.13's anchorless refund,
+// signed when a wallet claims with enableCpfpRefundLadder on (this package
+// keeps it off; another program opening the same seed may not). Blink's exit
+// tool fee-bumps every refund through its anchor and fails on the WHOLE
+// backup if any refund lacks one; SDK 0.13's own exit helper can exit such a
+// leaf only with the seed's signer. A leaf that can't be decoded is left to
+// proveOffline to report.
+function anchorlessLeaves(TreeNode, leaves) {
+  const ids = [];
+  for (const l of leaves) {
+    try {
+      const refund = getTxFromRawTxBytes(decodeNode(TreeNode, l.treeNodeHex).refundTx);
+      let anchored = false;
+      for (let i = 0; i < refund.outputsLength && !anchored; i++) {
+        const o = refund.getOutput(i);
+        anchored = isEphemeralAnchorOutput(o.script, o.amount);
+      }
+      if (!anchored) ids.push(l.id);
+    } catch {
+      // not decodable: proveOffline reports it
+    }
+  }
+  return ids;
+}
+
 // "Can Blink's tool actually recover from this file?" — reload a bundle, validate
 // its shape, and rebuild every leaf's chain OFFLINE (no wallet, no operators) to a
-// genuine root with its pre-signed txs intact. Run periodically / before trusting.
+// genuine root with its pre-signed txs intact, and check every refund still has
+// the anchor that tool fee-bumps through. Run periodically / before trusting.
 export async function verifyVault(path = defaultVaultPath()) {
   const { TreeNode } = await getProto();
   let bundle;
@@ -457,11 +483,22 @@ export async function verifyVault(path = defaultVaultPath()) {
   const failed = bundle.leaves
     .filter((l) => { const p = proofs.get(l.id); return !p.chainLen || !p.reachesRoot || !p.hasTxs; })
     .map((l) => l.id);
+  const anchorless = anchorlessLeaves(TreeNode, bundle.leaves);
+  const reasons = [];
+  if (failed.length) reasons.push(`${failed.length} leaf/leaves do not reconstruct offline to a root (or lack pre-signed txs)`);
+  if (anchorless.length) {
+    reasons.push(
+      `${anchorless.length} leaf/leaves have an anchorless refund (SDK 0.13 fee ladder): the exit tool this backup ` +
+        "is for can't fee-bump them and fails on the whole backup. A wallet opened by this package (ladder off) " +
+        "re-anchors the leaves it receives, so move these funds through one, or exit them with SDK 0.13's helper and the seed",
+    );
+  }
   return {
-    ok: failed.length === 0,
-    reason: failed.length ? `${failed.length} leaf/leaves do not reconstruct offline to a root (or lack pre-signed txs)` : "all leaves reconstruct offline to a root",
+    ok: failed.length === 0 && anchorless.length === 0,
+    reason: reasons.length ? reasons.join("; ") : "all leaves reconstruct offline to a root",
     leafCount: bundle.leaves.length,
     failed,
+    anchorless,
     createdAt: bundle.createdAt,
     network: bundle.network,
   };

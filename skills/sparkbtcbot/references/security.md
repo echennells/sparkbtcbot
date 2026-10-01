@@ -25,6 +25,7 @@ Even with encryption-at-rest, a compromised host with passphrase + seed file = f
 
 - Regularly sweep earned funds to a more secure wallet (hardware wallet, cold storage, or a separate wallet you control directly).
 - Only keep the minimum operational balance the agent needs on Spark.
+- Size token balances as operator-dependent: no tool performs a token exit to L1 today, so the leaf-vault protects sats only (`unilateral-exit.md` → Tokens are NOT covered).
 - Use `wallet.transfer()` or `wallet.withdraw()` to move funds out periodically. This skill does not ship an automated sweeper — sweep manually as part of your operations rhythm, or build the listener yourself if you want it on autopilot (`transfer:claimed` event + balance check + `wallet.transfer()`).
 
 ## Operational security

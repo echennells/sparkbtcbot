@@ -16,7 +16,7 @@ Three tiers, run via `npm` scripts.
 ```
 tests/
   setup.js                          # loads .env
-  helpers/wallet.js                 # createTestWallet (leaf optimizer off — see below), cleanupAllWallets, getFundedMnemonic
+  helpers/wallet.js                 # createTestWallet (leaf optimizer off — see below; fee ladders off like the package), cleanupAllWallets, getFundedMnemonic
   helpers/agent.js                  # createTestAgent (SparkAgent with every ~/.spark file isolated; sealedPolicy: a real v2 seed + signed ledger), waitForSettled, returnSats, waitForClaimed
   unit/
     imports.test.js                 # SDK export sanity, SparkWallet method surface
@@ -24,6 +24,7 @@ tests/
     encrypted-seed.test.js          # seed encrypt/decrypt round-trip, EEXIST, perms, NO_PASSPHRASE
     leaf-vault.test.js              # bundle shape validation (Blink compatibility contract)
     leaf-vault-fixes.test.js        # ToB regression pins — H-3 concurrency, M-1 content gate, M-2 transient-empty, shrink guard, H-2 marker, flush-on-dispose
+    leaf-vault-anchorless.test.js   # verifyVault fails SDK 0.13 anchorless refunds (real REGTEST fixtures in fixtures/leaf-vault/); every initialize passes sparkWalletOptions
     leaf-vault-hardening.test.js    # network derivation, identity guard, union rescue, skip accounting, re-arm, dispose races, atomic-writer failures, exports map
     spark-agent-vault.test.js       # SparkAgent vault wiring: opt-out normalization + enabled path
     wallet-privacy.test.js          # per-wallet privacy: env opt-out, idempotent ensure, echo check, boot wiring warns-not-blocks
@@ -47,6 +48,7 @@ tests/
                                     #   token amounts, decimals read from the wallet at send time, batch totals, precision refusal
       transfer.test.js              # spark-to-spark transfer, token transfer (raw SDK)
       lightning.test.js             # Lightning fee estimate, payment (raw SDK); receiver checked
+      fee-ladder.test.js            # same 5,000 sats to a ladders-off and a ladders-on wallet: verify passes the first, names the 1,024+ sat leaves in the second
       privacy.test.js               # with real sats: private → public/stranger readers see 0; granted viewer sees the balance; revoke/off restore
 ```
 

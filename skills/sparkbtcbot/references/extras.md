@@ -104,12 +104,12 @@ npm install @buildonspark/issuer-sdk
 
 ```javascript
 import { IssuerSparkWallet } from "@buildonspark/issuer-sdk";
-import { loadMnemonicFromEnv } from "sparkbtcbot-skill";
+import { loadMnemonicFromEnv, sparkWalletOptions } from "sparkbtcbot-skill";
 
 const mnemonic = await loadMnemonicFromEnv(); // reads SPARK_PASSPHRASE
 const { wallet } = await IssuerSparkWallet.initialize({
   mnemonicOrSeed: mnemonic,
-  options: { network: "REGTEST" },
+  options: sparkWalletOptions("REGTEST"), // SDK 0.13's fee ladders off
 });
 
 // One token per wallet — check first

@@ -31,6 +31,7 @@ import { stdout, stderr, exit, env } from "node:process";
 import { pathToFileURL } from "node:url";
 import { realpathSync } from "node:fs";
 import { promptStderr } from "./prompt.js";
+import { sparkWalletOptions } from "../../../lib/wallet-options.js";
 
 const USAGE =
   "Usage: sparkbtcbot viewer <status | grant <hex-pubkey> | revoke | pubkey | balance <spark-address>>\n\n" +
@@ -124,7 +125,7 @@ export async function main() {
   const { wallet } = await SparkWallet.initialize({
     mnemonicOrSeed: mnemonic,
     accountNumber,
-    options: { network, optimizationOptions: { auto: false } },
+    options: sparkWalletOptions(network, { optimizationOptions: { auto: false } }),
   });
   try {
     const show = (s) =>
