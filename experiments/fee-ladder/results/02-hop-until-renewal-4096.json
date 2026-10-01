@@ -1,0 +1,592 @@
+{
+  "sdk": "0.13.0",
+  "amount": 4096,
+  "hops": [
+    {
+      "hop": 0,
+      "holder": "C",
+      "leaves": [
+        {
+          "leafId": "01a0ed9b-1fe9-7db2-997b-983948208a96",
+          "value": 4096,
+          "refundTxid": "2e845bad471ccef624ce6f22b70645bf740f40e4b55557f1e8268c777ae87307",
+          "anchored": false,
+          "refundTimelock": 900,
+          "nodeTimelock": 2000
+        }
+      ],
+      "renewals": []
+    },
+    {
+      "hop": 1,
+      "holder": "D",
+      "leaves": [
+        {
+          "leafId": "01a0ed9b-1fe9-7db2-997b-983948208a96",
+          "value": 4096,
+          "refundTxid": "8f80cbedb4ccb62604e4149949779d066d23ccc8026be6db81cf15c0615f3e79",
+          "anchored": false,
+          "refundTimelock": 800,
+          "nodeTimelock": 2000
+        }
+      ],
+      "renewals": []
+    },
+    {
+      "hop": 2,
+      "holder": "C",
+      "leaves": [
+        {
+          "leafId": "01a0ed9b-1fe9-7db2-997b-983948208a96",
+          "value": 4096,
+          "refundTxid": "b819627f3611d6f58678d1e1b8f1247ee7977126b8fd22473e435c81d73f9d27",
+          "anchored": false,
+          "refundTimelock": 700,
+          "nodeTimelock": 2000
+        }
+      ],
+      "renewals": []
+    },
+    {
+      "hop": 3,
+      "holder": "D",
+      "leaves": [
+        {
+          "leafId": "01a0ed9b-1fe9-7db2-997b-983948208a96",
+          "value": 4096,
+          "refundTxid": "7ca553223cedc4536ba93ca2a816805008bfdbfc1891b1f9de993f93baecef00",
+          "anchored": false,
+          "refundTimelock": 600,
+          "nodeTimelock": 2000
+        }
+      ],
+      "renewals": []
+    },
+    {
+      "hop": 4,
+      "holder": "C",
+      "leaves": [
+        {
+          "leafId": "01a0ed9b-1fe9-7db2-997b-983948208a96",
+          "value": 4096,
+          "refundTxid": "4d5962da869294311aab79173a84aae22c80feb1440cefa73dd0d3f08a3baabf",
+          "anchored": false,
+          "refundTimelock": 500,
+          "nodeTimelock": 2000
+        }
+      ],
+      "renewals": []
+    },
+    {
+      "hop": 5,
+      "holder": "D",
+      "leaves": [
+        {
+          "leafId": "01a0ed9b-1fe9-7db2-997b-983948208a96",
+          "value": 4096,
+          "refundTxid": "8f2e6109cff177c81683e3a03e4fa5419fbfd59eabcf91c0fcf6847a92023177",
+          "anchored": false,
+          "refundTimelock": 400,
+          "nodeTimelock": 2000
+        }
+      ],
+      "renewals": []
+    },
+    {
+      "hop": 6,
+      "holder": "C",
+      "leaves": [
+        {
+          "leafId": "01a0ed9b-1fe9-7db2-997b-983948208a96",
+          "value": 4096,
+          "refundTxid": "273fd6d72bf3761bd4ae6c39c83a378eabad092c06dbf31f1382aeb7dbc74f0a",
+          "anchored": false,
+          "refundTimelock": 300,
+          "nodeTimelock": 2000
+        }
+      ],
+      "renewals": []
+    },
+    {
+      "hop": 7,
+      "holder": "D",
+      "leaves": [
+        {
+          "leafId": "01a0ed9b-1fe9-7db2-997b-983948208a96",
+          "value": 4096,
+          "refundTxid": "1a4163b8fa12a4e805b672f94e745e358975c7085364198df2c9ad8032f2fb92",
+          "anchored": false,
+          "refundTimelock": 200,
+          "nodeTimelock": 2000
+        }
+      ],
+      "renewals": []
+    },
+    {
+      "hop": 8,
+      "holder": "C",
+      "leaves": [
+        {
+          "leafId": "01a0ed9b-1fe9-7db2-997b-983948208a96",
+          "value": 4096,
+          "refundTxid": "1d4b1b7757339a532ac8bdd147ffd0ca6079fc6c5fe89e26702782c25515e20f",
+          "anchored": true,
+          "refundTimelock": 2000,
+          "nodeTimelock": 1900
+        }
+      ],
+      "renewals": []
+    },
+    {
+      "hop": 9,
+      "holder": "D",
+      "leaves": [
+        {
+          "leafId": "01a0ed9b-1fe9-7db2-997b-983948208a96",
+          "value": 4096,
+          "refundTxid": "458c9526c6d6937a58c315cd392d885be41f9fd37e751f7336bd8f14daba9702",
+          "anchored": false,
+          "refundTimelock": 1900,
+          "nodeTimelock": 1900
+        }
+      ],
+      "renewals": []
+    },
+    {
+      "hop": 10,
+      "holder": "C",
+      "leaves": [
+        {
+          "leafId": "01a0ed9b-1fe9-7db2-997b-983948208a96",
+          "value": 4096,
+          "refundTxid": "c61af01c7c8c5dda543111cb1c4d11dd98eb8b1b51ba7fa03e5b2fbb7a92a437",
+          "anchored": false,
+          "refundTimelock": 1800,
+          "nodeTimelock": 1900
+        }
+      ],
+      "renewals": []
+    },
+    {
+      "hop": 11,
+      "holder": "D",
+      "leaves": [
+        {
+          "leafId": "01a0ed9b-1fe9-7db2-997b-983948208a96",
+          "value": 4096,
+          "refundTxid": "758cf1a9cb7fbad9d98b01152c61eaa809ec276fda73984b1dafbd9ead73a90a",
+          "anchored": false,
+          "refundTimelock": 1700,
+          "nodeTimelock": 1900
+        }
+      ],
+      "renewals": []
+    },
+    {
+      "hop": 12,
+      "holder": "C",
+      "leaves": [
+        {
+          "leafId": "01a0ed9b-1fe9-7db2-997b-983948208a96",
+          "value": 4096,
+          "refundTxid": "51b9861c6f240210a685d51d3e90d57da58c4e7da7a3eb1ee207d1ab1b4da6c5",
+          "anchored": false,
+          "refundTimelock": 1600,
+          "nodeTimelock": 1900
+        }
+      ],
+      "renewals": []
+    },
+    {
+      "hop": 13,
+      "holder": "D",
+      "leaves": [
+        {
+          "leafId": "01a0ed9b-1fe9-7db2-997b-983948208a96",
+          "value": 4096,
+          "refundTxid": "2ff8c73f629124d3849355ea8d7babd73f75f1d96fa8c28a605a43e938995503",
+          "anchored": false,
+          "refundTimelock": 1500,
+          "nodeTimelock": 1900
+        }
+      ],
+      "renewals": []
+    },
+    {
+      "hop": 14,
+      "holder": "C",
+      "leaves": [
+        {
+          "leafId": "01a0ed9b-1fe9-7db2-997b-983948208a96",
+          "value": 4096,
+          "refundTxid": "890aa4202b2dc7f728ead84bd56766b94368e8b94f4c0dc590d186c1464adf7d",
+          "anchored": false,
+          "refundTimelock": 1400,
+          "nodeTimelock": 1900
+        }
+      ],
+      "renewals": []
+    },
+    {
+      "hop": 15,
+      "holder": "D",
+      "leaves": [
+        {
+          "leafId": "01a0ed9b-1fe9-7db2-997b-983948208a96",
+          "value": 4096,
+          "refundTxid": "28675c5f8054b70233b6f75f2c612f7804f6850dd8bf4f5d647e89d55e5d5f41",
+          "anchored": false,
+          "refundTimelock": 1300,
+          "nodeTimelock": 1900
+        }
+      ],
+      "renewals": []
+    },
+    {
+      "hop": 16,
+      "holder": "C",
+      "leaves": [
+        {
+          "leafId": "01a0ed9b-1fe9-7db2-997b-983948208a96",
+          "value": 4096,
+          "refundTxid": "0c3d4cd5e1762acac811250804c6cf7077d80da6645dc0c80a9d21866e470353",
+          "anchored": false,
+          "refundTimelock": 1200,
+          "nodeTimelock": 1900
+        }
+      ],
+      "renewals": []
+    },
+    {
+      "hop": 17,
+      "holder": "D",
+      "leaves": [
+        {
+          "leafId": "01a0ed9b-1fe9-7db2-997b-983948208a96",
+          "value": 4096,
+          "refundTxid": "d410f964c3697f13221d0629b8fdbc6003bb90b5441e72282b5e269d016fe246",
+          "anchored": false,
+          "refundTimelock": 1100,
+          "nodeTimelock": 1900
+        }
+      ],
+      "renewals": []
+    },
+    {
+      "hop": 18,
+      "holder": "C",
+      "leaves": [
+        {
+          "leafId": "01a0ed9b-1fe9-7db2-997b-983948208a96",
+          "value": 4096,
+          "refundTxid": "a940d8262a0065305c85572a9622936cef9a33ea168decc32f3be224d798e48c",
+          "anchored": false,
+          "refundTimelock": 1000,
+          "nodeTimelock": 1900
+        }
+      ],
+      "renewals": []
+    },
+    {
+      "hop": 19,
+      "holder": "D",
+      "leaves": [
+        {
+          "leafId": "01a0ed9b-1fe9-7db2-997b-983948208a96",
+          "value": 4096,
+          "refundTxid": "3ba19b47f66afeea586dce59b54e0ecc4ea32a9b386e18d97c45bb0b724fe1ae",
+          "anchored": false,
+          "refundTimelock": 900,
+          "nodeTimelock": 1900
+        }
+      ],
+      "renewals": []
+    },
+    {
+      "hop": 20,
+      "holder": "C",
+      "leaves": [
+        {
+          "leafId": "01a0ed9b-1fe9-7db2-997b-983948208a96",
+          "value": 4096,
+          "refundTxid": "6af00e5cd771d81155f5db7894d6da9722fd0c956481f6a2464d700da2d19b2a",
+          "anchored": false,
+          "refundTimelock": 800,
+          "nodeTimelock": 1900
+        }
+      ],
+      "renewals": []
+    },
+    {
+      "hop": 21,
+      "holder": "D",
+      "leaves": [
+        {
+          "leafId": "01a0ed9b-1fe9-7db2-997b-983948208a96",
+          "value": 4096,
+          "refundTxid": "1a77991c41e0e20d9f378f49051be6582c7572f1a051c908b145b6104630d92f",
+          "anchored": false,
+          "refundTimelock": 700,
+          "nodeTimelock": 1900
+        }
+      ],
+      "renewals": []
+    },
+    {
+      "hop": 22,
+      "holder": "C",
+      "leaves": [
+        {
+          "leafId": "01a0ed9b-1fe9-7db2-997b-983948208a96",
+          "value": 4096,
+          "refundTxid": "2465533fedc3432b7c39b4afb41aef9e2370693ca2fb1f094e7f2fce4c63ca68",
+          "anchored": false,
+          "refundTimelock": 600,
+          "nodeTimelock": 1900
+        }
+      ],
+      "renewals": []
+    },
+    {
+      "hop": 23,
+      "holder": "D",
+      "leaves": [
+        {
+          "leafId": "01a0ed9b-1fe9-7db2-997b-983948208a96",
+          "value": 4096,
+          "refundTxid": "ee6a750429c0fbf74788acb02ba7265460d4f17b94ebf949b3958a412f92184b",
+          "anchored": false,
+          "refundTimelock": 500,
+          "nodeTimelock": 1900
+        }
+      ],
+      "renewals": []
+    }
+  ],
+  "events": [
+    {
+      "kind": "claim-ladder",
+      "leafId": "01a0eda1-b16f-723d-9470-570800d772c6",
+      "rungs": 6,
+      "rungsSpend": "fc5d1f31cce04890796337e34d3ec6a6f2bd06578024058949af3df5ec2423e6"
+    },
+    {
+      "kind": "claim-ladder",
+      "leafId": "01a0f332-3ec8-71cf-922a-7da1f089bd03",
+      "rungs": 0,
+      "rungsSpend": null
+    },
+    {
+      "kind": "claim-ladder",
+      "leafId": "01a0ef1b-4996-7a19-9202-f808259a5eb3",
+      "rungs": 0,
+      "rungsSpend": null
+    },
+    {
+      "kind": "claim-ladder",
+      "leafId": "01a0ef1b-2f0f-7ca4-9aa2-37409507e0c7",
+      "rungs": 0,
+      "rungsSpend": null
+    },
+    {
+      "kind": "claim-ladder",
+      "leafId": "01a0ee41-3df9-79f4-866a-65ed96949433",
+      "rungs": 0,
+      "rungsSpend": null
+    },
+    {
+      "kind": "claim-ladder",
+      "leafId": "01a0ee3e-8f3e-7834-bdab-7edb844ae503",
+      "rungs": 0,
+      "rungsSpend": null
+    },
+    {
+      "kind": "claim-ladder",
+      "leafId": "01a0eda1-bc88-7efa-81cb-ae42aa56dec3",
+      "rungs": 6,
+      "rungsSpend": "efea7662eaebeeb7efc983311cb095fa3c785ae29213f5dddf9ccc4561243f8a"
+    },
+    {
+      "kind": "claim-ladder",
+      "leafId": "01a0f43f-c662-7e24-a331-807bb95a8727",
+      "rungs": 20,
+      "rungsSpend": "729f85a3ee9f8c23ed9bd84c135e3002afd9a8125f2be9548a9257f27fe18c94"
+    },
+    {
+      "kind": "renew",
+      "method": "renewRefundTxn",
+      "leafId": "01a0ee41-3df9-79f4-866a-65ed96949433",
+      "refundTimelockBefore": 100,
+      "nodeTimelockBefore": 1800
+    },
+    {
+      "kind": "renew-signing-jobs",
+      "refundJobs": 5,
+      "nodeHopLadderJobs": 3
+    },
+    {
+      "kind": "claim-ladder",
+      "leafId": "01a0ed9b-1fe9-7db2-997b-983948208a96",
+      "rungs": 13,
+      "rungsSpend": "2e845bad471ccef624ce6f22b70645bf740f40e4b55557f1e8268c777ae87307"
+    },
+    {
+      "kind": "claim-ladder",
+      "leafId": "01a0ed9b-1fe9-7db2-997b-983948208a96",
+      "rungs": 13,
+      "rungsSpend": "8f80cbedb4ccb62604e4149949779d066d23ccc8026be6db81cf15c0615f3e79"
+    },
+    {
+      "kind": "claim-ladder",
+      "leafId": "01a0ed9b-1fe9-7db2-997b-983948208a96",
+      "rungs": 13,
+      "rungsSpend": "b819627f3611d6f58678d1e1b8f1247ee7977126b8fd22473e435c81d73f9d27"
+    },
+    {
+      "kind": "claim-ladder",
+      "leafId": "01a0ed9b-1fe9-7db2-997b-983948208a96",
+      "rungs": 13,
+      "rungsSpend": "7ca553223cedc4536ba93ca2a816805008bfdbfc1891b1f9de993f93baecef00"
+    },
+    {
+      "kind": "claim-ladder",
+      "leafId": "01a0ed9b-1fe9-7db2-997b-983948208a96",
+      "rungs": 13,
+      "rungsSpend": "4d5962da869294311aab79173a84aae22c80feb1440cefa73dd0d3f08a3baabf"
+    },
+    {
+      "kind": "claim-ladder",
+      "leafId": "01a0ed9b-1fe9-7db2-997b-983948208a96",
+      "rungs": 13,
+      "rungsSpend": "8f2e6109cff177c81683e3a03e4fa5419fbfd59eabcf91c0fcf6847a92023177"
+    },
+    {
+      "kind": "claim-ladder",
+      "leafId": "01a0ed9b-1fe9-7db2-997b-983948208a96",
+      "rungs": 13,
+      "rungsSpend": "273fd6d72bf3761bd4ae6c39c83a378eabad092c06dbf31f1382aeb7dbc74f0a"
+    },
+    {
+      "kind": "claim-ladder",
+      "leafId": "01a0ed9b-1fe9-7db2-997b-983948208a96",
+      "rungs": 13,
+      "rungsSpend": "1a4163b8fa12a4e805b672f94e745e358975c7085364198df2c9ad8032f2fb92"
+    },
+    {
+      "kind": "claim-ladder",
+      "leafId": "01a0ed9b-1fe9-7db2-997b-983948208a96",
+      "rungs": 13,
+      "rungsSpend": "69413507ab3d7081bd3f07076c681995bf31f7363db350b5ebf1586d1b0c7886"
+    },
+    {
+      "kind": "renew",
+      "method": "renewRefundTxn",
+      "leafId": "01a0ed9b-1fe9-7db2-997b-983948208a96",
+      "refundTimelockBefore": 100,
+      "nodeTimelockBefore": 2000
+    },
+    {
+      "kind": "renew-signing-jobs",
+      "refundJobs": 5,
+      "nodeHopLadderJobs": 16
+    },
+    {
+      "kind": "claim-ladder",
+      "leafId": "01a0ed9b-1fe9-7db2-997b-983948208a96",
+      "rungs": 13,
+      "rungsSpend": "458c9526c6d6937a58c315cd392d885be41f9fd37e751f7336bd8f14daba9702"
+    },
+    {
+      "kind": "claim-ladder",
+      "leafId": "01a0ed9b-1fe9-7db2-997b-983948208a96",
+      "rungs": 13,
+      "rungsSpend": "c61af01c7c8c5dda543111cb1c4d11dd98eb8b1b51ba7fa03e5b2fbb7a92a437"
+    },
+    {
+      "kind": "claim-ladder",
+      "leafId": "01a0ed9b-1fe9-7db2-997b-983948208a96",
+      "rungs": 13,
+      "rungsSpend": "758cf1a9cb7fbad9d98b01152c61eaa809ec276fda73984b1dafbd9ead73a90a"
+    },
+    {
+      "kind": "claim-ladder",
+      "leafId": "01a0ed9b-1fe9-7db2-997b-983948208a96",
+      "rungs": 13,
+      "rungsSpend": "51b9861c6f240210a685d51d3e90d57da58c4e7da7a3eb1ee207d1ab1b4da6c5"
+    },
+    {
+      "kind": "claim-ladder",
+      "leafId": "01a0ed9b-1fe9-7db2-997b-983948208a96",
+      "rungs": 13,
+      "rungsSpend": "2ff8c73f629124d3849355ea8d7babd73f75f1d96fa8c28a605a43e938995503"
+    },
+    {
+      "kind": "claim-ladder",
+      "leafId": "01a0ed9b-1fe9-7db2-997b-983948208a96",
+      "rungs": 13,
+      "rungsSpend": "890aa4202b2dc7f728ead84bd56766b94368e8b94f4c0dc590d186c1464adf7d"
+    },
+    {
+      "kind": "claim-ladder",
+      "leafId": "01a0ed9b-1fe9-7db2-997b-983948208a96",
+      "rungs": 13,
+      "rungsSpend": "28675c5f8054b70233b6f75f2c612f7804f6850dd8bf4f5d647e89d55e5d5f41"
+    },
+    {
+      "kind": "claim-ladder",
+      "leafId": "01a0ed9b-1fe9-7db2-997b-983948208a96",
+      "rungs": 13,
+      "rungsSpend": "0c3d4cd5e1762acac811250804c6cf7077d80da6645dc0c80a9d21866e470353"
+    },
+    {
+      "kind": "claim-ladder",
+      "leafId": "01a0ed9b-1fe9-7db2-997b-983948208a96",
+      "rungs": 13,
+      "rungsSpend": "d410f964c3697f13221d0629b8fdbc6003bb90b5441e72282b5e269d016fe246"
+    },
+    {
+      "kind": "claim-ladder",
+      "leafId": "01a0ed9b-1fe9-7db2-997b-983948208a96",
+      "rungs": 13,
+      "rungsSpend": "a940d8262a0065305c85572a9622936cef9a33ea168decc32f3be224d798e48c"
+    },
+    {
+      "kind": "claim-ladder",
+      "leafId": "01a0ed9b-1fe9-7db2-997b-983948208a96",
+      "rungs": 13,
+      "rungsSpend": "3ba19b47f66afeea586dce59b54e0ecc4ea32a9b386e18d97c45bb0b724fe1ae"
+    },
+    {
+      "kind": "claim-ladder",
+      "leafId": "01a0ed9b-1fe9-7db2-997b-983948208a96",
+      "rungs": 13,
+      "rungsSpend": "6af00e5cd771d81155f5db7894d6da9722fd0c956481f6a2464d700da2d19b2a"
+    },
+    {
+      "kind": "claim-ladder",
+      "leafId": "01a0ed9b-1fe9-7db2-997b-983948208a96",
+      "rungs": 13,
+      "rungsSpend": "1a77991c41e0e20d9f378f49051be6582c7572f1a051c908b145b6104630d92f"
+    },
+    {
+      "kind": "claim-ladder",
+      "leafId": "01a0ed9b-1fe9-7db2-997b-983948208a96",
+      "rungs": 13,
+      "rungsSpend": "2465533fedc3432b7c39b4afb41aef9e2370693ca2fb1f094e7f2fce4c63ca68"
+    },
+    {
+      "kind": "claim-ladder",
+      "leafId": "01a0ed9b-1fe9-7db2-997b-983948208a96",
+      "rungs": 13,
+      "rungsSpend": "ee6a750429c0fbf74788acb02ba7265460d4f17b94ebf949b3958a412f92184b"
+    },
+    {
+      "kind": "claim-ladder",
+      "leafId": "01a0ed9b-1fe9-7db2-997b-983948208a96",
+      "rungs": 13,
+      "rungsSpend": "21215ade6c1ece25c9d597a8b9d6645aba2eac5581f10cab68bf3f170b550c30"
+    }
+  ],
+  "returnedSats": "4096",
+  "at": "2026-10-01T17:53:22.757Z"
+}

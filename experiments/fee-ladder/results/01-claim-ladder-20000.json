@@ -1,0 +1,231 @@
+{
+  "sdk": "0.13.0",
+  "network": "REGTEST",
+  "amount": 20000,
+  "startedAt": "2026-10-01T17:51:36.719Z",
+  "claim": [
+    {
+      "leafId": "01a0f43f-c662-7e24-a331-807bb95a8727",
+      "value": 16384,
+      "refundAnchored": false,
+      "refundOutputs": 1,
+      "refundTimelock": 1800,
+      "renewedAfterClaim": false,
+      "refundVersion": 3,
+      "refundSigned": true,
+      "ladderBuilt": true,
+      "rungTableVersion": 1,
+      "rungs": 20,
+      "feeMin": "222",
+      "feeMax": "16054",
+      "topLeavesSats": "330",
+      "topFeeShare": "97.99%",
+      "stepRatios": [
+        "1.252",
+        "1.296"
+      ],
+      "allRungsFullySignedAndValid": true,
+      "problems": []
+    },
+    {
+      "leafId": "01a0eda1-bc88-7efa-81cb-ae42aa56dec3",
+      "value": 1024,
+      "refundAnchored": false,
+      "refundOutputs": 1,
+      "refundTimelock": 1700,
+      "renewedAfterClaim": false,
+      "refundVersion": 3,
+      "refundSigned": true,
+      "ladderBuilt": true,
+      "rungTableVersion": 1,
+      "rungs": 6,
+      "feeMin": "222",
+      "feeMax": "694",
+      "topLeavesSats": "330",
+      "topFeeShare": "67.77%",
+      "stepRatios": [
+        "1.252",
+        "1.276"
+      ],
+      "allRungsFullySignedAndValid": true,
+      "problems": []
+    },
+    {
+      "leafId": "01a0eda1-b16f-723d-9470-570800d772c6",
+      "value": 1024,
+      "refundAnchored": false,
+      "refundOutputs": 1,
+      "refundTimelock": 700,
+      "renewedAfterClaim": false,
+      "refundVersion": 3,
+      "refundSigned": true,
+      "ladderBuilt": true,
+      "rungTableVersion": 1,
+      "rungs": 6,
+      "feeMin": "222",
+      "feeMax": "694",
+      "topLeavesSats": "330",
+      "topFeeShare": "67.77%",
+      "stepRatios": [
+        "1.252",
+        "1.276"
+      ],
+      "allRungsFullySignedAndValid": true,
+      "problems": []
+    },
+    {
+      "leafId": "01a0ee3e-8f3e-7834-bdab-7edb844ae503",
+      "value": 512,
+      "refundAnchored": true,
+      "refundOutputs": 2,
+      "refundTimelock": 500,
+      "renewedAfterClaim": false,
+      "refundVersion": 3,
+      "refundSigned": true,
+      "ladderBuilt": false
+    },
+    {
+      "leafId": "01a0ee41-3df9-79f4-866a-65ed96949433",
+      "value": 512,
+      "refundAnchored": true,
+      "refundOutputs": 2,
+      "refundTimelock": 300,
+      "renewedAfterClaim": false,
+      "refundVersion": 3,
+      "refundSigned": true,
+      "ladderBuilt": false
+    },
+    {
+      "leafId": "01a0ef1b-4996-7a19-9202-f808259a5eb3",
+      "value": 256,
+      "refundAnchored": true,
+      "refundOutputs": 2,
+      "refundTimelock": 1600,
+      "renewedAfterClaim": false,
+      "refundVersion": 3,
+      "refundSigned": true,
+      "ladderBuilt": false
+    },
+    {
+      "leafId": "01a0ef1b-2f0f-7ca4-9aa2-37409507e0c7",
+      "value": 256,
+      "refundAnchored": true,
+      "refundOutputs": 2,
+      "refundTimelock": 800,
+      "renewedAfterClaim": false,
+      "refundVersion": 3,
+      "refundSigned": true,
+      "ladderBuilt": false
+    },
+    {
+      "leafId": "01a0f332-3ec8-71cf-922a-7da1f089bd03",
+      "value": 32,
+      "refundAnchored": true,
+      "refundOutputs": 2,
+      "refundTimelock": 500,
+      "renewedAfterClaim": false,
+      "refundVersion": 3,
+      "refundSigned": true,
+      "ladderBuilt": false
+    }
+  ],
+  "exitHelper": {
+    "withoutSigner": "threw: Refund for leaf 01a0eda1-bc88-7efa-81cb-ae42aa56dec3 has no fee-bump anchor; pass a signer that implements signTaprootKeySpendWithDerivation",
+    "withSigner": [
+      {
+        "leafId": "01a0ee3e-8f3e-7834-bdab-7edb844ae503",
+        "packages": 14,
+        "refundStep": "anchor PSBT"
+      },
+      {
+        "leafId": "01a0eda1-bc88-7efa-81cb-ae42aa56dec3",
+        "packages": 14,
+        "refundStep": "pre-signed child (anchorless)"
+      },
+      {
+        "leafId": "01a0eda1-b16f-723d-9470-570800d772c6",
+        "packages": 9,
+        "refundStep": "pre-signed child (anchorless)"
+      },
+      {
+        "leafId": "01a0f43f-c662-7e24-a331-807bb95a8727",
+        "packages": 7,
+        "refundStep": "pre-signed child (anchorless)"
+      },
+      {
+        "leafId": "01a0f332-3ec8-71cf-922a-7da1f089bd03",
+        "packages": 14,
+        "refundStep": "anchor PSBT"
+      },
+      {
+        "leafId": "01a0ef1b-4996-7a19-9202-f808259a5eb3",
+        "packages": 14,
+        "refundStep": "anchor PSBT"
+      },
+      {
+        "leafId": "01a0ef1b-2f0f-7ca4-9aa2-37409507e0c7",
+        "packages": 12,
+        "refundStep": "anchor PSBT"
+      },
+      {
+        "leafId": "01a0ee41-3df9-79f4-866a-65ed96949433",
+        "packages": 13,
+        "refundStep": "anchor PSBT"
+      }
+    ]
+  },
+  "renewalsDuringClaim": [],
+  "reclaimedLadderOff": [
+    {
+      "value": 16384,
+      "refundAnchored": true,
+      "ladderBuilt": false,
+      "refundTimelock": 1700
+    },
+    {
+      "value": 1024,
+      "refundAnchored": true,
+      "ladderBuilt": false,
+      "refundTimelock": 1600
+    },
+    {
+      "value": 1024,
+      "refundAnchored": true,
+      "ladderBuilt": false,
+      "refundTimelock": 600
+    },
+    {
+      "value": 512,
+      "refundAnchored": true,
+      "ladderBuilt": false,
+      "refundTimelock": 200
+    },
+    {
+      "value": 512,
+      "refundAnchored": true,
+      "ladderBuilt": false,
+      "refundTimelock": 400
+    },
+    {
+      "value": 256,
+      "refundAnchored": true,
+      "ladderBuilt": false,
+      "refundTimelock": 700
+    },
+    {
+      "value": 256,
+      "refundAnchored": true,
+      "ladderBuilt": false,
+      "refundTimelock": 1500
+    },
+    {
+      "value": 32,
+      "refundAnchored": true,
+      "ladderBuilt": false,
+      "refundTimelock": 400
+    }
+  ],
+  "renewalsInLadderOffWallet": [],
+  "returnedSats": "20000",
+  "finishedAt": "2026-10-01T17:51:51.144Z"
+}
