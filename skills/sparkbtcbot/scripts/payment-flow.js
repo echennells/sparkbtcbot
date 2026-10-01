@@ -1,80 +1,71 @@
 import "dotenv/config";
 import { pathToFileURL } from "node:url";
 import { realpathSync } from "node:fs";
-import { SparkWallet } from "@buildonspark/spark-sdk";
 import { loadMnemonicFromEnv } from "../../../lib/encrypted-seed.js";
+import { SparkAgent } from "./spark-agent.js";
 
 const network = process.env.SPARK_NETWORK || "MAINNET";
 
 async function main() {
   const mnemonic = await loadMnemonicFromEnv();
-  const { wallet } = await SparkWallet.initialize({
-    mnemonicOrSeed: mnemonic,
-    options: { network },
-  });
+  // One-shot script, so optimizeLeaves: false. A send below can start the SDK's
+  // background leaf optimizer, and so can booting: the SDK claims any pending
+  // inbound transfer in the background. cleanup() at exit would interrupt it
+  // (references/wallet.md → Cleanup).
+  const { agent } = await SparkAgent.create(mnemonic, network, { optimizeLeaves: false });
 
-  const { satsBalance } = await wallet.getBalance();
-  console.log("Current balance:", satsBalance.available.toString(), "sats\n");
+  const { sats } = await agent.getBalance();
+  console.log("Current balance:", sats, "sats\n");
 
-  // --- Lightning Invoice (Receive) ---
+  // createLightningInvoice returns the BOLT11 string. includeSparkAddress
+  // defaults to true on the wrapper; the first invoice turns it off so the
+  // two shapes are visible side by side.
   console.log("=== Create Lightning Invoice ===");
-  const invoiceRequest = await wallet.createLightningInvoice({
-    amountSats: 1000,
-    memo: "Test payment - 1000 sats",
+  const bolt11 = await agent.createLightningInvoice(1000, "Test payment - 1000 sats", {
     expirySeconds: 3600,
+    includeSparkAddress: false,
   });
-  console.log("BOLT11:", invoiceRequest.invoice.encodedInvoice);
+  console.log("BOLT11:", bolt11);
   console.log("Pay this invoice from any Lightning wallet.\n");
 
-  // --- Lightning Invoice with Spark fallback ---
   console.log("=== Lightning Invoice (with Spark address) ===");
-  const sparkInvoice = await wallet.createLightningInvoice({
-    amountSats: 500,
-    memo: "Spark-preferred payment",
+  const sparkBolt11 = await agent.createLightningInvoice(500, "Spark-preferred payment", {
     expirySeconds: 3600,
     includeSparkAddress: true,
   });
-  console.log("BOLT11:", sparkInvoice.invoice.encodedInvoice);
+  console.log("BOLT11:", sparkBolt11);
   console.log("Spark-aware payers will route via Spark (free, instant).\n");
 
-  // --- Spark Native Invoice ---
   console.log("=== Create Spark Invoice ===");
-  const satsInvoice = await wallet.createSatsInvoice({
-    amount: 1000,
-    memo: "Spark native invoice",
-  });
+  const satsInvoice = await agent.createSatsInvoice(1000, "Spark native invoice");
   console.log("Spark Invoice:", satsInvoice);
-  console.log("Pay this with any Spark wallet.\n");
+  console.log("Only Spark-SDK code can pay this, via fulfillSparkInvoice. A consumer wallet cannot.\n");
 
-  // --- Fee Estimation (for paying a Lightning invoice) ---
+  // --- Fee estimation (for paying a Lightning invoice) ---
   // Uncomment with a real BOLT11 invoice to test:
   //
-  // const fee = await wallet.getLightningSendFeeEstimate({
-  //   encodedInvoice: "lnbc...",
-  //   amountSats: 1000,
-  // });
+  // const fee = await agent.estimateLightningFee("lnbc...", 1000);
   // console.log("Estimated Lightning fee:", fee, "sats");
 
   // --- Pay Lightning Invoice ---
-  // Uncomment with a real BOLT11 invoice to send:
+  // dryRun signs nothing. Call again without dryRun to send. Omit maxFeeSats
+  // and the wrapper sizes the fee cap from the invoice amount. Invoices over
+  // maxAmountSats (default 10,000) are refused; pass a higher value to send more.
   //
-  // const payment = await wallet.payLightningInvoice({
-  //   invoice: "lnbc...",
-  //   maxFeeSats: 25,  // size to the amount — a flat 10 blocks sends >~4,000 sats; see references/lightning.md
-  //   preferSpark: true,
-  // });
-  // console.log("Payment sent:", payment);
+  // const preview = await agent.payLightningInvoice("lnbc...", { dryRun: true });
+  // console.log(preview);
+  // const payment = await agent.payLightningInvoice("lnbc...");
+  // console.log("Payment sent:", payment.id);
 
   // --- Spark-to-Spark Transfer ---
-  // Uncomment with a real Spark address to send:
+  // Same pattern: preview, then send. `to` is the receiver's Spark address.
   //
-  // const transfer = await wallet.transfer({
-  //   receiverSparkAddress: "sp1p...",
-  //   amountSats: 100,
-  // });
+  // const transferPreview = await agent.transfer({ to: "sp1p...", amount: 100, dryRun: true });
+  // console.log(transferPreview);
+  // const transfer = await agent.transfer({ to: "sp1p...", amount: 100 });
   // console.log("Transfer:", transfer.id);
 
-  wallet.cleanup();
+  await agent.cleanup();
 }
 
 // Run main() only when executed directly (node script.js), not when this

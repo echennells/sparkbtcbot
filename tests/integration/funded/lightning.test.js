@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { createTestWallet, cleanupAllWallets, getFundedMnemonic } from "../../helpers/wallet.js";
+import { waitForSats, returnSats, waitForClaimed } from "../../helpers/agent.js";
 
 const fundedMnemonic = getFundedMnemonic();
 const itFunded = fundedMnemonic ? it : it.skip;
@@ -15,8 +16,13 @@ describe("funded lightning (REGTEST)", () => {
   });
 
   afterAll(async () => {
+    if (funded) {
+      const readAvailable = async () => (await funded.getBalance()).satsBalance.available;
+      const before = await readAvailable();
+      await waitForClaimed(readAvailable, before + (await returnSats(receiver, await funded.getSparkAddress())));
+    }
     await cleanupAllWallets();
-  });
+  }, 90_000);
 
   itFunded("estimates a Lightning send fee", async () => {
     const inv = await receiver.createLightningInvoice({
@@ -27,7 +33,8 @@ describe("funded lightning (REGTEST)", () => {
     const fee = await funded.getLightningSendFeeEstimate({
       encodedInvoice: inv.invoice.encodedInvoice,
     });
-    expect(fee).toBeDefined();
+    expect(typeof fee).toBe("number");
+    expect(fee).toBeGreaterThanOrEqual(0);
   });
 
   itFunded("pays a Lightning invoice (Spark-preferred routing)", async () => {
@@ -43,5 +50,8 @@ describe("funded lightning (REGTEST)", () => {
       preferSpark: true,
     });
     expect(payment).toBeDefined();
+    // the receiver actually got it — exactly the amount
+    const b = await waitForSats(receiver, 1000n);
+    expect(b.available + b.incoming).toBe(1000n);
   });
 });

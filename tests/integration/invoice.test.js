@@ -1,15 +1,23 @@
+// Invoices created on REGTEST, decoded and checked field by field. These used
+// to assert only `typeof encoded === "string" || encoded === undefined`, which
+// passed whatever the SDK returned; now each invoice must decode to the wallet
+// that made it, with the amount, memo, token and expiry it was given.
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { decodeSparkAddress, encodeBech32mTokenIdentifier } from "@buildonspark/spark-sdk";
 import { createTestWallet, cleanupAllWallets } from "../helpers/wallet.js";
 import { getOrCreateIssuerToken, cleanupAllIssuers } from "../helpers/issuer.js";
+import { decodeInvoiceSats } from "../../lib/bolt11.js";
 import { generateMnemonic } from "@scure/bip39";
 import { wordlist } from "@scure/bip39/wordlists/english";
 
 describe("invoices (REGTEST)", () => {
   let wallet;
+  let identity;
   let tokenId;
 
   beforeAll(async () => {
     ({ wallet } = await createTestWallet());
+    identity = await wallet.getIdentityPublicKey();
     // Mint a fresh token from a throwaway issuer so we have a real token id
     // to reference when constructing token invoices. The receiving wallet
     // does NOT need to own the token to create an invoice for it.
@@ -26,31 +34,62 @@ describe("invoices (REGTEST)", () => {
     await cleanupAllIssuers();
   });
 
-  it("creates a Spark sats invoice", async () => {
-    const invoice = await wallet.createSatsInvoice({
-      amount: 1000,
-      memo: "test sats invoice",
-    });
-    expect(invoice).toBeDefined();
-    // Invoice carries an encoded form starting with the spark invoice prefix.
-    const encoded = typeof invoice === "string" ? invoice : invoice.encodedInvoice ?? invoice.invoice;
-    expect(typeof encoded === "string" || encoded === undefined).toBe(true);
+  const decode = (invoice) => decodeSparkAddress(invoice, "REGTEST");
+
+  it("a Spark sats invoice decodes to this wallet, with its amount and memo", async () => {
+    const invoice = await wallet.createSatsInvoice({ amount: 1000, memo: "test sats invoice" });
+    expect(invoice).toMatch(/^sparkrt1/);
+    const { identityPublicKey, sparkInvoiceFields: f } = decode(invoice);
+    expect(identityPublicKey).toBe(identity);
+    expect(f.paymentType).toEqual({ type: "sats", amount: 1000 });
+    expect(f.memo).toBe("test sats invoice");
+    // longer than the bare address it is shaped like
+    expect(invoice.length).toBeGreaterThan((await wallet.getSparkAddress()).length);
   });
 
-  it("creates a BOLT11 Lightning invoice", async () => {
-    const request = await wallet.createLightningInvoice({
-      amountSats: 1000,
-      memo: "test lightning invoice",
-      expirySeconds: 3600,
-    });
-    expect(request).toBeDefined();
-    expect(request.invoice).toBeDefined();
-    expect(typeof request.invoice.encodedInvoice).toBe("string");
-    // BOLT11 starts with lnbcrt for regtest.
-    expect(request.invoice.encodedInvoice).toMatch(/^lnbcrt/);
+  it("an amountless sats invoice carries no amount (the payer must supply one)", async () => {
+    const invoice = await wallet.createSatsInvoice({ memo: "you choose" });
+    const { paymentType } = decode(invoice).sparkInvoiceFields;
+    expect(paymentType.type).toBe("sats");
+    expect(paymentType.amount).toBeUndefined();
   });
 
-  it("creates a Lightning invoice with an embedded Spark address", async () => {
+  it("an invoice with an expiry carries it", async () => {
+    const expiry = new Date(Date.now() + 3_600_000);
+    const invoice = await wallet.createSatsInvoice({ amount: 10, expiryTime: expiry });
+    const { expiryTime } = decode(invoice).sparkInvoiceFields;
+    expect(Math.abs(new Date(expiryTime).getTime() - expiry.getTime())).toBeLessThan(1000);
+  });
+
+  it("a bare Spark address decodes with no invoice fields", async () => {
+    const decoded = decode(await wallet.getSparkAddress());
+    expect(decoded.identityPublicKey).toBe(identity);
+    expect(decoded.sparkInvoiceFields).toBeUndefined();
+  });
+
+  it("a Spark token invoice names the token and amount", async () => {
+    expect(tokenId).toMatch(/^btknrt1/);
+    const invoice = await wallet.createTokensInvoice({ amount: 100n, tokenIdentifier: tokenId, memo: "test token invoice" });
+    const { identityPublicKey, sparkInvoiceFields: f } = decode(invoice);
+    expect(identityPublicKey).toBe(identity);
+    expect(f.paymentType.type).toBe("tokens");
+    expect(f.paymentType.amount).toBe(100n);
+    // the decoder returns the token as raw hex; it must be the same token
+    const asBech32 = encodeBech32mTokenIdentifier({
+      tokenIdentifier: Uint8Array.from(Buffer.from(f.paymentType.tokenIdentifier, "hex")),
+      network: "REGTEST",
+    });
+    expect(asBech32).toBe(tokenId);
+  });
+
+  it("a BOLT11 Lightning invoice carries its amount", async () => {
+    const request = await wallet.createLightningInvoice({ amountSats: 1000, memo: "test lightning invoice", expirySeconds: 3600 });
+    const bolt11 = request.invoice.encodedInvoice;
+    expect(bolt11).toMatch(/^lnbcrt/);
+    expect(decodeInvoiceSats(bolt11)).toBe(1000);
+  });
+
+  it("a Lightning invoice with an embedded Spark address still decodes as BOLT11", async () => {
     const request = await wallet.createLightningInvoice({
       amountSats: 500,
       memo: "spark-aware",
@@ -58,18 +97,6 @@ describe("invoices (REGTEST)", () => {
       includeSparkAddress: true,
     });
     expect(request.invoice.encodedInvoice).toMatch(/^lnbcrt/);
-  });
-
-  it("creates a Spark token invoice for a known token id", async () => {
-    expect(tokenId).toBeDefined();
-    const invoice = await wallet.createTokensInvoice({
-      amount: 100n,
-      tokenIdentifier: tokenId,
-      memo: "test token invoice",
-    });
-    expect(invoice).toBeDefined();
-    // The invoice references a real token; verify the encoded form mentions it.
-    const encoded = typeof invoice === "string" ? invoice : invoice.encodedInvoice ?? invoice.invoice;
-    expect(typeof encoded === "string" || encoded === undefined).toBe(true);
+    expect(decodeInvoiceSats(request.invoice.encodedInvoice)).toBe(500);
   });
 });

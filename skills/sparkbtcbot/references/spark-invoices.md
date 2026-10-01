@@ -54,6 +54,26 @@ for (const err of result.satsTransactionErrors) {
 
 For token invoices the result has `tokenTransactionSuccess` / `tokenTransactionErrors` arrays of the same shape.
 
+> **⚠️ The raw SDK does not throw when an invoice is refused. It returns the failure.**
+> An expired invoice, one restricted to another payer, or an amountless one
+> with no `amount` comes back in `result.invalidInvoices`, and nothing in the
+> batch was sent. An invoice that was already paid comes back in
+> `satsTransactionErrors` (seen on REGTEST: `FAILED_PRECONDITION`). Code that
+> doesn't read those arrays reports a refused payment as paid. `SparkAgent`
+> (below) reads them for you.
+
+### Through `SparkAgent` (guarded)
+
+`agent.fulfillInvoice([{ invoice, amount? }], { dryRun })` checks the receiver
+against the allowlists, and refuses an entry with no payment type or no amount
+before anything else runs. Then it turns the SDK's result into one outcome:
+
+| SDK result | What `fulfillInvoice` does |
+|---|---|
+| every invoice in `…Success` | returns the result; audit `ok` |
+| any `invalidInvoices` (the SDK returns before sending any of the batch) | throws `INVOICE_REFUSED` with `invalidInvoices: [{ invoice, reason }]`; nothing counted against the budget; audit `error` |
+| any `…TransactionErrors` (sending had begun) | throws `PaymentCommittedError` (`PAYMENT_COMMITTED`) with `paid` and `failed` lists; the spend stays counted; audit `unknown`. Don't pay the failed ones again with a new invoice or method; check `agent.getTransfers()` first |
+
 ## Spark Invoice Embedded in BOLT11
 
 When you create a Lightning invoice with `includeSparkAddress: true`, the resulting BOLT11 carries the Spark address in route hints. Spark-aware payers can detect this and route via Spark (instant, free) instead of paying Lightning routing fees. The recipient can call `getLightningReceiveRequest(id)` and read `sparkInvoice` to get the embedded Spark invoice directly without decoding the BOLT11 manually.

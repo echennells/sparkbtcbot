@@ -43,15 +43,21 @@ describe("wallet privacy with a funded wallet (REGTEST)", () => {
       }
       return prev;
     };
+    // The other views must be read INSIDE the quiet window, not just after it:
+    // re-read the owner once they are in, and retry if it moved (a swap landed
+    // mid-snapshot — observed off by exactly one 1,024-sat leaf).
     const snapshot = async () => {
-      const own = await settledOwner();
-      return {
-        owner: own,
-        pub: await pub.getAvailableBalance(address),
-        viewer: await asViewer.getAvailableBalance(address),
-        stranger: await asStranger.getAvailableBalance(address),
-        pubTransfers: (await pub.getTransfers({ sparkAddress: address, limit: 5 })).transfers.length,
-      };
+      for (let attempt = 0; ; attempt++) {
+        const own = await settledOwner();
+        const views = {
+          owner: own,
+          pub: await pub.getAvailableBalance(address),
+          viewer: await asViewer.getAvailableBalance(address),
+          stranger: await asStranger.getAvailableBalance(address),
+          pubTransfers: (await pub.getTransfers({ sparkAddress: address, limit: 5 })).transfers.length,
+        };
+        if ((await owner.getBalance()).satsBalance.available === own || attempt >= 4) return views;
+      }
     };
 
     try {

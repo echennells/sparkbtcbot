@@ -104,4 +104,4 @@ Some merchant docs carry the skill author's referral link or `refCode`. The stan
 
 ## 7. Testing a new merchant pairing
 
-Three rungs, cheapest first: (1) the wallet leg on REGTEST or the 21-sat L402 faucet — paying a merchant's BOLT11 is mechanically identical to paying any other; (2) the merchant's own free/test surface, if any, for order mechanics and error paths; (3) **one minimal real purchase** with confirm-before-buy on — the only rung that exercises invoice-vs-quote verification against a real checkout. A merchant doc without a "validated live" stamp means rung 3 hasn't happened; say so when relying on it.
+Three rungs, cheapest first: (1) the wallet leg on REGTEST or the L402 faucet (50 sats on 2026-09-26) — paying a merchant's BOLT11 is mechanically identical to paying any other; (2) the merchant's own free/test surface, if any, for order mechanics and error paths; (3) **one minimal real purchase** with confirm-before-buy on — the only rung that exercises invoice-vs-quote verification against a real checkout. A merchant doc without a "validated live" stamp means rung 3 hasn't happened; say so when relying on it.

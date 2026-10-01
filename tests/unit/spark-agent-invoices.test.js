@@ -5,6 +5,9 @@
 // and held to the allowlist before the SDK is ever called, in dryRun too.
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { encodeSparkAddress } from "@buildonspark/spark-sdk";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 let mockAllowlist = null;
 vi.mock("../../lib/recipients-allowlist.js", async (importOriginal) => {
@@ -148,5 +151,80 @@ describe("sparkInvoiceReceiver", () => {
     expect(r.identityPublicKey).toBe(RECEIVER_PK);
     expect(r.address).toBe(bareAddress(RECEIVER_PK));
     expect(r.invoiceFields?.paymentType).toMatchObject({ type: "sats", amount: 1500 });
+  });
+});
+
+// The SDK does not throw for a refused invoice — it RETURNS the failures
+// (seen on REGTEST 2026-09-30: paid twice → satsTransactionErrors; expired or
+// wrong sender → invalidInvoices). fulfillInvoice used to treat any return as
+// success: the spend stayed counted and the audit said "ok".
+describe("fulfillInvoice reads the SDK's result", () => {
+  const KEYS = ["SPARK_DAILY_BUDGET_SATS", "SPARK_SPEND_LEDGER_PATH", "SPARK_SEED_PATH", "SPARK_AUDIT_LOG_PATH"];
+  const saved = {};
+  let dir;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "fulfill-result-"));
+    for (const k of KEYS) saved[k] = process.env[k];
+    process.env.SPARK_DAILY_BUDGET_SATS = "100000";
+    process.env.SPARK_SPEND_LEDGER_PATH = join(dir, "ledger.json");
+    process.env.SPARK_SEED_PATH = join(dir, "no-seed.enc");
+    process.env.SPARK_AUDIT_LOG_PATH = join(dir, "audit.jsonl");
+  });
+  afterEach(() => {
+    for (const k of KEYS) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; }
+  });
+  const agentReturning = (result) => {
+    process.env.SPARK_LEAF_VAULT = "off";
+    const calls = { fulfill: 0 };
+    const wallet = { getSparkAddress: async () => "sp1from", fulfillSparkInvoice: async () => { calls.fulfill++; return result; } };
+    return { agent: new SparkAgent(wallet, "MAINNET"), calls };
+  };
+  const lastAudit = () => JSON.parse(readFileSync(join(dir, "audit.jsonl"), "utf8").trim().split("\n").at(-1));
+  const empty = { satsTransactionSuccess: [], satsTransactionErrors: [], tokenTransactionSuccess: [], tokenTransactionErrors: [], invalidInvoices: [] };
+  const amountless = encodeSparkAddress({
+    identityPublicKey: RECEIVER_PK, network: "MAINNET",
+    sparkInvoiceFields: { version: 1, id: new Uint8Array(16).fill(9), paymentType: { $case: "satsPayment", satsPayment: {} } },
+  });
+
+  it("an amountless invoice with no amount is refused before the policy, the ledger or the SDK — with or without a budget", async () => {
+    for (const budget of ["100000", undefined]) {
+      if (budget) process.env.SPARK_DAILY_BUDGET_SATS = budget; else delete process.env.SPARK_DAILY_BUDGET_SATS;
+      const { agent, calls } = agentReturning(empty);
+      await expect(agent.fulfillInvoice([{ invoice: amountless }])).rejects.toThrow(/has no amount — pass \{ invoice, amount \}/);
+      await expect(agent.fulfillInvoice([{ invoice: amountless, amount: "lots" }])).rejects.toThrow(/positive integer of sats/);
+      expect(calls.fulfill).toBe(0);
+    }
+  });
+
+  it("invalidInvoices: nothing was sent — refund, audit 'error', throw INVOICE_REFUSED with the SDK's reasons", async () => {
+    const { agent } = agentReturning({ ...empty, invalidInvoices: [{ invoice: INVOICE, error: new Error("Invoice expired") }] });
+    const err = await agent.fulfillInvoice([{ invoice: INVOICE }]).catch((e) => e);
+    expect(err).toMatchObject({ code: "INVOICE_REFUSED", message: /nothing was paid/, invalidInvoices: [{ invoice: INVOICE, reason: "Invoice expired" }] });
+    expect((await agent.spendStatus()).spentSats).toBe(0);
+    expect(lastAudit()).toMatchObject({ op: "fulfill_spark_invoice", result: "error" });
+  });
+
+  it("transaction errors: the spend stays counted, audit 'unknown', PAYMENT_COMMITTED names what paid and what failed", async () => {
+    const OTHER = invoiceFor(RECEIVER_PK, { id: 8, amount: 500 });
+    const { agent } = agentReturning({
+      ...empty,
+      satsTransactionSuccess: [{ invoice: INVOICE, transferResponse: { id: "t-ok" } }],
+      satsTransactionErrors: [{ invoice: OTHER, error: new Error("FAILED_PRECONDITION: already paid") }],
+    });
+    const err = await agent.fulfillInvoice([{ invoice: INVOICE }, { invoice: OTHER }]).catch((e) => e);
+    expect(err).toMatchObject({
+      code: "PAYMENT_COMMITTED", settled: null,
+      paid: [{ invoice: INVOICE, id: "t-ok" }],
+      failed: [{ invoice: OTHER, reason: "FAILED_PRECONDITION: already paid" }],
+    });
+    expect((await agent.spendStatus()).spentSats).toBe(2_000);
+    expect(lastAudit()).toMatchObject({ result: "unknown" });
+  });
+
+  it("a clean result is 'ok' in the audit, with the transfer id", async () => {
+    const { agent } = agentReturning({ ...empty, satsTransactionSuccess: [{ invoice: INVOICE, transferResponse: { id: "t-1" } }] });
+    await agent.fulfillInvoice([{ invoice: INVOICE }]);
+    expect(lastAudit()).toMatchObject({ result: "ok", id: "t-1" });
+    expect((await agent.spendStatus()).spentSats).toBe(1_500);
   });
 });

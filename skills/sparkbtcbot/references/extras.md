@@ -104,7 +104,7 @@ npm install @buildonspark/issuer-sdk
 
 ```javascript
 import { IssuerSparkWallet } from "@buildonspark/issuer-sdk";
-import { loadMnemonicFromEnv } from "./lib/encrypted-seed.js";
+import { loadMnemonicFromEnv } from "sparkbtcbot-skill";
 
 const mnemonic = await loadMnemonicFromEnv(); // reads SPARK_PASSPHRASE
 const { wallet } = await IssuerSparkWallet.initialize({

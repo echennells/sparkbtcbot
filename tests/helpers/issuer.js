@@ -18,7 +18,7 @@ export async function getOrCreateIssuerToken({
 }) {
   const { wallet } = await IssuerSparkWallet.initialize({
     mnemonicOrSeed: mnemonic,
-    options: { network: NETWORK },
+    options: { network: NETWORK, optimizationOptions: { auto: false } }, // see helpers/wallet.js
   });
   trackedIssuers.add(wallet);
 

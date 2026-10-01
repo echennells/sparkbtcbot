@@ -11,6 +11,7 @@ import { dirname, join } from "node:path";
 import { SparkAgent } from "../../skills/sparkbtcbot/scripts/spark-agent.js";
 
 const MD_PATH = join(dirname(fileURLToPath(import.meta.url)), "../../skills/sparkbtcbot/references/agent-class.md");
+const SRC_PATH = join(dirname(fileURLToPath(import.meta.url)), "../../skills/sparkbtcbot/scripts/spark-agent.js");
 
 const publicMethods = () =>
   Object.getOwnPropertyNames(SparkAgent.prototype).filter((n) => n !== "constructor");
@@ -40,5 +41,19 @@ describe("agent-class.md ↔ shipped SparkAgent parity", () => {
     const real = new Set([...publicMethods(), "create", "constructor"]);
     const phantom = defined.filter((name) => !real.has(name));
     expect(phantom, `defined in the doc listing but missing on SparkAgent: ${phantom}`).toEqual([]);
+  });
+
+  // Names alone let a signature drift through: the listing's create() lost its
+  // { optimizeLeaves } option, so the doc could not teach the one-shot flag
+  // the shipped examples use. Compare every single-line signature verbatim.
+  it("every method signature in the doc listing matches the shipped one", async () => {
+    const md = await readFile(MD_PATH, "utf8");
+    const src = await readFile(SRC_PATH, "utf8");
+    const code = md.slice(md.indexOf("```javascript"), md.indexOf("\n```", md.indexOf("```javascript")));
+    const classBody = src.slice(src.indexOf("export class SparkAgent {"), src.indexOf("// --- Demo ---"));
+    const signatures = (text) =>
+      [...text.matchAll(/^  (?:static )?(?:async )?[a-zA-Z][a-zA-Z0-9]*\(.*\) \{$/gm)].map((m) => m[0]).sort();
+    expect(signatures(classBody).length).toBeGreaterThan(10);
+    expect(signatures(code)).toEqual(signatures(classBody));
   });
 });

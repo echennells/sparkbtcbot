@@ -4,10 +4,16 @@ const NETWORK = "REGTEST";
 
 const tracked = new Set();
 
+// Leaf optimization OFF: test wallets are short-lived, and cleanup() kills the
+// SDK's background optimizer mid-swap. The operators then hold the swapped
+// leaves TRANSFER_LOCKED for a while, and the next file's send on the shared
+// funded wallet fails ("leaf … is not available to transfer, status:
+// TRANSFER_LOCKED" — seen 2026-09-30). Same remedy wallet.md → Cleanup gives
+// one-shot scripts.
 export async function createTestWallet(opts = {}) {
   const { wallet, mnemonic } = await SparkWallet.initialize({
     mnemonicOrSeed: opts.mnemonic,
-    options: { network: NETWORK },
+    options: { network: NETWORK, optimizationOptions: { auto: false } },
   });
   tracked.add(wallet);
   return { wallet, mnemonic };

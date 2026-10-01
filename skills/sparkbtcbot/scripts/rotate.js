@@ -48,6 +48,7 @@ import {
   MIN_PASSPHRASE_CHARS,
 } from "../../../lib/encrypted-seed.js";
 import { initSignedLedger, DEFAULT_SPEND_LEDGER_PATH } from "../../../lib/spend-ledger.js";
+import { policyHasLedgerBudget } from "../../../lib/policy.js";
 import { atomicWriteFile } from "../../../lib/atomic-file.js";
 import { ensureWalletPrivacy, privacyPreferenceFromEnv } from "../../../lib/wallet-privacy.js";
 import { snapshotLeafVault, defaultVaultPath } from "./leaf-vault.js";
@@ -175,7 +176,7 @@ export async function commitRotation({
     const dest = join(retiredDir, "leaf-vault.json");
     try { await rename(vaultPath, dest); } catch { await copyFile(vaultPath, dest); await unlink(vaultPath); }
   }
-  if (oldPayload.policy?.dailyBudgetSats != null) {
+  if (policyHasLedgerBudget(oldPayload.policy)) {
     await initSignedLedger({ path: ledgerPath, hmacKey: deriveLedgerHmacKey(newMnemonic) });
   }
   const manifest = {
@@ -256,7 +257,7 @@ export async function main() {
     const newAddress = await newWallet.getSparkAddress();
     const newIdentityPublicKey = await newWallet.getIdentityPublicKey();
     log(`new wallet       ${newAddress}`);
-    log(`sealed policy    ${oldPayload.policy ? "carried over unchanged" + (oldPayload.policy.dailyBudgetSats != null ? " (budget → fresh signed ledger)" : "") : "none (v1 seed)"}`);
+    log(`sealed policy    ${oldPayload.policy ? "carried over unchanged" + (policyHasLedgerBudget(oldPayload.policy) ? " (budget → fresh signed ledger)" : "") : "none (v1 seed)"}`);
 
     if (!execute) {
       stderr.write("\nDry run — nothing moved, nothing written. Re-run with --execute to rotate.\n");

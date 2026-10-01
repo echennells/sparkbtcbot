@@ -1,81 +1,66 @@
 import "dotenv/config";
 import { pathToFileURL } from "node:url";
 import { realpathSync } from "node:fs";
-import { SparkWallet } from "@buildonspark/spark-sdk";
 import { loadMnemonicFromEnv } from "../../../lib/encrypted-seed.js";
+import { SparkAgent } from "./spark-agent.js";
 
 const network = process.env.SPARK_NETWORK || "MAINNET";
 
 async function main() {
   const mnemonic = await loadMnemonicFromEnv();
-  const { wallet } = await SparkWallet.initialize({
-    mnemonicOrSeed: mnemonic,
-    options: { network },
-  });
+  // One-shot script, so optimizeLeaves: false. Nothing here moves value, but
+  // booting does: the SDK claims any pending inbound transfer in the
+  // background, and a claim can start its leaf optimizer. cleanup() at exit
+  // would interrupt it (references/wallet.md → Cleanup).
+  const { agent } = await SparkAgent.create(mnemonic, network, { optimizeLeaves: false });
 
-  // Check BTC balance
-  const { satsBalance, tokenBalances } = await wallet.getBalance();
+  // Claimed, spendable balance. A confirmed L1 deposit that has not been
+  // claimed yet is not in this number — see listPendingDeposits() below.
+  const { sats, tokens } = await agent.getBalance();
   console.log("=== Balance ===");
-  console.log("BTC:", satsBalance.available.toString(), "sats");
+  console.log("BTC:", sats, "sats");
 
-  // Check token balances
-  if (tokenBalances.size > 0) {
+  const tokenEntries = Object.entries(tokens);
+  if (tokenEntries.length > 0) {
     console.log("\n=== Tokens ===");
-    for (const [id, info] of tokenBalances) {
-      const meta = info.tokenMetadata;
-      console.log(`${meta.tokenName} (${meta.tokenTicker}): ${info.ownedBalance.toString()}`);
+    for (const [id, info] of tokenEntries) {
+      console.log(`${info.name} (${info.ticker}): ${info.balance} [${id}]`);
     }
   } else {
     console.log("\nNo token balances.");
   }
 
-  // Generate deposit addresses
   console.log("\n=== Deposit Addresses ===");
-
-  const staticAddr = await wallet.getStaticDepositAddress();
-  console.log("Static (reusable):", staticAddr);
-
-  const singleAddr = await wallet.getSingleUseDepositAddress();
-  console.log("Single-use:       ", singleAddr);
-
+  console.log("Static (reusable):", await agent.getDepositAddress());
+  console.log("Single-use:       ", await agent.getSingleUseDepositAddress());
   console.log("\nSend BTC to either address. Deposits need 3 L1 confirmations.");
 
-  // "Did my deposit arrive?" — getBalance() shows CLAIMED balance only, so a
-  // confirmed-but-unclaimed deposit is INVISIBLE there. Check the deposit
-  // addresses directly. (The SparkAgent wrapper bundles this whole loop as
-  // `agent.listPendingDeposits()` -> [{ address, txid, vout }].)
   console.log("\n=== Unclaimed deposits (confirmed, waiting to be claimed) ===");
-  const depositAddrs = await wallet.queryStaticDepositAddresses();
-  let anyPending = false;
-  for (const addr of depositAddrs) {
-    const utxos = await wallet.getUtxosForDepositAddress(addr, 100, 0, true); // excludeClaimed=true
-    for (const u of utxos) {
-      anyPending = true;
-      console.log(
-        `  ${u.txid}:${u.vout}  ->  claimStaticDeposit({ transactionId: "${u.txid}", outputIndex: ${u.vout}, maxFee: <sats> })`,
-      );
+  const pending = await agent.listPendingDeposits();
+  if (pending.length === 0) {
+    console.log("  none yet — nothing confirmed-and-unclaimed (keep waiting after you send).");
+  } else {
+    for (const d of pending) {
+      console.log(`  ${d.txid}:${d.vout}  at ${d.address}`);
+      console.log(`    preview: agent.claimDeposit({ txid: "${d.txid}", vout: ${d.vout}, dryRun: true })`);
     }
   }
-  if (!anyPending) {
-    console.log("  none yet — nothing confirmed-and-unclaimed (keep waiting after you send).");
-  }
 
-  // List recent transfers
-  const { transfers } = await wallet.getTransfers(5, 0);
+  const { transfers } = await agent.getTransfers(5, 0);
   if (transfers.length > 0) {
     console.log("\n=== Recent Transfers ===");
     for (const tx of transfers) {
       // valueReceivedByWallet / valueSentByWallet (SDK >= 0.12) are THIS wallet's
       // share; the deprecated totalValue is the whole transfer across every
       // receiver and over-reports on multi-receiver transfers.
-      const sats = tx.valueReceivedByWallet || tx.valueSentByWallet || 0;
-      console.log(`  ${tx.id}: ${sats} sats [${tx.status}]`);
+      const amount = tx.valueReceivedByWallet || tx.valueSentByWallet || 0;
+      console.log(`  ${tx.id}: ${amount} sats [${tx.status}]`);
     }
   } else {
     console.log("\nNo transfers yet.");
   }
 
-  wallet.cleanup();
+  await agent.cleanup();
 }
 
 // Run main() only when executed directly (node script.js), not when this

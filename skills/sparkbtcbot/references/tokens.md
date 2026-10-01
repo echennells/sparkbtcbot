@@ -42,6 +42,45 @@ const txIds = await wallet.batchTransferTokens([
 ]);
 ```
 
+> **⚠️ `wallet.transferTokens()` and `wallet.batchTransferTokens()` have NO
+> `dryRun` and NO guardrails — these calls SEND, immediately.** The allowlists,
+> the sealed `tokenLimits`, the spend ledger and `dryRun` exist only on the
+> `SparkAgent` wrapper, below. For sends on behalf of an operator, use the wrapper.
+
+## Guarded sends through `SparkAgent`
+
+```javascript
+import { loadMnemonicFromEnv } from "sparkbtcbot-skill";
+import { SparkAgent } from "sparkbtcbot-skill/agent";
+
+const { agent } = await SparkAgent.create(await loadMnemonicFromEnv()); // reads SPARK_PASSPHRASE
+
+// amount is BASE UNITS (bigint, or a number below 2^53) — for a 6-decimal
+// token, 1_500_000n is 1.50 tokens. Read decimals from agent.getBalance().
+const preview = await agent.transferTokens({ tokenIdentifier: "btkn1...", amount: 1_500_000n, to: "spark1...", dryRun: true });
+// → { dryRun: true, operation: "token_transfer", from, to, tokenIdentifier, amount: "1500000", unit: "tokens", ... }
+// show it, confirm, then call again without dryRun
+
+const batch = await agent.batchTransferTokens(
+  [
+    { tokenIdentifier: "btkn1...", tokenAmount: 500_000n, receiverSparkAddress: "spark1..." },
+    { tokenIdentifier: "btkn1...", tokenAmount: 500_000n, to: "spark1..." }, // `to` / `amount` aliases work too
+  ],
+  { dryRun: true }, // → { entries, totals: [{ tokenIdentifier, amount: "1000000" }], ... }
+);
+
+await agent.cleanup();
+```
+
+A token send through the wrapper gets the same checks as a sats send, per token:
+
+- **Recipients** — `~/.spark/recipients.allow` and the sealed `allowedRecipients`, on every receiver (one bad entry blocks the whole batch). Enforced in dry-run mode too.
+- **`tokenLimits`** (sealed) — per-token `maxPerTx` and rolling-24h `dailyBudget` as token amounts (`"25.50"`), converted with the decimals the wallet reads from the token's metadata at send time. Once sealed, a token it doesn't list is refused. So is a token whose decimals can't be read, or whose limit is more precise than the token; limits are never rounded. A batch is one transaction, so the cap sees each token's total, not each entry. Spark invoices that pay tokens (`fulfillInvoice`) are capped and counted the same way. `await agent.policy()` shows the sealed limits; `(await agent.spendStatus()).tokens` shows spent / budget / remaining per token, in token amounts. Shape and rules: `references/security.md` → Policy engine.
+- **Input checks** — the identifier must decode as a token on this wallet's network (a `btknrt1…` id on a mainnet wallet is refused before anything else runs), and the amount must be a positive integer. Unknown option keys throw.
+- **Failure outcome** — an SDK error that proves nothing was sent (e.g. `Insufficient token amount`) refunds the budget and rethrows. Any other failure leaves the spend counted and throws `PaymentCommittedError` (`PAYMENT_COMMITTED`). Check the token balance before sending again; a new transfer is a second payment.
+
+A denial throws `PolicyDeniedError { rule: "tokenLimits", reason }`, or `SPEND_BUDGET_EXCEEDED` for a token's daily budget. Relay the reason and **never split the send to fit under the cap**.
+
 ## Token Identifiers
 
 Token identifiers are bech32m-encoded:

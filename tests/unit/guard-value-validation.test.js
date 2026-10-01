@@ -113,10 +113,14 @@ describe("batchTransferTokens fails closed on unreadable receiver", () => {
     let sent = null;
     const w = { batchTransferTokens: async (t) => { sent = t; return ["tx"]; } };
     const agent = mkAgent(w);
+    const token = "btkn1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqst3p42v";
     await agent.batchTransferTokens([
-      { tokenIdentifier: "btkn1x", tokenAmount: 50n, receiverSparkAddress: "sp1a" },
-      { tokenIdentifier: "btkn1x", tokenAmount: 50n, to: "sp1b" },
+      { tokenIdentifier: token, tokenAmount: 50n, receiverSparkAddress: "sp1a" },
+      { tokenIdentifier: token, tokenAmount: 50n, to: "sp1b" },
     ]);
     expect(sent).toHaveLength(2);
+    // The `to` alias reaches the SDK as receiverSparkAddress (it used to be
+    // checked against the allowlist, then forwarded raw — the SDK never saw it).
+    expect(sent[1]).toEqual({ tokenIdentifier: token, tokenAmount: 50n, receiverSparkAddress: "sp1b" });
   });
 });

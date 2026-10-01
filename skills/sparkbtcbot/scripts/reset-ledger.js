@@ -13,6 +13,7 @@ import { pathToFileURL } from "node:url";
 import { realpathSync } from "node:fs";
 import { loadSeedPayload, deriveLedgerHmacKey, DEFAULT_SEED_PATH, MIN_PASSPHRASE_CHARS } from "../../../lib/encrypted-seed.js";
 import { initSignedLedger, DEFAULT_SPEND_LEDGER_PATH } from "../../../lib/spend-ledger.js";
+import { sealedTokenBudgets } from "../../../lib/policy.js";
 import { promptStderr } from "./prompt.js";
 
 const USAGE =
@@ -63,8 +64,12 @@ export async function main() {
     exit(1);
   }
 
+  const budgets = [
+    ...(payload.policy.dailyBudgetSats != null ? [`the ${payload.policy.dailyBudgetSats}-sat window`] : []),
+    ...Object.keys(sealedTokenBudgets(payload.policy) ?? {}).map((id) => `the ${id} window`),
+  ];
   const confirm = (await promptStderr(
-    `About to RESET the signed spend ledger at ${ledgerPath} — the ${payload.policy.dailyBudgetSats}-sat window restarts empty.\nType 'yes' to proceed: `,
+    `About to RESET the signed spend ledger at ${ledgerPath} — ${budgets.length ? budgets.join(", ") : "the window"} restart${budgets.length === 1 ? "s" : ""} empty.\nType 'yes' to proceed: `,
   )).trim().toLowerCase();
   if (confirm !== "yes") { stderr.write("Aborted — nothing changed.\n"); exit(0); }
 

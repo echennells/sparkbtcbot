@@ -21,11 +21,13 @@ describe("SparkAgent.create missing-mnemonic guard", () => {
   });
 });
 
-// A one-shot script that moves value then cleanup()s races the SDK's detached
-// leaf optimizer ("...interrupted due to cleanup"). The escape hatch is to init
-// with optimizationOptions.auto=false so there's nothing to interrupt. Pin that
+// A one-shot script that cleanup()s before exiting races the SDK's detached
+// leaf optimizer ("...interrupted due to cleanup") — whether or not it moved
+// value, since initialize() claims pending inbound transfers in the background
+// and a claim can start the optimizer. The escape hatch is to init with
+// optimizationOptions.auto=false so there's nothing to interrupt. Pin that
 // create()'s optimizeLeaves flag actually reaches the SDK — a silent drop of
-// this plumbing would re-expose every one-shot value-mover to the race.
+// this plumbing would re-expose every one-shot script to the race.
 describe("SparkAgent.create leaf-optimization plumbing", () => {
   const origVault = process.env.SPARK_LEAF_VAULT;
   const origPrivacy = process.env.SPARK_PRIVACY;

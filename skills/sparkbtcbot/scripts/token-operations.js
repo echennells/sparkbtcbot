@@ -1,31 +1,30 @@
 import "dotenv/config";
 import { pathToFileURL } from "node:url";
 import { realpathSync } from "node:fs";
-import { SparkWallet } from "@buildonspark/spark-sdk";
 import { loadMnemonicFromEnv } from "../../../lib/encrypted-seed.js";
+import { SparkAgent } from "./spark-agent.js";
 
 const network = process.env.SPARK_NETWORK || "MAINNET";
 
 async function main() {
   const mnemonic = await loadMnemonicFromEnv();
-  const { wallet } = await SparkWallet.initialize({
-    mnemonicOrSeed: mnemonic,
-    options: { network },
-  });
+  // One-shot script, so optimizeLeaves: false. A send below can start the SDK's
+  // background leaf optimizer, and so can booting: the SDK claims any pending
+  // inbound transfer in the background. cleanup() at exit would interrupt it
+  // (references/wallet.md → Cleanup).
+  const { agent } = await SparkAgent.create(mnemonic, network, { optimizeLeaves: false });
 
-  // --- Token Balances ---
   console.log("=== Token Balances ===");
-  const { satsBalance, tokenBalances } = await wallet.getBalance();
-  console.log("BTC:", satsBalance.available.toString(), "sats\n");
+  const { sats, tokens } = await agent.getBalance();
+  console.log("BTC:", sats, "sats\n");
 
-  if (tokenBalances.size > 0) {
-    for (const [id, info] of tokenBalances) {
-      const meta = info.tokenMetadata;
-      console.log(`Token: ${meta.tokenName} (${meta.tokenTicker})`);
+  const tokenEntries = Object.entries(tokens);
+  if (tokenEntries.length > 0) {
+    for (const [id, info] of tokenEntries) {
+      console.log(`Token: ${info.name} (${info.ticker})`);
       console.log(`  Identifier: ${id}`);
-      console.log(`  Balance:    ${info.ownedBalance.toString()}`);
-      console.log(`  Decimals:   ${meta.decimals}`);
-      console.log(`  Max Supply: ${meta.maxSupply.toString()}`);
+      console.log(`  Balance:    ${info.balance}`);
+      console.log(`  Decimals:   ${info.decimals}`);
       console.log();
     }
   } else {
@@ -33,43 +32,46 @@ async function main() {
   }
 
   // --- Transfer Tokens ---
-  // Uncomment with real values to send tokens:
+  // dryRun signs nothing. Call again without dryRun to send.
   //
-  // const txId = await wallet.transferTokens({
+  // const preview = await agent.transferTokens({
   //   tokenIdentifier: "btkn1...",
-  //   tokenAmount: 100n,
-  //   receiverSparkAddress: "sp1p...",
+  //   amount: 100n,
+  //   to: "sp1p...",
+  //   dryRun: true,
   // });
-  // console.log("Token transfer:", txId);
+  // console.log(preview);
+  // const tx = await agent.transferTokens({
+  //   tokenIdentifier: "btkn1...",
+  //   amount: 100n,
+  //   to: "sp1p...",
+  // });
+  // console.log("Token transfer:", tx);
 
   // --- Batch Transfer ---
-  // Send tokens to multiple recipients in one call:
+  // batchTransferTokens has no dryRun — uncommenting this sends. Preview each
+  // recipient with transferTokens({ dryRun: true }) first.
   //
-  // const txIds = await wallet.batchTransferTokens([
+  // const txIds = await agent.batchTransferTokens([
   //   { tokenIdentifier: "btkn1...", tokenAmount: 50n, receiverSparkAddress: "sp1p..." },
   //   { tokenIdentifier: "btkn1...", tokenAmount: 50n, receiverSparkAddress: "sp1p..." },
   // ]);
   // console.log("Batch transfers:", txIds);
 
   // --- Token Invoice ---
-  // Request payment in a specific token:
   //
-  // const invoice = await wallet.createTokensInvoice({
-  //   amount: 100n,
-  //   tokenIdentifier: "btkn1...",
-  //   memo: "Pay me in tokens",
-  // });
+  // const invoice = await agent.createTokenInvoice("btkn1...", 100n, "Pay me in tokens");
   // console.log("Token invoice:", invoice);
 
   // --- Listen for Incoming Tokens ---
-  // wallet.on("transfer:claimed", (transferId, updatedBalance) => {
+  // agent.onTransferReceived((transferId, updatedBalance) => {
   //   console.log(`Received transfer ${transferId}`);
   //   console.log("Updated balance:", updatedBalance);
   // });
   // console.log("Listening for incoming transfers... (Ctrl+C to stop)");
   // await new Promise(() => {}); // keep alive
 
-  wallet.cleanup();
+  await agent.cleanup();
 }
 
 // Run main() only when executed directly (node script.js), not when this

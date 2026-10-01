@@ -17,7 +17,7 @@ requires:
     - name: SPARK_PRIVACY
       description: Set to "off" to leave balance and history publicly readable by address. On by default.
     - name: SPARK_DAILY_BUDGET_SATS
-      description: Opt-in rolling 24-hour spend budget in sats across all sats sends — the one guard that stops a loop of valid sends. Unset = not enforced.
+      description: Opt-in rolling 24-hour budget over sats sends only (never tokens) — stops a loop of valid sends. Unset = not enforced.
     - name: SPARK_SPEND_LEDGER_PATH
       description: Optional override for the spend-ledger file backing SPARK_DAILY_BUDGET_SATS. Defaults to ~/.spark/spend-ledger.json.
 model-invocation: autonomous
@@ -65,8 +65,8 @@ These rules apply whenever this skill is active. They are not optional — the m
 ### Operating rules
 
 - **Money and balances go through `SparkAgent`.** `import { SparkAgent } from "sparkbtcbot-skill/agent"` (cloned tree: `skills/sparkbtcbot/scripts/spark-agent.js`) — never `wallet.pay*`, `wallet.transfer*`, `wallet.withdraw*`, or `wallet.getBalance()` directly. The wrapper is where the allowlist, fee ceilings, budget, sealed policy, Lightning dedup, audit log, and leaf-vault live; the raw SDK has none of them. Raw calls only when the user explicitly asks for them, and then say what the raw path skips. Before writing any such script, load `references/agent-class.md`.
-- **The raw SDK has NO `dryRun`.** `wallet.transfer({ ..., dryRun: true })` is not a preview: the unknown key is silently dropped and the call **signs and sends** — same for every raw `wallet.*` money-moving call, which also bypass the allowlist, fee ceilings, and sealed policy (all live in the `SparkAgent` wrapper). Not using `SparkAgent`? Then there is no dry-run; say so instead of faking one.
-- **Never retry a denied spend with a smaller amount.** Relay a `PolicyDeniedError` / budget refusal to the operator with its `reason`; splitting the payment is exactly what the cap exists to stop.
+- **The raw SDK has NO `dryRun`.** `wallet.transfer({ ..., dryRun: true })` is not a preview: the unknown key is silently dropped and the call **signs and sends** — same for every raw `wallet.*` money-moving call. Not using `SparkAgent`? Then there is no dry-run; say so instead of faking one.
+- **Never retry a denied spend smaller, or re-pay after `PAYMENT_COMMITTED`.** Relay a `PolicyDeniedError` / budget refusal with its `reason`; splitting is what the cap stops. `PAYMENT_COMMITTED` means money left or may have: never catch-and-retry payments in code; for L402 call `fetchL402` on the same URL again, else check `getTransfers()` first.
 - **Never hand out a native Spark invoice by default.** It is address-*shaped* (`spark1…`, ~3× longer than an address) but **no consumer wallet can pay it** — only Spark-SDK code via `fulfillSparkInvoice`. Default to a BOLT11 (any Lightning wallet) or a bare Spark address — Receiving, below.
 - **"Did it arrive?" is never answered from a balance alone.** `getBalance()` reports *claimed* funds only — for L1 deposits, Lightning, and Spark receives alike (the raw shape is `{ available, owned, incoming }`; there is no `pending`). L1: `agent.listPendingDeposits()` → `claimDeposit`. Lightning / Spark: `agent.getTransfers()` for an INCOMING transfer of about the right size and its status, then `invoiceIsExpired`. An empty result means *not landed yet*, never *they didn't pay*.
 - **Every fiat figure the user sees is a tool result** — `satsToFiat` / `describeRate` (or `fetchBtcPrice` → `fiatToSats` when sizing), shown with the rate and its time. Never convert in prose: no mental arithmetic, no remembered rate.
@@ -80,15 +80,15 @@ These rules apply whenever this skill is active. They are not optional — the m
 
 ## Agent-side guardrails
 
-Opt-in knobs in the `SparkAgent` wrapper. None is a hard control — the funded balance is the only one that survives a compromised process — they keep the agent from surprising the operator. Detail, including the fail-closed table: `references/security.md` → Policy engine.
+Opt-in knobs in the `SparkAgent` wrapper. None survives a compromised process (only the funded balance does); they keep the agent from surprising the operator. Detail, including the fail-closed table: `references/security.md` → Policy engine.
 
-- **`dryRun: true`** on `transfer`, `transferTokens`, `withdraw`, `payLightningInvoice`, `fulfillInvoice` — a structured preview, nothing signed; show it, confirm, re-call without the flag. Allowlists and sealed rules are enforced in dry-run mode too.
+- **`dryRun: true`** on `transfer`, `transferTokens`, `batchTransferTokens`, `withdraw`, `payLightningInvoice`, `fulfillInvoice` — a structured preview, nothing signed; show it, confirm, re-call without the flag. Allowlists and sealed rules are enforced in dry-run mode too.
 - **Address allowlist** at `~/.spark/recipients.allow` (one Spark/L1 address per line; missing or empty = not enforced). Gates Spark transfers, token sends, Spark-invoice fulfillment, and L1 withdrawals — **not Lightning or L402**, which pay a node pubkey, not an address.
-- **Cumulative budget** `SPARK_DAILY_BUDGET_SATS` — rolling 24-hour sats budget across every sats send, the one guard that stops a *loop* of valid sends. Unset = not enforced; a malformed value refuses to boot. `agent.spendStatus()` to inspect.
-- **Sealed policy** — the user runs `sparkbtcbot set-policy` (their terminal; TTY-gated — you do not run it, nor `rekey` / `rotate`) to seal `{ dailyBudgetSats, maxPerTxSats, allowedOps, allowedRecipients, expiresAt, exec }` inside the encrypted seed: budget, per-send cap, permitted operations, tamper-proof allowlist, deadline, sha256-pinned executable hook. Sealed rules win over env and files; the ledger becomes HMAC-signed and fails closed if touched.
+- **Cumulative budget** `SPARK_DAILY_BUDGET_SATS` — rolling 24-hour budget across every sats send, the one guard that stops a *loop* of valid sends. **Sats only, never tokens**: seal `tokenLimits` for those. Unset = not enforced; a malformed value refuses to boot. `agent.spendStatus()` to inspect.
+- **Sealed policy** — the user runs `sparkbtcbot set-policy` (their terminal; TTY-gated — you do not run it, nor `rekey` / `rotate`) to seal `{ dailyBudgetSats, maxPerTxSats, tokenLimits, allowedOps, allowedRecipients, allowedHosts, deniedHosts, expiresAt, exec }` inside the encrypted seed (`tokenLimits`: per-token caps/budgets in token units, also a token allowlist; `exec`: a sha256-pinned hook). Sealed rules win over env and files; the ledger becomes HMAC-signed and fails closed if touched.
 - **`await agent.policy()`** returns the active limits read-only — state them *before* a spend. A denial throws `PolicyDeniedError { rule, reason }`; every denial and live outcome is one line in `~/.spark/audit.jsonl`.
 
-What bounds Lightning/L402 through the wrapper is the per-call `maxAmountSats`, the sealed `maxPerTxSats`, and the budget — in-process, so they bound mistakes and loops, not a compromised process (Two tiers, above).
+What bounds Lightning/L402 through the wrapper is the per-call `maxAmountSats`, the sealed `maxPerTxSats` and host rules, and the budget — in-process only (Two tiers, above).
 
 ## Receiving: which artifact to hand out
 
@@ -102,7 +102,7 @@ A Spark wallet can be paid five different ways, and most payers can only use som
 | Payer is known to be another Spark-SDK agent | Native Spark invoice (`createSatsInvoice`) is fine | Only code calling `fulfillSparkInvoice` |
 | Payer is on-chain / amount is large | L1 static deposit address | Any Bitcoin wallet; small amounts are fee-dominated |
 
-Rules (the never-rules — native invoice, `getBalance()`, deposit sizing — are in Rules for Claude, above):
+Rules (the never-rules are in Rules for Claude, above):
 
 - **Post-receive "what is this / how do I get my money?" → `references/first-spend.md`**, not wallet lore: balance in their currency, then a gift card at a store they use, sized under the balance — not a seed phrase, not an L1 exit.
 - "Address **for N sats**" is self-contradictory (addresses are amountless): give the bare address plus "send N sats to it", or a BOLT11 for N sats if the payer uses Lightning — never the native invoice.

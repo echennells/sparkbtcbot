@@ -16,6 +16,8 @@ import {
   PolicyDeniedError,
   POLICY_OPS,
   OUTBOUND_OPS,
+  sealedTokenBudgets,
+  policyHasLedgerBudget,
 } from "../../lib/policy.js";
 
 const ctxFor = (over = {}) => ({
@@ -37,6 +39,8 @@ describe("validatePolicyObject", () => {
       maxPerTxSats: 10_000,
       allowedOps: ["lightning_pay", "spark_transfer", "lightning_pay"],
       allowedRecipients: [" sp1pabc ", "bc1qxyz"],
+      allowedHosts: ["API.Example.com.", "*.satring.com", "api.example.com"],
+      deniedHosts: ["ads.satring.com"],
       expiresAt: "2026-12-31T23:59:59Z",
       exec: { path: "/usr/local/bin/approve", sha256: "a".repeat(64) },
     });
@@ -45,6 +49,8 @@ describe("validatePolicyObject", () => {
       maxPerTxSats: 10_000,
       allowedOps: ["lightning_pay", "spark_transfer"],
       allowedRecipients: ["sp1pabc", "bc1qxyz"],
+      allowedHosts: ["api.example.com", "*.satring.com"],
+      deniedHosts: ["ads.satring.com"],
       expiresAt: "2026-12-31T23:59:59.000Z",
       exec: { path: "/usr/local/bin/approve", sha256: "a".repeat(64) },
     });
@@ -63,8 +69,10 @@ describe("validatePolicyObject", () => {
     expect(() => validatePolicyObject({ exec: { path: "/x", sha256: "a".repeat(64), args: [] } })).toThrow(/unknown key/);
   });
 
-  it("op vocabulary: claim_deposit is the one inbound op", () => {
+  it("op vocabulary: claim_deposit is the one inbound op; http402_pay is its own outbound op", () => {
     expect(POLICY_OPS).toContain("claim_deposit");
+    expect(POLICY_OPS).toEqual(expect.arrayContaining(["lightning_pay", "http402_pay"]));
+    expect(validatePolicyObject({ allowedOps: ["http402_pay"] })).toEqual({ allowedOps: ["http402_pay"] });
     expect(OUTBOUND_OPS.has("claim_deposit")).toBe(false);
     for (const op of POLICY_OPS.filter((o) => o !== "claim_deposit")) expect(OUTBOUND_OPS.has(op)).toBe(true);
   });
@@ -117,6 +125,80 @@ describe("evaluateDeclarativeRules", () => {
     expect(evaluateDeclarativeRules(ctxFor(), { ...policy, expiresAt: undefined }).rule).toBe("allowedOps");
     expect(evaluateDeclarativeRules(ctxFor(), { allowedRecipients: ["x"], maxPerTxSats: 1 }).rule).toBe("allowedRecipients");
     expect(evaluateDeclarativeRules(ctxFor(), { maxPerTxSats: 1 }).rule).toBe("maxPerTxSats");
+  });
+
+  it("host rules sit after allowedOps and before the cap: allowedOps → deniedHosts → allowedHosts → maxPerTxSats", () => {
+    const ctx = ctxFor({ op: "http402_pay", recipients: [], purchase: { protocol: "l402", host: "ads.example.com", path: "/" } });
+    const policy = { allowedOps: ["spark_transfer"], deniedHosts: ["ads.example.com"], allowedHosts: ["api.example.com"], maxPerTxSats: 1 };
+    expect(evaluateDeclarativeRules(ctx, policy).rule).toBe("allowedOps");
+    expect(evaluateDeclarativeRules(ctx, { ...policy, allowedOps: undefined }).rule).toBe("deniedHosts");
+    expect(evaluateDeclarativeRules(ctx, { allowedHosts: ["api.example.com"], maxPerTxSats: 1 }).rule).toBe("allowedHosts");
+    expect(evaluateDeclarativeRules(ctx, { allowedHosts: ["ads.example.com"], maxPerTxSats: 1 }).rule).toBe("maxPerTxSats");
+  });
+});
+
+// allowedHosts / deniedHosts: the host an HTTP 402 purchase is buying from is
+// the only identity a Lightning payment has that means anything — the payee
+// key is usually the service's hosted node. Host matching is where policy
+// engines grow bypasses, so every classic trap is pinned here.
+describe("host rules (HTTP 402 purchases)", () => {
+  const buying = (host, over = {}) =>
+    ctxFor({ op: "http402_pay", recipients: [], purchase: { protocol: "l402", host, path: "/x" }, ...over });
+  const allow = (host, policy) => evaluateDeclarativeRules(buying(host), validatePolicyObject(policy));
+
+  it("normalizes entries the way URL parsing normalizes a request host (case, trailing dot, IDN)", () => {
+    expect(validatePolicyObject({ allowedHosts: ["API.Example.COM.", "bücher.example", "*.Sub.Example.com"] }).allowedHosts)
+      .toEqual(["api.example.com", "xn--bcher-kva.example", "*.sub.example.com"]);
+  });
+
+  it("refuses anything that is not a bare hostname or *.domain — at seal time, not at spend time", () => {
+    for (const bad of ["https://x.com", "x.com/path", "x.com:443", "user@x.com", "x.com?q", "*.com", "*", "*example.com", "a.*.com", "x..com", " ", ""]) {
+      expect(() => validatePolicyObject({ allowedHosts: [bad] }), bad).toThrow(/allowedHosts/);
+    }
+    expect(() => validatePolicyObject({ deniedHosts: [] })).toThrow(/non-empty array/);
+    expect(() => validatePolicyObject({ allowedHosts: "api.example.com" })).toThrow(/non-empty array/);
+  });
+
+  it("an exact entry matches that hostname only — case- and port-insensitive, never by substring", () => {
+    const policy = { allowedHosts: ["api.example.com"] };
+    for (const ok of ["api.example.com", "API.EXAMPLE.COM", "api.example.com:8443", "api.example.com."]) {
+      expect(allow(ok, policy), ok).toEqual({ allow: true });
+    }
+    for (const no of ["example.com", "x.api.example.com", "evil-api.example.com", "api.example.com.evil.com", "apiexample.com"]) {
+      expect(allow(no, policy).rule, no).toBe("allowedHosts");
+    }
+  });
+
+  it("*.domain matches every subdomain at any depth, and never the bare domain or a look-alike", () => {
+    const policy = { allowedHosts: ["*.example.com"] };
+    for (const ok of ["api.example.com", "a.b.example.com"]) expect(allow(ok, policy), ok).toEqual({ allow: true });
+    for (const no of ["example.com", "evilexample.com", "example.com.evil.com", "example.co"]) {
+      expect(allow(no, policy).rule, no).toBe("allowedHosts");
+    }
+  });
+
+  it("an explicit deny beats any allow, and deniedHosts alone refuses only what it lists", () => {
+    const both = { allowedHosts: ["*.example.com"], deniedHosts: ["ads.example.com"] };
+    expect(allow("ads.example.com", both)).toMatchObject({ allow: false, rule: "deniedHosts", reason: expect.stringMatching(/ads\.example\.com/) });
+    expect(allow("api.example.com", both)).toEqual({ allow: true });
+    const denyOnly = { deniedHosts: ["*.tracking.io"] };
+    expect(allow("pixel.tracking.io", denyOnly).rule).toBe("deniedHosts");
+    expect(allow("api.example.com", denyOnly)).toEqual({ allow: true });
+  });
+
+  it("an unreadable purchase host is refused with a clean verdict, never waved through or thrown", () => {
+    const allowList = validatePolicyObject({ allowedHosts: ["api.example.com"] });
+    const denyOnly = validatePolicyObject({ deniedHosts: ["*.tracking.io"] });
+    for (const host of ["", "exa mple.com", undefined]) {
+      expect(evaluateDeclarativeRules(buying(host), allowList), String(host)).toMatchObject({ allow: false, rule: "allowedHosts" });
+      expect(evaluateDeclarativeRules(buying(host), denyOnly), String(host)).toMatchObject({ allow: false, rule: "deniedHosts" });
+    }
+  });
+
+  it("apply only to 402 purchases: a bare Lightning payment or a transfer has no host to check", () => {
+    const policy = validatePolicyObject({ allowedHosts: ["api.example.com"], deniedHosts: ["*.example.org"] });
+    expect(evaluateDeclarativeRules(ctxFor({ op: "lightning_pay", recipients: [] }), policy)).toEqual({ allow: true });
+    expect(evaluateDeclarativeRules(ctxFor(), policy)).toEqual({ allow: true });
   });
 });
 
@@ -204,5 +286,107 @@ describe("PolicyDeniedError", () => {
     expect(e.code).toBe("POLICY_DENIED");
     expect(e.rule).toBe("allowedOps");
     expect(e.message).toMatch(/Policy denied l1_withdraw: nope \[rule: allowedOps\]/);
+  });
+});
+
+// Token caps (tokenLimits). Sats rules never applied to tokens — a sat cap is
+// meaningless in another unit — so until this key a token send had no amount
+// bound at all. The key is per token, in base units, and once sealed it is also
+// the token allowlist.
+const TOK = "btkn1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqst3p42v";
+const TOK_B = "btkn1qgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqx8xjly";
+const tokenCtx = (tokens, over = {}) =>
+  ctxFor({ op: "token_transfer", unit: "tokens", amountSats: null, tokens, ...over });
+
+describe("tokenLimits", () => {
+  it("takes token amounts, not base units, and normalizes them", () => {
+    const p = validatePolicyObject({ tokenLimits: { [TOK]: { maxPerTx: "25.50", dailyBudget: 100 } } });
+    expect(p.tokenLimits).toEqual({ [TOK]: { maxPerTx: "25.5", dailyBudget: "100" } });
+    expect(validatePolicyObject({ tokenLimits: { [TOK]: { maxPerTx: 0.25 } } }).tokenLimits[TOK].maxPerTx).toBe("0.25");
+  });
+
+  it("refuses shapes that would silently mean 'uncapped' or 'no rule'", () => {
+    const bad = [
+      {},                                             // empty map
+      [],                                             // not an object
+      { [TOK]: {} },                                  // entry with no cap
+      { [TOK]: { maxPerTX: "5" } },                   // misspelled key
+      { [TOK]: { decimals: 6, maxPerTx: "5" } },      // decimals come from the wallet, not the policy
+      { [TOK]: { maxPerTx: 0 } },                     // zero
+      { [TOK]: { maxPerTx: "0.00" } },                // zero, written long
+      { [TOK]: { maxPerTx: -5 } },                    // negative
+      { [TOK]: { maxPerTx: "1e6" } },                 // exponent
+      { [TOK]: { maxPerTx: "1,000" } },               // separator
+      { [TOK]: { maxPerTx: "0x10" } },                // not decimal
+      { "btkn1x": { maxPerTx: "5" } },                // too short to be an identifier
+      { "sp1pqyqszqgpqyqszqgp": { maxPerTx: "5" } },  // not a token identifier
+      { [TOK.toUpperCase()]: { maxPerTx: "5" } },     // not lowercase
+    ];
+    for (const tokenLimits of bad) expect(() => validatePolicyObject({ tokenLimits }), JSON.stringify(tokenLimits)).toThrow(/tokenLimits/);
+  });
+
+  it("sealedTokenBudgets / policyHasLedgerBudget see token budgets as ledger budgets", () => {
+    const capOnly = validatePolicyObject({ tokenLimits: { [TOK]: { maxPerTx: "5" } } });
+    const withBudget = validatePolicyObject({ tokenLimits: { [TOK]: { maxPerTx: "5" }, [TOK_B]: { dailyBudget: "50" } } });
+    expect(sealedTokenBudgets(capOnly)).toBeNull();
+    expect(policyHasLedgerBudget(capOnly)).toBe(false);
+    expect(sealedTokenBudgets(withBudget)).toEqual({ [TOK_B]: "50" });
+    expect(policyHasLedgerBudget(withBudget)).toBe(true);
+    expect(policyHasLedgerBudget({ dailyBudgetSats: 10 })).toBe(true);
+    expect(policyHasLedgerBudget(null)).toBe(false);
+  });
+
+  // TOK has 2 decimals in these contexts: "10" is 1000 base units.
+  const policy = { tokenLimits: { [TOK]: { maxPerTx: "10" }, [TOK_B]: { dailyBudget: "50" } } };
+  const at2 = (tokenIdentifier, amount) => ({ tokenIdentifier, amount, decimals: 2 });
+
+  it("converts the cap with the token's decimals; at the cap passes; the reason reads in token amounts", () => {
+    expect(evaluateDeclarativeRules(tokenCtx([at2(TOK, "1000")]), policy)).toEqual({ allow: true });
+    expect(evaluateDeclarativeRules(tokenCtx([at2(TOK, "1001")]), policy))
+      .toMatchObject({ allow: false, rule: "tokenLimits", reason: /10\.01 of btkn1.* exceeds its 10 per-transaction cap/ });
+    // the same "10" is 10 base units for a 0-decimal token
+    expect(evaluateDeclarativeRules(tokenCtx([{ tokenIdentifier: TOK, amount: "11", decimals: 0 }]), policy).allow).toBe(false);
+  });
+
+  it("unknown decimals, or a limit more precise than the token, fail closed — never rounded", () => {
+    expect(evaluateDeclarativeRules(tokenCtx([{ tokenIdentifier: TOK, amount: "1", decimals: null }]), policy))
+      .toMatchObject({ allow: false, rule: "tokenLimits", reason: /decimals .* are unknown/ });
+    const precise = { tokenLimits: { [TOK]: { maxPerTx: "10.005" } } };
+    expect(evaluateDeclarativeRules(tokenCtx([at2(TOK, "1")]), precise))
+      .toMatchObject({ allow: false, reason: /more decimal places than the token \(2\)/ });
+    // a budget-only limit is checked for precision here too, before the ledger
+    const preciseBudget = { tokenLimits: { [TOK]: { dailyBudget: "0.001" } } };
+    expect(evaluateDeclarativeRules(tokenCtx([at2(TOK, "1")]), preciseBudget).allow).toBe(false);
+  });
+
+  it("a token it does not list is refused — once sealed it is the token allowlist", () => {
+    const other = "btkn1qvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcrqvpsxxxxxx";
+    expect(evaluateDeclarativeRules(tokenCtx([at2(other, "1")]), policy))
+      .toMatchObject({ allow: false, rule: "tokenLimits", reason: /not in the sealed tokenLimits/ });
+  });
+
+  it("an unreadable identifier or amount fails closed", () => {
+    expect(evaluateDeclarativeRules(tokenCtx([at2(null, "1")]), policy))
+      .toMatchObject({ allow: false, rule: "tokenLimits", reason: /identifier is unreadable/ });
+    expect(evaluateDeclarativeRules(tokenCtx([at2(TOK_B, null)]), policy))
+      .toMatchObject({ allow: false, rule: "tokenLimits", reason: /amount .* is unreadable/ });
+  });
+
+  it("compares exactly at 18 decimals (amounts far past 2^53)", () => {
+    const big = { tokenLimits: { [TOK]: { maxPerTx: "1000000.000000000000000001" } } };
+    const at18 = (amount) => tokenCtx([{ tokenIdentifier: TOK, amount, decimals: 18 }]);
+    expect(evaluateDeclarativeRules(at18("1000000000000000000000001"), big).allow).toBe(true);
+    expect(evaluateDeclarativeRules(at18("1000000000000000000000002"), big).allow).toBe(false);
+  });
+
+  it("maxPerTxSats still ignores tokens, and tokenLimits ignores sats-only calls", () => {
+    const both = { maxPerTxSats: 10, ...policy };
+    expect(evaluateDeclarativeRules(tokenCtx([at2(TOK, "500")]), both).allow).toBe(true);
+    expect(evaluateDeclarativeRules(ctxFor({ amountSats: 5 }), both).allow).toBe(true);
+  });
+
+  it("a Spark-invoice fulfilment's token entries are capped even though its unit is sats", () => {
+    const ctx = ctxFor({ op: "fulfill_spark_invoice", amountSats: 0, tokens: [at2(TOK, "2000")] });
+    expect(evaluateDeclarativeRules(ctx, policy)).toMatchObject({ allow: false, rule: "tokenLimits" });
   });
 });

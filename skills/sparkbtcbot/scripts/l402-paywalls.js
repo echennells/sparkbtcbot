@@ -1,228 +1,26 @@
 import "dotenv/config";
 import { pathToFileURL } from "node:url";
 import { realpathSync } from "node:fs";
-import { SparkWallet } from "@buildonspark/spark-sdk";
-// light-bolt11-decoder is a single-maintainer package (fiatjaf). Pinned to an
-// exact version in package.json. Used here only to extract the amount field
-// for cost preview; the raw invoice string is what's passed to the Spark SDK
-// for payment, so a malicious decoder can mislead pricing but cannot redirect
-// funds. Re-audit on version bump.
-import { decode } from "light-bolt11-decoder";
-import { checkL402Amount, lightningFeeCap } from "../../../lib/fee-guards.js";
 import { loadMnemonicFromEnv } from "../../../lib/encrypted-seed.js";
+import { SparkAgent } from "./spark-agent.js";
 
 const network = process.env.SPARK_NETWORK || "MAINNET";
 
-// L402 token cache — keyed by domain so tokens are reused across endpoints
-const tokenCache = new Map();
-
-/**
- * Parse a 402 challenge. Checks the WWW-Authenticate header first (L402/LSAT
- * spec-compliant, used by aperture, Tassandra, etc.), then falls back to the
- * JSON body (non-standard but common, used by Lightning Faucet, etc.).
- */
-async function parseChallenge(response) {
-  let invoice, macaroon;
-
-  // Try the WWW-Authenticate header first (spec-compliant). Extract each field
-  // BY NAME so it survives any scheme prefix (L402/LSAT), any field order, and
-  // either credential field name — macaroon="..." OR the newer token="..."
-  // (lightningfaucet sends `L402 version="0", token="...", invoice="..."`).
-  // A fixed `split('L402 macaroon="')` misses the token= form entirely.
-  const wwwAuth = response.headers.get("www-authenticate") || "";
-  const field = (key) => wwwAuth.match(new RegExp(`\\b${key}="([^"]*)"`))?.[1];
-  invoice = field("invoice");
-  macaroon = field("macaroon") || field("token");
-
-  // Fall back to JSON body (non-standard but common)
-  if (!invoice || !macaroon) {
-    const contentType = response.headers.get("content-type") || "";
-    if (contentType.includes("application/json")) {
-      const body = await response.json();
-      invoice = invoice || body.invoice || body.payment_request || body.pr;
-      macaroon = macaroon || body.macaroon || body.token;
-    }
-  }
-
-  if (!invoice || !macaroon) {
-    throw new Error("Invalid L402 response: missing invoice or macaroon");
-  }
-
-  return { invoice, macaroon };
-}
-
-/**
- * Fetch content from an L402-protected endpoint.
- * If 402 Payment Required, pays the Lightning invoice and retries.
- * Caches tokens by domain so repeat requests don't pay again.
- */
-async function fetchWithL402(wallet, url, options = {}) {
-  const { method = "GET", headers = {}, body, maxFeeSats, maxAmountSats = 10_000 } = options;
-  const domain = new URL(url).host;
-  const reqHeaders = { "Content-Type": "application/json", ...headers };
-  const reqBody = body ? JSON.stringify(body) : undefined;
-
-  // Try cached token first
-  const cached = tokenCache.get(domain);
-  if (cached) {
-    const response = await fetch(url, {
-      method,
-      headers: {
-        ...reqHeaders,
-        Authorization: `L402 ${cached.macaroon}:${cached.preimage}`,
-      },
-      body: reqBody,
-    });
-
-    if (response.status !== 402 && response.status !== 401) {
-      const ct = response.headers.get("content-type") || "";
-      const data = ct.includes("application/json")
-        ? await response.json()
-        : await response.text();
-      return { paid: false, cached: true, data };
-    }
-    // Token expired or rejected — discard and pay again
-    tokenCache.delete(domain);
-    console.log("Cached token expired, paying for new one...");
-  }
-
-  // Step 1: Make initial request
-  const initialResponse = await fetch(url, {
-    method,
-    headers: reqHeaders,
-    body: reqBody,
-  });
-
-  // If not 402, return response directly
-  if (initialResponse.status !== 402) {
-    const ct = initialResponse.headers.get("content-type") || "";
-    const data = ct.includes("application/json")
-      ? await initialResponse.json()
-      : await initialResponse.text();
-    return { paid: false, data };
-  }
-
-  console.log("Got 402 Payment Required, parsing challenge...");
-
-  // Step 2: Parse 402 challenge (body or WWW-Authenticate header)
-  const { invoice, macaroon } = await parseChallenge(initialResponse);
-
-  // Step 3: Decode invoice to get amount
-  const decoded = decode(invoice);
-  const amountSection = decoded.sections.find((s) => s.name === "amount");
-  if (!amountSection?.value) {
-    throw new Error("L402 invoice has no amount");
-  }
-  const amountSats = Math.ceil(Number(amountSection.value) / 1000);
-  console.log(`Invoice amount: ${amountSats} sats`);
-
-  // Bound the AMOUNT, not just the routing fee — a malicious/compromised paywall
-  // can demand an arbitrarily large invoice. Raise maxAmountSats for pricier resources.
-  const amtCheck = checkL402Amount({ amountSats, maxAmountSats });
-  if (!amtCheck.ok) throw new Error(`L402 payment blocked: ${amtCheck.reason}. Raise maxAmountSats to override.`);
-
-  // Step 4: Pay the invoice. Fee cap comes from the LIBRARY, not an inline
-  // formula — the lib's floor is 25 because a live 4,464-sat payment carried a
-  // 25-sat estimate that an inlined max(10, 0.5%) under-capped and the SDK
-  // refused. Copy-pasting this script must inherit that lesson, not re-lose it.
-  const feeCap = maxFeeSats ?? lightningFeeCap({ amountSats });
-  console.log(`Paying invoice (max fee ${feeCap} sats)...`);
-  const payResult = await wallet.payLightningInvoice({
-    invoice,
-    maxFeeSats: feeCap,
-  });
-
-  // Get preimage (may need to poll if payment is async)
-  let preimage = payResult.paymentPreimage;
-  if (!preimage && payResult.status === "LIGHTNING_PAYMENT_INITIATED") {
-    console.log("Payment initiated, polling for preimage...");
-    for (let i = 0; i < 15; i++) {
-      await new Promise((r) => setTimeout(r, 500));
-      const status = await wallet.getLightningSendRequest(payResult.id);
-      if (status?.paymentPreimage) {
-        preimage = status.paymentPreimage;
-        break;
-      }
-      if (status?.status === "LIGHTNING_PAYMENT_FAILED") {
-        throw new Error("L402 payment failed");
-      }
-    }
-  }
-
-  if (!preimage) {
-    throw new Error("L402 payment succeeded but no preimage available");
-  }
-
-  // The preimage is the L402 authorization secret — it goes straight into the
-  // Authorization header below. Never log it (not even a prefix): stdout from a
-  // Bash-invoked script gets captured into the agent's transcript.
-  console.log("Payment complete.");
-
-  // Step 5: Retry with L402 authorization
-  console.log("Fetching protected content...");
-  const finalResponse = await fetch(url, {
-    method,
-    headers: {
-      ...reqHeaders,
-      Authorization: `L402 ${macaroon}:${preimage}`,
-    },
-    body: reqBody,
-  });
-
-  const ct = finalResponse.headers.get("content-type") || "";
-  const data = ct.includes("application/json")
-    ? await finalResponse.json()
-    : await finalResponse.text();
-
-  // Cache the token for reuse
-  tokenCache.set(domain, { macaroon, preimage });
-
-  return {
-    paid: true,
-    amountSats,
-    preimage,
-    macaroon,
-    data,
-  };
-}
-
-/**
- * Preview L402 cost without paying.
- */
-async function previewL402(url) {
-  const response = await fetch(url);
-
-  if (response.status !== 402) {
-    return { requiresPayment: false };
-  }
-
-  const { invoice } = await parseChallenge(response);
-  const decoded = decode(invoice);
-  const amountSection = decoded.sections.find((s) => s.name === "amount");
-  const amountSats = Math.ceil(Number(amountSection.value) / 1000);
-
-  return { requiresPayment: true, amountSats, invoice };
-}
-
 async function main() {
   const mnemonic = await loadMnemonicFromEnv();
-  // One-shot pay-then-exit: disable background leaf optimization so cleanup()
-  // at the end doesn't interrupt an in-flight optimizer after the L402 payment
-  // (harmless — funds settle regardless — but it logs a scary error and leaves
-  // leaf state half-reconciled). See references/wallet.md → Cleanup.
-  const { wallet } = await SparkWallet.initialize({
-    mnemonicOrSeed: mnemonic,
-    options: { network, optimizationOptions: { auto: false } },
-  });
+  // One-shot script, so optimizeLeaves: false. A payment below can start the
+  // SDK's background leaf optimizer, and so can booting: the SDK claims any
+  // pending inbound transfer in the background. cleanup() at exit would
+  // interrupt it (references/wallet.md → Cleanup).
+  const { agent } = await SparkAgent.create(mnemonic, network, { optimizeLeaves: false });
 
-  const { satsBalance } = await wallet.getBalance();
-  console.log("Current balance:", satsBalance.available.toString(), "sats\n");
+  const { sats } = await agent.getBalance();
+  console.log("Current balance:", sats, "sats\n");
 
-  // --- Preview L402 Cost ---
   const L402_TEST_URL = "https://tassandra.laisee.org/price/USD";
   console.log("=== Preview L402 Cost ===");
   console.log(`Checking ${L402_TEST_URL}...`);
-  const preview = await previewL402(L402_TEST_URL);
+  const preview = await agent.previewL402(L402_TEST_URL);
 
   if (!preview.requiresPayment) {
     console.log("No payment required for this endpoint.\n");
@@ -231,24 +29,19 @@ async function main() {
     console.log(`Invoice: ${preview.invoice.slice(0, 50)}...\n`);
   }
 
-  // --- Fetch with L402 Payment ---
-  // Uncomment to actually pay and fetch:
+  // fetchL402 pays. It has no dryRun — passing dryRun throws, and omitting it
+  // sends. The wrapper sizes the fee cap and refuses an amountless invoice or
+  // one over maxAmountSats (default 10,000). It does not cache the macaroon: a
+  // second call pays again. references/l402.md → Token Caching wraps it with a
+  // per-host cache. Do not log `result.preimage`; it is the authorization secret.
   //
   // console.log("=== Fetch with L402 Payment ===");
-  // const result = await fetchWithL402(wallet, L402_TEST_URL, {
-  //   maxFeeSats: 25,  // size to the amount — a flat 10 blocks sends >~4,000 sats; see references/lightning.md
-  // });
+  // const result = await agent.fetchL402(L402_TEST_URL);
   // console.log("Paid:", result.paid);
   // if (result.amountSats) console.log("Amount:", result.amountSats, "sats");
   // console.log("Data:", result.data);
-  //
-  // // Second request reuses the cached token — no payment
-  // console.log("\n=== Fetch Again (cached token) ===");
-  // const result2 = await fetchWithL402(wallet, "https://tassandra.laisee.org/price/EUR");
-  // console.log("Paid:", result2.paid, "Cached:", result2.cached);
-  // console.log("Data:", result2.data);
 
-  wallet.cleanup();
+  await agent.cleanup();
 }
 
 // Run main() only when executed directly (node script.js), not when this

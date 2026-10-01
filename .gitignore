@@ -10,6 +10,7 @@ temp/
 # recovery packages are needed to claim them. Never commit any of these.
 .mainnet-*
 recovery-packages-*
+sparkbtcbot-leaf-vault*.json
 *-seed.txt
 
 # Working checkouts and binary artifacts that live alongside this repo but do

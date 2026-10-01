@@ -180,6 +180,8 @@ The mnemonic is **never** stored in plaintext anywhere the runtime reads. `npm r
 | `l402-paywalls.js` | `npm run example:l402` | Access L402 pay-per-request APIs via Lightning |
 | `spark-agent.js` | `npm run example:agent` | Complete `SparkAgent` class with all capabilities |
 
+`balance-and-deposits.js`, `payment-flow.js`, `token-operations.js`, and `l402-paywalls.js` open the wallet through `SparkAgent`, so a run uses the allowlist, budget, sealed policy, privacy setting, and leaf-vault. Raw SDK calls are documented in [`skills/sparkbtcbot/references/wallet.md`](./skills/sparkbtcbot/references/wallet.md).
+
 The `npm run` shortcuts exist only in the cloned repo. npm-package consumers get the same scripts under `node_modules/sparkbtcbot-skill/skills/sparkbtcbot/scripts/` — run them directly, e.g. `node node_modules/sparkbtcbot-skill/skills/sparkbtcbot/scripts/balance-and-deposits.js`.
 
 ## Environment Variables

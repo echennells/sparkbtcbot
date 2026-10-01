@@ -7,16 +7,20 @@
 // passphrase, tampering fails the GCM tag, deleting it deletes the wallet.
 // Changing it therefore means decrypt -> modify -> re-encrypt -> atomic swap,
 // gated by a real terminal and an explicit confirmation. That friction is
-// intentional. Binding or changing the daily budget also writes a fresh SIGNED
-// spend ledger (the window restarts); changing any other rule leaves the
-// ledger alone.
+// intentional. A sealed daily budget (sats, or a token's tokenLimits
+// dailyBudget) needs a spend ledger SIGNED with this seed's key: one that
+// already verifies is kept as it is, a missing one is created, and an
+// unsigned (env-budget) one is signed as it stands. Spends already in the
+// window keep counting, so tightening one limit never frees headroom under
+// another. This ceremony never empties the window — that is `reset-ledger`.
 //
 // Three modes (lib/policy.js defines the object):
 //   set-policy                 interactive: set/remove the daily budget only,
 //                              every other sealed rule is preserved
 //   set-policy --file p.json   seal the whole object from a JSON file:
 //                              { dailyBudgetSats, maxPerTxSats, allowedOps,
-//                                allowedRecipients, expiresAt, exec: { path } }
+//                                allowedRecipients, allowedHosts, deniedHosts,
+//                                tokenLimits, expiresAt, exec: { path } }
 //                              (exec.sha256 is computed HERE and pinned)
 //   set-policy --show          print the current sealed policy as JSON to
 //                              stdout (edit it, then --file it back)
@@ -32,8 +36,8 @@ import { pathToFileURL } from "node:url";
 import { realpathSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { loadSeedPayload, saveEncryptedMnemonic, deriveLedgerHmacKey, validateSeedPolicy, DEFAULT_SEED_PATH, MIN_PASSPHRASE_CHARS } from "../../../lib/encrypted-seed.js";
-import { initSignedLedger, DEFAULT_SPEND_LEDGER_PATH } from "../../../lib/spend-ledger.js";
-import { sha256File, POLICY_OPS } from "../../../lib/policy.js";
+import { initSignedLedger, inspectLedgerForBinding, DEFAULT_SPEND_LEDGER_PATH } from "../../../lib/spend-ledger.js";
+import { sha256File, POLICY_OPS, policyHasLedgerBudget } from "../../../lib/policy.js";
 import { promptStderr } from "./prompt.js";
 
 const USAGE =
@@ -42,11 +46,15 @@ const USAGE =
   "seed.enc (prompts for the passphrase — never read from .env), shows the current\n" +
   "policy, confirms, then re-encrypts the seed atomically.\n\n" +
   "  (no flag)      interactively set or remove the daily budget; every other\n" +
-  "                 sealed rule is preserved. Binding/changing the budget writes a\n" +
-  "                 fresh signed spend ledger (the window restarts).\n" +
+  "                 sealed rule is preserved. Spends already in the window keep\n" +
+  "                 counting against a changed budget (reset-ledger empties it).\n" +
   "  --file <path>  seal the whole policy object from a JSON file. Keys:\n" +
   "                 dailyBudgetSats, maxPerTxSats, allowedOps [" + POLICY_OPS.join("|") + "],\n" +
-  "                 allowedRecipients [addresses], expiresAt (ISO-8601),\n" +
+  "                 allowedRecipients [addresses], allowedHosts / deniedHosts\n" +
+  "                 [\"api.example.com\", \"*.example.com\"] (paid-API hosts),\n" +
+  "                 tokenLimits { \"btkn1…\": { maxPerTx: \"25\", dailyBudget: \"100\" } }\n" +
+  "                 (token amounts, not base units; a token not listed is refused),\n" +
+  "                 expiresAt (ISO-8601),\n" +
   "                 exec: { path } (the executable's sha256 is computed and pinned\n" +
   "                 here; a later change to the file makes every spend fail closed).\n" +
   "                 Unknown keys are refused. An empty object {} removes the policy.\n" +
@@ -85,8 +93,23 @@ async function readPolicyFile(file) {
     }
     raw = { ...raw, exec: { ...raw.exec, sha256: actual } };
   }
-  return validateSeedPolicy(raw); // throws on any unknown key / bad value
+  const policy = validateSeedPolicy(raw); // throws on any unknown key / bad value
+  // lib/policy.js checks a token id's shape only (it stays SDK-free); verify
+  // the bech32m checksum here, so a typo is caught at the seal rather than as
+  // a refused send later.
+  if (policy?.tokenLimits) {
+    const { decodeBech32mTokenIdentifier } = await import("@buildonspark/spark-sdk");
+    for (const id of Object.keys(policy.tokenLimits)) {
+      try {
+        decodeBech32mTokenIdentifier(id);
+      } catch {
+        throw new Error(`tokenLimits key ${id} is not a valid bech32m token identifier (bad checksum?) — copy it again from the token's balance entry`);
+      }
+    }
+  }
+  return policy;
 }
+
 
 const show = (policy) => (policy ? JSON.stringify(policy, null, 2) : "null");
 
@@ -155,10 +178,35 @@ export async function main() {
     }
   }
 
-  const budgetChanged = (next?.dailyBudgetSats ?? null) !== (current?.dailyBudgetSats ?? null);
+  // A sealed budget needs a ledger signed with this seed's key. Look BEFORE
+  // confirming, so a ledger that can't be kept stops the ceremony with
+  // nothing changed rather than being quietly replaced (that would empty the
+  // window, which is reset-ledger's job).
+  const hmacKey = deriveLedgerHmacKey(payload.mnemonic);
+  let ledger = null;
+  if (policyHasLedgerBudget(next)) {
+    try {
+      ledger = await inspectLedgerForBinding({ path: ledgerPath, hmacKey });
+    } catch (err) {
+      stderr.write(
+        `set-policy: ${err?.message ?? err} Nothing changed.\n` +
+          (current
+            ? "Start a fresh window deliberately with `sparkbtcbot reset-ledger`, then run set-policy again.\n"
+            : "Nothing is sealed yet, so the file isn't protected: inspect it, delete it to start a fresh window, then run set-policy again.\n"),
+      );
+      exit(1);
+    }
+  }
+  const n = ledger?.entries.length ?? 0;
+  const ledgerNote = !ledger
+    ? "leaving the spend ledger as it is"
+    : ledger.state === "signed"
+      ? "keeping the signed spend ledger (spends already in the window count against the new budgets)"
+      : ledger.state === "missing"
+        ? `and creating a signed spend ledger at ${ledgerPath}`
+        : `and signing the existing spend ledger as it stands (${n} entr${n === 1 ? "y" : "ies"}; spends already in the window count)`;
   const summary = next
-    ? `SEAL this policy into the encrypted seed (v2):\n${show(next)}\n` +
-      (next.dailyBudgetSats != null && budgetChanged ? "and reset the signed spend ledger (the budget window restarts)" : "leaving the spend ledger as it is")
+    ? `SEAL this policy into the encrypted seed (v2):\n${show(next)}\n${ledgerNote}`
     : "REMOVE the seed-bound policy (seed returns to v1; env-var budget semantics apply)";
   const confirm = (await promptStderr(`About to ${summary}.\nType 'yes' to proceed: `)).trim().toLowerCase();
   if (confirm !== "yes") { stderr.write("Aborted — nothing changed.\n"); exit(0); }
@@ -167,12 +215,15 @@ export async function main() {
   // either the old seed or the new one, never a partial file.
   await saveEncryptedMnemonic({ mnemonic: payload.mnemonic, passphrase, path: seedPath, policy: next, allowOverwrite: true });
   if (next) {
-    if (next.dailyBudgetSats != null && budgetChanged) {
-      await initSignedLedger({ path: ledgerPath, hmacKey: deriveLedgerHmacKey(payload.mnemonic) });
-      stderr.write(`Sealed. seed.enc rewritten (v2); fresh signed ledger at ${ledgerPath}.\n`);
-      stderr.write("Deleting or editing the ledger now fails closed; reset legitimately with `sparkbtcbot reset-ledger`.\n");
+    if (ledger && ledger.state !== "signed") {
+      // Re-read: a running agent may have appended to the unsigned ledger
+      // since the look above; sign what is there now.
+      const latest = await inspectLedgerForBinding({ path: ledgerPath, hmacKey });
+      if (latest.state !== "signed") await initSignedLedger({ path: ledgerPath, hmacKey, entries: latest.entries });
+      stderr.write(`Sealed. seed.enc rewritten (v2); signed spend ledger at ${ledgerPath} (${latest.entries.length} entr${latest.entries.length === 1 ? "y" : "ies"} carried over).\n`);
+      stderr.write("Deleting or editing the ledger now fails closed; empty the window deliberately with `sparkbtcbot reset-ledger`.\n");
     } else {
-      stderr.write("Sealed. seed.enc rewritten (v2); spend ledger untouched.\n");
+      stderr.write(`Sealed. seed.enc rewritten (v2); spend ledger ${ledger ? "kept as it is" : "untouched"}.\n`);
     }
     if (next.exec) stderr.write(`Policy executable pinned: ${next.exec.path} sha256 ${next.exec.sha256}\n`);
   } else {

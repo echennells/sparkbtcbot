@@ -6,6 +6,8 @@
 export type PolicyOp =
   | "spark_transfer"
   | "lightning_pay"
+  /** A Lightning payment for an HTTP 402 resource (fetchL402); carries `purchase`. */
+  | "http402_pay"
   | "fulfill_spark_invoice"
   | "token_transfer"
   | "claim_deposit"
@@ -26,10 +28,50 @@ export interface SeedPolicy {
   allowedOps?: PolicyOp[];
   /** Tamper-proof recipient allowlist (AND-ed with ~/.spark/recipients.allow). Not Lightning. */
   allowedRecipients?: string[];
+  /**
+   * HTTP 402 purchases (fetchL402) only: pay only these hosts. Entries are
+   * "api.example.com" (exact) or "*.example.com" (subdomains, not the apex).
+   */
+  allowedHosts?: string[];
+  /** HTTP 402 purchases only: never pay these hosts. An explicit deny beats any allow. */
+  deniedHosts?: string[];
+  /**
+   * Per-token caps, keyed by bech32m token identifier (btkn1… mainnet,
+   * btknrt1… regtest). Amounts are TOKEN amounts ("25", "25.5"), converted at
+   * send time with the decimals the wallet reads from the token's metadata; a
+   * token without readable decimals, or a limit more precise than the token,
+   * is refused (never rounded). Once sealed, a token not listed here is refused
+   * (it is the token allowlist). A batch or multi-invoice fulfilment is capped
+   * by each token's total.
+   */
+  tokenLimits?: Record<string, TokenLimit>;
   /** ISO-8601; after it, outbound spends are denied (reads and claims continue). */
   expiresAt?: string;
   /** Operator executable, pinned by sha256: stdin PolicyContext JSON → stdout {allow, reason?}. */
   exec?: { path: string; sha256: string };
+}
+
+export interface TokenLimit {
+  /** Per-transaction cap, as a token amount ("25.5"). An unreadable amount fails closed. */
+  maxPerTx?: string;
+  /** Rolling 24h budget, as a token amount, counted on the signed ledger in base units. */
+  dailyBudget?: string;
+}
+
+/**
+ * One token a request moves: its total for the call, and that token's live
+ * budget window. Amounts and budget figures are BASE UNITS (decimal strings).
+ */
+export interface PolicyTokenAmount {
+  /** Canonical bech32m identifier; null when a Spark invoice's token is unreadable. */
+  tokenIdentifier: string | null;
+  /** Base units; null when unreadable. */
+  amount: string | null;
+  /** From the wallet's token metadata; read only when a sealed tokenLimits needs it, else null. */
+  decimals: number | null;
+  dailyTotal: string | null;
+  dailyBudget: string | null;
+  remaining: string | null;
 }
 
 /** What a policy rule or the exec hook sees for one request. Never holds a secret. */
@@ -41,8 +83,12 @@ export interface PolicyContext {
   unit: "sats" | "tokens";
   tokenIdentifier?: string;
   tokenAmount?: string;
+  /** Token ops and Spark invoices that pay tokens: per-token totals for this call. */
+  tokens?: PolicyTokenAmount[];
   recipients: string[];
   invoiceHash?: string;
+  /** What an HTTP 402 payment is buying (fetchL402). Never the query string, macaroon or preimage. */
+  purchase?: { protocol: "l402"; host: string; path: string };
   dailyTotalSats: number | null;
   dailyBudgetSats: number | null;
   remainingSats: number | null;
@@ -63,12 +109,35 @@ export class PolicyDeniedError extends Error {
   context: PolicyContext | null;
 }
 
+/**
+ * Money has left, or may have (SparkAgent's money-moving methods, fetchL402).
+ * The spend stays counted; never pay again with a new invoice, address or
+ * method. `settled`: true = paid and proven (preimage in hand), null = unknown.
+ * Carries no secret — never a preimage or a raw invoice.
+ */
+export class PaymentCommittedError extends Error {
+  code: "PAYMENT_COMMITTED";
+  settled: true | null;
+  op?: string;
+  invoiceHash?: string;
+  sendId?: string;
+  /** Set on fetchL402's pending-payment error, for callers of the earlier shape. */
+  paid?: true;
+}
+/** True only when a failed SDK call proves no funds left (an allowlisted pre-send SparkValidationError). */
+export function provesNothingSent(err: unknown): boolean;
+export const PRE_SEND_VALIDATION_MESSAGES: readonly string[];
+
 export const POLICY_OPS: readonly PolicyOp[];
 export const OUTBOUND_OPS: ReadonlySet<PolicyOp>;
 export const POLICY_EXEC_TIMEOUT_MS: number;
+/** The sealed per-token daily budgets ({ [tokenIdentifier]: token amount }), or null. */
+export function sealedTokenBudgets(policy: SeedPolicy | null | undefined): Record<string, string> | null;
+/** True when a sealed budget — sats or any token — binds the signed spend ledger. */
+export function policyHasLedgerBudget(policy: SeedPolicy | null | undefined): boolean;
 /** Validates/normalizes a policy object; throws on unknown keys or unreadable values. */
 export function validatePolicyObject(policy: unknown): SeedPolicy | null;
-/** Declarative rules only (expiresAt → allowedOps → allowedRecipients → maxPerTxSats). */
+/** Declarative rules only (expiresAt → allowedOps → deniedHosts → allowedHosts → allowedRecipients → maxPerTxSats → tokenLimits). */
 export function evaluateDeclarativeRules(
   ctx: PolicyContext,
   policy: SeedPolicy | null,
@@ -393,7 +462,38 @@ export interface SpendLedgerEntry {
   ts: number;
   sats: number;
   operation: string;
+  /** Token base units spent in this entry, keyed by bech32m identifier (decimal strings). */
+  tokens?: Record<string, string>;
 }
+
+export interface TokenBudgetCheck {
+  ok: boolean;
+  tokenIdentifier: string;
+  amount: string | null;
+  spent: string;
+  budget: string | null;
+  remaining: string | null;
+  reason: string;
+}
+
+/** Base units of one token spent inside the window ending at `now`. */
+export function tokenSpentInWindow(
+  entries: SpendLedgerEntry[],
+  tokenIdentifier: string,
+  options?: { windowMs?: number; now?: number },
+): bigint;
+
+/** Pure per-token budget decision in base units (the token twin of checkSpendBudget). */
+export function checkTokenBudget(options?: {
+  entries?: SpendLedgerEntry[];
+  tokenIdentifier: string;
+  amount?: bigint | number | string | null;
+  budget?: bigint | number | string | null;
+  /** Only makes the reason read in token amounts. */
+  decimals?: number | null;
+  windowMs?: number;
+  now?: number;
+}): TokenBudgetCheck;
 
 export interface SpendBudgetCheck {
   ok: boolean;
@@ -430,13 +530,32 @@ export interface SpendLedger {
     spentSats: number;
     budgetSats: number | null;
     remainingSats: number | null;
+    /** Base units spent per token in the window. (SparkAgent.spendStatus() adds budgets and token amounts.) */
+    tokens: Record<string, { spent: string }>;
     windowMs: number;
     entries: SpendLedgerEntry[];
   }>;
-  /** Throws (code SPEND_BUDGET_EXCEEDED) when the spend would bust the budget. */
-  assertCanSpend(sats: number | bigint, operation?: string): Promise<SpendBudgetCheck>;
+  /**
+   * Throws (code SPEND_BUDGET_EXCEEDED) when the sats, or any token in
+   * `tokens` with a budget in `tokenBudgets` (both base units), would bust it.
+   * A token denial carries `tokenIdentifier`. `tokenDecimals` only makes the
+   * message read in token amounts.
+   */
+  assertCanSpend(
+    sats: number | bigint,
+    operation?: string,
+    options?: {
+      tokens?: Record<string, bigint | number | string | null> | null;
+      tokenBudgets?: Record<string, bigint | number | string> | null;
+      tokenDecimals?: Record<string, number> | null;
+    },
+  ): Promise<SpendBudgetCheck>;
   /** Append a spend and persist atomically; prunes aged-out entries. */
-  record(sats: number | bigint, operation?: string): Promise<SpendLedgerEntry>;
+  record(
+    sats: number | bigint,
+    operation?: string,
+    options?: { tokens?: Record<string, bigint | number | string> | null },
+  ): Promise<SpendLedgerEntry>;
   /** Best-effort refund for a send that provably never happened. */
   unrecord(id: string): Promise<void>;
 }
@@ -455,10 +574,15 @@ export function createSpendLedger(options?: {
   hmacKey?: Buffer | null;
   /** true = seed-bound policy: absent/unsigned/tampered ledger THROWS instead of resetting. */
   bound?: boolean;
+  /** Whether the sats budget is sealed (remediation text); defaults to `bound`. */
+  satsBudgetSealed?: boolean;
 }): SpendLedger;
 
-/** Write a fresh EMPTY signed ledger — the legitimate reset that replaces `rm`. */
-export function initSignedLedger(options: { path?: string; hmacKey: Buffer }): Promise<string>;
+/**
+ * Write a signed ledger — EMPTY by default (the legitimate reset that replaces
+ * `rm`), or signing existing `entries` as they stand.
+ */
+export function initSignedLedger(options: { path?: string; hmacKey: Buffer; entries?: SpendLedgerEntry[] }): Promise<string>;
 
 // --- Spend-side sizing: the largest gift-card face a balance can pay for ---
 

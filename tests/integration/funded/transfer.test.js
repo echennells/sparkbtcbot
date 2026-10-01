@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { createTestWallet, cleanupAllWallets, getFundedMnemonic } from "../../helpers/wallet.js";
 import { getOrCreateIssuerToken, mintTo, cleanupAllIssuers } from "../../helpers/issuer.js";
+import { waitForSats, returnSats, waitForClaimed } from "../../helpers/agent.js";
 
 const fundedMnemonic = getFundedMnemonic();
 const itFunded = fundedMnemonic ? it : it.skip;
@@ -28,9 +29,14 @@ describe("funded transfer (REGTEST)", () => {
   }, 120_000);
 
   afterAll(async () => {
+    if (sender) {
+      const readAvailable = async () => (await sender.getBalance()).satsBalance.available;
+      const before = await readAvailable();
+      await waitForClaimed(readAvailable, before + (await returnSats(receiver, await sender.getSparkAddress())));
+    }
     await cleanupAllWallets();
     await cleanupAllIssuers();
-  });
+  }, 90_000);
 
   itFunded("sender wallet has a non-zero sats balance", async () => {
     const { satsBalance } = await sender.getBalance();
@@ -46,10 +52,8 @@ describe("funded transfer (REGTEST)", () => {
     expect(transfer).toBeDefined();
     expect(transfer.id).toBeDefined();
 
-    await new Promise((r) => setTimeout(r, 5000));
-
-    const { satsBalance } = await receiver.getBalance();
-    expect(satsBalance.owned + satsBalance.incoming).toBeGreaterThanOrEqual(100n);
+    const b = await waitForSats(receiver, 100n);
+    expect(b.available + b.incoming).toBe(100n); // a fresh wallet: exactly what was sent
   });
 
   itFunded("issuer wallet holds the minted token", async () => {
@@ -75,10 +79,12 @@ describe("funded transfer (REGTEST)", () => {
     });
     expect(txId).toBeDefined();
 
-    await new Promise((r) => setTimeout(r, 5000));
-
-    const recvBalance = await receiver.getBalance();
-    const recvEntry = recvBalance.tokenBalances.get(tokenId);
+    // poll rather than sleep a fixed 5s: token outputs can take longer to show
+    let recvEntry;
+    for (let i = 0; i < 30 && !(recvEntry?.ownedBalance >= transferAmount); i++) {
+      await new Promise((r) => setTimeout(r, 1500));
+      recvEntry = (await receiver.getBalance()).tokenBalances.get(tokenId);
+    }
     expect(recvEntry, `receiver should hold token ${tokenId}`).toBeDefined();
     expect(recvEntry.ownedBalance).toBeGreaterThanOrEqual(transferAmount);
   });

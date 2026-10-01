@@ -81,7 +81,7 @@ The script verifies by initializing a wallet from the encrypted seed and printin
 
 The guard files are agent-writable — `rm ~/.spark/spend-ledger.json` used to silently restore the full daily budget, and truncating it to an empty ledger was the smarter version of the same attack. Binding the policy to the seed closes that class:
 
-- **The policy lives inside the encrypted payload.** `npx sparkbtcbot set-policy` (user-run, TTY-gated, needs the passphrase) rewrites `seed.enc` as **v2**: the ciphertext holds `{ mnemonic, policy }`, where `policy` is `{ dailyBudgetSats, maxPerTxSats, allowedOps, allowedRecipients, expiresAt, exec: { path, sha256 } }` — every key optional, unknown keys refused at boot (`lib/policy.js`; what each rule bounds and the fail-closed table: `references/security.md` → Policy engine). It inherits the seed's protections — reading needs the passphrase, tampering fails the GCM tag, and deleting it deletes the wallet. The agent can't remove the budget without removing the money. A seed-bound budget **wins over `SPARK_DAILY_BUDGET_SATS` absolutely** (the env var is agent-writable; the boot warns if they disagree). `set-policy` alone edits the budget and preserves the other rules; `set-policy --file policy.json` seals the whole object (and pins `exec.path`'s sha256 from the file on disk); `set-policy --show` prints the current one. Changing the budget resets the signed ledger; changing any other rule leaves it alone.
+- **The policy lives inside the encrypted payload.** `npx sparkbtcbot set-policy` (user-run, TTY-gated, needs the passphrase) rewrites `seed.enc` as **v2**: the ciphertext holds `{ mnemonic, policy }`, where `policy` is `{ dailyBudgetSats, maxPerTxSats, allowedOps, allowedRecipients, allowedHosts, deniedHosts, tokenLimits, expiresAt, exec: { path, sha256 } }` — every key optional, unknown keys refused at boot (`lib/policy.js`; what each rule bounds and the fail-closed table: `references/security.md` → Policy engine). It inherits the seed's protections — reading needs the passphrase, tampering fails the GCM tag, and deleting it deletes the wallet. The agent can't remove the budget without removing the money. A seed-bound budget **wins over `SPARK_DAILY_BUDGET_SATS` absolutely** (the env var is agent-writable; the boot warns if they disagree). `set-policy` alone edits the budget and preserves the other rules; `set-policy --file policy.json` seals the whole object (and pins `exec.path`'s sha256 from the file on disk); `set-policy --show` prints the current one. Changing a budget keeps the signed ledger: spends already in the window count against the new budget, so tightening one limit never frees headroom under another. Binding the first budget creates the signed ledger, signing an existing env-budget ledger as it stands. Only `reset-ledger` empties the window on purpose (`rotate` also starts the new wallet with a fresh one: a new seed means a new signing key), and `set-policy` refuses to proceed over a ledger it can't verify rather than replacing it.
 - **The ledger becomes HMAC-signed.** The signing key derives from the mnemonic via HKDF (its own context — never the AES key). Under a bound policy: missing ledger → throws; unsigned/replaced ledger → throws; edited entries → signature fails → throws. The legitimate reset is `npx sparkbtcbot reset-ledger` — it needs the passphrase, which is exactly what lets the code tell reset from attack (previously `rm` was both).
 - **v1 files are unchanged.** No policy → setup keeps writing v1, env-var budget semantics apply, the ledger stays unsigned. Nothing changes for wallets that don't opt in.
 
@@ -109,18 +109,15 @@ A few rough edges that bite agents running in containers, devcontainers, or sand
 
 ```javascript
 import "dotenv/config";
-import { SparkWallet } from "@buildonspark/spark-sdk";
-import { loadMnemonicFromEnv } from "./lib/encrypted-seed.js";
+import { loadMnemonicFromEnv } from "sparkbtcbot-skill";
+import { SparkAgent } from "sparkbtcbot-skill/agent";
 
 const mnemonic = await loadMnemonicFromEnv(); // reads SPARK_PASSPHRASE
-const { wallet } = await SparkWallet.initialize({
-  mnemonicOrSeed: mnemonic,
-  options: { network: process.env.SPARK_NETWORK || "MAINNET" },
-});
-// `mnemonic` falls out of scope; only `wallet` is retained
+const { agent } = await SparkAgent.create(mnemonic, process.env.SPARK_NETWORK || "MAINNET");
+// `mnemonic` falls out of scope; hold `agent`. Balances and spends go through it.
 ```
 
-The decrypt happens once at boot (~250ms scrypt). After that, performance is identical to in-memory mnemonic loading. Do not call `loadMnemonicFromEnv()` per request — decrypt once, hold the wallet.
+The decrypt happens once at boot (~250ms scrypt). After that, performance is identical to in-memory mnemonic loading. Do not call `loadMnemonicFromEnv()` per request — decrypt once, hold the agent. Raw SDK calls are documented in `references/wallet.md`.
 
 ## Recovery scenarios
 

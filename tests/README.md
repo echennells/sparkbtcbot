@@ -8,7 +8,7 @@ Three tiers, run via `npm` scripts.
 |---|---|---|---|---|
 | `npm test` | unit | none | no | Default. lib helpers, leaf-vault/encrypted-seed security regressions, SDK export/shape pins. ~10s. |
 | `npm run test:integration` | read-only | REGTEST | no | Wallet init, addresses, invoices, message signing against Spark's hosted REGTEST. ~10s. |
-| `npm run test:funded` | funded | REGTEST | **yes** | Transfers, Lightning payments. Skipped unless `SPARK_TEST_MNEMONIC` is set. |
+| `npm run test:funded` | funded | REGTEST | **yes** | Transfers, Spark invoices, Lightning, budget and fee guards — through `SparkAgent` and the raw SDK. Skipped unless `SPARK_TEST_MNEMONIC` is set. |
 | `npm run test:all` | all | REGTEST | optional | Runs everything; funded tier auto-skips without env var. |
 
 ## Layout
@@ -16,7 +16,8 @@ Three tiers, run via `npm` scripts.
 ```
 tests/
   setup.js                          # loads .env
-  helpers/wallet.js                 # createTestWallet, cleanupAllWallets, getFundedMnemonic
+  helpers/wallet.js                 # createTestWallet (leaf optimizer off — see below), cleanupAllWallets, getFundedMnemonic
+  helpers/agent.js                  # createTestAgent (SparkAgent with every ~/.spark file isolated; sealedPolicy: a real v2 seed + signed ledger), waitForSettled, returnSats, waitForClaimed
   unit/
     imports.test.js                 # SDK export sanity, SparkWallet method surface
     balance-shape.test.js           # regression: ownedBalance / availableToSendBalance
@@ -34,15 +35,28 @@ tests/
   integration/
     wallet.test.js                  # init, getSparkAddress, getIdentityPublicKey, getBalance shape
     deposit.test.js                 # static & single-use deposit addresses
-    invoice.test.js                 # createSatsInvoice, createLightningInvoice
+    invoice.test.js                 # Spark sats/token/amountless/expiring invoices + BOLT11, each decoded and checked field by field
+    agent.test.js                   # SparkAgent, unfunded: reads, dry runs, and the REAL SDK refusals the refund rules depend on
     message-signing.test.js         # sign/validate against own identity key
     privacy.test.js                 # fresh wallet public by default → ensureWalletPrivacy flips + persists; public reader gets empty, not error
     viewer-key.test.js              # grant → echoed → viewer reads with its own seed → revoke clears; second grant replaces
     funded/
-      transfer.test.js              # spark-to-spark transfer
-      lightning.test.js             # Lightning fee estimate, payment
+      agent-sats.test.js            # through SparkAgent: transfer, Spark invoice (+ amountless, + paid twice), Lightning (+ deduped retry),
+                                    #   budget stops a loop, withdraw fee guard on a real SSP quote; receiver AND ledger/audit checked
+      agent-tokens.test.js          # a REAL sealed seed with tokenLimits on the SKILL test token (6 decimals): caps and budget in
+                                    #   token amounts, decimals read from the wallet at send time, batch totals, precision refusal
+      transfer.test.js              # spark-to-spark transfer, token transfer (raw SDK)
+      lightning.test.js             # Lightning fee estimate, payment (raw SDK); receiver checked
       privacy.test.js               # with real sats: private → public/stranger readers see 0; granted viewer sees the balance; revoke/off restore
 ```
+
+**Pin a known bug with `it.fails`, don't skip it.** An `it.fails` test is reported as "expected fail", and fixing the bug flips it to failing, which is the signal to drop `.fails`. The `fulfillInvoice` result bug was pinned this way until its fix (2026-09-30).
+
+**Funded-tier rules learned the hard way (2026-09-30):**
+- **Leaf optimizer off in every test wallet.** `cleanup()` kills the SDK's background optimizer mid-swap; the operators then hold those leaves `TRANSFER_LOCKED`, and the next file's send on the shared funded wallet fails.
+- **Fresh receiver per payment, checked once settled** (`waitForSettled`: nothing incoming, exact amount available). A wallet mid-claim reads low or high.
+- **Never assert on the funded wallet's own balance delta.** It claims inbound transfers in the background, so check the transfer record, ledger and audit log instead.
+- **Return what you send, and wait for the claim** (`returnSats` + `waitForClaimed`), or the claim lands in the next file and moves a balance that file is comparing. A full run costs the funded wallet only Lightning routing fees (tens of sats).
 
 The layout mirrors `@buildonspark/spark-sdk/src/tests/integration/` (one file per capability). The SDK targets `Network.LOCAL` because it owns its operator stack; we target `REGTEST` because that is the only hosted network besides MAINNET.
 
@@ -87,7 +101,7 @@ The same wallet funds thousands of test runs — top up only when balance gets l
 ## CI guidance
 
 - Default CI workflow: `npm test` then `npm run test:integration`. Both run without secrets and exercise the API surface.
-- Optional nightly job: store `SPARK_TEST_MNEMONIC` as a repo secret, run `npm run test:funded`. A small balance lasts a long time at 100 sats per transfer test.
+- Optional nightly job: store `SPARK_TEST_MNEMONIC` as a repo secret, run `npm run test:funded`. Test payments are returned to the funded wallet at the end of each file, so a run costs only Lightning routing fees (tens of sats); keep ~25,000 sats on it (`agent-sats.test.js` refuses to start below 20,000).
 - Without the secret, the funded tier auto-skips (`it.skip`) — the suite does not fail.
 
 ## Adding a new test

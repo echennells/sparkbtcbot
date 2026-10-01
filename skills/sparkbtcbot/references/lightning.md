@@ -102,6 +102,19 @@ This does not soften the retry doctrine above — after a timeout, still check `
 
 **The rule on `AlreadyExists` / `PAYMENT_ALREADY_SETTLED`: the payment is SETTLED — do not retry on any rail, by any path.** The dangerous move isn't re-calling the wrapper (the store blocks that); it's the workaround an agent reaches for after misreading the error as failure: **asking the payee for a fresh invoice** (a new payment hash means a new dedup entry — the store cannot connect it to the payment that already settled, so paying it is a genuine second payment), or dropping to the raw SDK (which bypasses the store entirely). Both convert a successfully-deduped retry into the exact double-pay the dedup just prevented.
 
+**`PAYMENT_COMMITTED`: the money left, or may have.** A wrapper send that fails without proving nothing was sent — a timeout, a dropped connection, an operator reply it could not read — throws `PaymentCommittedError` (code `PAYMENT_COMMITTED`, `settled: null`). The spend stays counted against the daily budget, and its audit line reads `result: "unknown"`. Only a pre-send `SparkValidationError` refunds the budget and comes back unchanged: bad input, not enough balance, a fee cap below the estimate (the full list is in `lib/payment-outcome.js`, pinned to the installed SDK by a test). On `PAYMENT_COMMITTED`, retrying *this* invoice through the wrapper is safe, because dedup refuses a second payment. A fresh invoice, another address or another method is a second payment. `transfer`, `fulfillInvoice` and `withdraw` throw the same error and have no dedup: check `getTransfers()` before sending again. Before 2026-09-26 every SDK error refunded the budget, so a loop of timeouts, each of which may have paid, never counted against it.
+
+```javascript
+import { PaymentCommittedError } from "sparkbtcbot-skill";
+
+try {
+  await agent.payLightningInvoice(bolt11);
+} catch (err) {
+  if (!(err instanceof PaymentCommittedError)) throw err;
+  // Money left or may have: check agent.getTransfers(); never pay again another way.
+}
+```
+
 **Wrapper hardening from the 2026-08-31 security review** (Trail of Bits differential + sharp-edges skills, run against these changes):
 
 - **Successful pays carry a `dedupReused` flag.** `false` = a fresh debit; `true` = this "success" is the *original* payment's result replayed under the recorded id — no new money moved. Check it before telling a user "paid again."

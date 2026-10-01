@@ -7,6 +7,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtemp, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { SparkValidationError } from "@buildonspark/spark-sdk";
 import { SparkAgent } from "../../skills/sparkbtcbot/scripts/spark-agent.js";
 
 let dir;
@@ -68,14 +69,29 @@ describe("SparkAgent spend budget (SPARK_DAILY_BUDGET_SATS)", () => {
     await agent2.transfer({ to: "sp1x", amount: 500 }); // the remainder fits
   });
 
-  it("refunds a spend when the SDK call throws (no money moved, budget intact)", async () => {
+  it("refunds a spend when the SDK proves nothing was sent (a pre-send check failed)", async () => {
     const wallet = mkWallet();
-    wallet.transfer = async () => { throw new Error("operator offline"); };
+    wallet.transfer = async () => {
+      throw new SparkValidationError("Total target amount exceeds available balance", { field: "targetAmounts" });
+    };
     const agent = new SparkAgent(wallet, "MAINNET");
-    await expect(agent.transfer({ to: "sp1x", amount: 900 })).rejects.toThrow(/operator offline/);
+    // rethrown as is — the SDK's own error, not a payment-committed one
+    await expect(agent.transfer({ to: "sp1x", amount: 900 })).rejects.toMatchObject({ name: "SparkValidationError" });
     // full budget still available
     const ok = new SparkAgent(mkWallet(), "MAINNET");
     await ok.transfer({ to: "sp1x", amount: 1000 });
+  });
+
+  it("keeps the spend when the outcome is unknown — the money may have left", async () => {
+    const wallet = mkWallet();
+    wallet.transfer = async () => { throw new Error("operator offline"); };
+    const agent = new SparkAgent(wallet, "MAINNET");
+    await expect(agent.transfer({ to: "sp1x", amount: 900 })).rejects.toMatchObject({
+      code: "PAYMENT_COMMITTED", settled: null, cause: expect.objectContaining({ message: "operator offline" }),
+    });
+    expect(await agent.spendStatus()).toMatchObject({ spentSats: 900, remainingSats: 100 });
+    await expect(new SparkAgent(mkWallet(), "MAINNET").transfer({ to: "sp1x", amount: 101 }))
+      .rejects.toMatchObject({ code: "SPEND_BUDGET_EXCEEDED" });
   });
 
   it("dryRun spends nothing", async () => {
