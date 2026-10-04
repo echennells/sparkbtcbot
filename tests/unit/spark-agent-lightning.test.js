@@ -5,7 +5,7 @@
 // payment failed because the wrapper estimated with the amount, then dropped it
 // on the actual send.
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdtemp, readdir } from "node:fs/promises";
+import { mkdtemp, readdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { UUID } from "@buildonspark/spark-sdk";
@@ -412,7 +412,9 @@ describe("the reported Lightning fee", () => {
   // `reads`: what each status read adds to a settled send request, the last
   // repeating. `answer`: "completed" (preimage at once, fee 0), "initiated"
   // (no preimage yet) or "spark" (paid over Spark: a transfer, not a send request).
-  const mk = ({ answer = "completed", reads = [{ fee: msat(0) }], readThrows = null } = {}) => {
+  // `frozen`: the SDK's answer comes back frozen. `onRead`: runs at the start
+  // of each status read, with the number of that read.
+  const mk = ({ answer = "completed", reads = [{ fee: msat(0) }], readThrows = null, frozen = false, onRead = null } = {}) => {
     process.env.SPARK_LEAF_VAULT = "off";
     const asked = [];
     const wallet = {
@@ -421,10 +423,12 @@ describe("the reported Lightning fee", () => {
       payLightningInvoice: async (p) => {
         if (answer === "spark") return { id: "0199c0de-0000-7000-8000-00000000bbbb", status: "TRANSFER_STATUS_COMPLETED", leaves: [] };
         const base = { id: "ls-1", encodedInvoice: p.invoice, fee: msat(0) };
-        return answer === "completed" ? { ...base, status: "TRANSFER_COMPLETED", paymentPreimage: KNOWN_PREIMAGE } : { ...base, status: "LIGHTNING_PAYMENT_INITIATED" };
+        const r = answer === "completed" ? { ...base, status: "TRANSFER_COMPLETED", paymentPreimage: KNOWN_PREIMAGE } : { ...base, status: "LIGHTNING_PAYMENT_INITIATED" };
+        return frozen ? Object.freeze(r) : r;
       },
       getLightningSendRequest: async (id) => {
         asked.push(id);
+        await onRead?.(asked.length);
         if (readThrows) throw readThrows;
         const extra = reads[Math.min(asked.length, reads.length) - 1];
         return { id, encodedInvoice: KNOWN_INVOICE, status: "TRANSFER_COMPLETED", paymentPreimage: KNOWN_PREIMAGE, ...extra };
@@ -434,12 +438,20 @@ describe("the reported Lightning fee", () => {
   };
   // payLightningInvoice waits 2 s between reads: record the waits, skip them.
   let waits;
+  const KEYS = ["SPARK_LN_DEDUP_PATH", "SPARK_AUDIT_LOG_PATH", "SPARK_AUDIT_LOG"];
+  const saved = {};
   beforeEach(() => {
+    for (const k of KEYS) saved[k] = process.env[k];
     waits = [];
     const real = globalThis.setTimeout;
     vi.stubGlobal("setTimeout", (fn, ms, ...args) => (waits.push(ms), real(fn, 0, ...args)));
   });
-  afterEach(() => vi.unstubAllGlobals());
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    for (const k of KEYS) {
+      if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k];
+    }
+  });
 
   it("a completed answer with fee 0: the fee comes from the status read that follows", async () => {
     const { agent, asked } = mk({ reads: [{ fee: msat(5_000) }] });
@@ -485,6 +497,37 @@ describe("the reported Lightning fee", () => {
     expect(r).toMatchObject({ status: "TRANSFER_COMPLETED", paymentPreimage: KNOWN_PREIMAGE, feeSats: 30 });
     expect(r.feeNote).toMatch(/at most 30 sats/);
     expect(asked).toHaveLength(5);
+  });
+
+  it("a frozen SDK answer: the result is a copy, so it keeps dedupReused and gains feeSats without throwing", async () => {
+    // Writing the fields onto a frozen answer would throw a TypeError after
+    // the money has left, and a paid payment would come back as an error.
+    process.env.SPARK_LN_DEDUP_PATH = await mkdtemp(join(tmpdir(), "agent-ln-fee-dedup-"));
+    const { agent } = mk({ frozen: true, reads: [{ fee: msat(5_000) }] });
+    const r = await agent.payLightningInvoice(KNOWN_INVOICE, { maxFeeSats: 30 });
+    expect(r).toMatchObject({ status: "TRANSFER_COMPLETED", paymentPreimage: KNOWN_PREIMAGE, dedupReused: false, feeSats: 5 });
+    expect(Object.isFrozen(r)).toBe(false);
+  });
+
+  it("the success audit line is written before the first status read, so a read that hangs can't leave a paid payment unlogged", async () => {
+    delete process.env.SPARK_AUDIT_LOG;
+    for (const [method, answer] of [["payLightningInvoice", "completed"], ["payAndSettle", "initiated"]]) {
+      const log = join(await mkdtemp(join(tmpdir(), "agent-ln-fee-audit-")), "audit.jsonl");
+      process.env.SPARK_AUDIT_LOG_PATH = log;
+      let loggedBeforeRead = null;
+      const { agent } = mk({
+        answer,
+        reads: [{ fee: msat(5_000) }],
+        onRead: async (n) => {
+          if (n !== 1) return;
+          const lines = (await readFile(log, "utf8").catch(() => "")).split("\n").filter(Boolean).map((l) => JSON.parse(l));
+          loggedBeforeRead = lines.some((e) => e.op === "lightning_pay" && e.result === "ok");
+        },
+      });
+      const r = await agent[method](KNOWN_INVOICE, { maxFeeSats: 30, ...(method === "payAndSettle" ? { pollMs: 1 } : {}) });
+      expect(r.feeSats, method).toBe(5);
+      expect(loggedBeforeRead, method).toBe(true);
+    }
   });
 
   it("the default cap stands in when no maxFeeSats is passed", async () => {
