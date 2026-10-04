@@ -52,7 +52,7 @@ import {
 import { createSpendLedger } from "./lib/spend-ledger.js";
 import { evaluateDeclarativeRules, runPolicyExec, PolicyDeniedError, OUTBOUND_OPS, sealedTokenBudgets, tokenLimitBaseUnits } from "./lib/policy.js";
 import { toBaseUnits, formatUnits } from "./lib/token-units.js";
-import { auditLogFromEnv } from "./lib/audit-log.js";
+import { auditLogFromEnv, redactInvoices } from "./lib/audit-log.js";
 import { createTransferIdStore } from "./lib/transfer-ids.js";
 import { ensureWalletPrivacy, privacyPreferenceFromEnv } from "./lib/wallet-privacy.js";
 import { enableLeafVault } from "./leaf-vault.js";
@@ -736,7 +736,8 @@ export class SparkAgent {
       verdict: "allow",
       result: ok ? "ok" : unknown ? "unknown" : "error",
       ...(id != null ? { id: String(id) } : {}),
-      ...(error ? { error: String(error?.message ?? error).slice(0, 300) } : {}),
+      // SDK errors quote the invoice they failed on: cut it out first.
+      ...(error ? { error: redactInvoices(String(error?.message ?? error)).slice(0, 300) } : {}),
     });
   }
 
