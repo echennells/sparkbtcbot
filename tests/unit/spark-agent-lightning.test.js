@@ -4,7 +4,7 @@
 // forward it as amountSatsToSend ONLY in the amountless case — a bot's real
 // payment failed because the wrapper estimated with the amount, then dropped it
 // on the actual send.
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtemp, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,6 +16,12 @@ const INVOICE_2000_SATS =
   "lnbc20u1p3y0x3hpp5743k2g0fsqqxj7n8qzuhns5gmkk4djeejk3wkp64ppevgekvc0jsdqcve5kzar2v9nr5gpqd4hkuetesp5ez2g297jduwc20t6lmqlsg3man0vf2jfd8ar9fh8fhn2g8yttfkqxqy9gcqcqzys9qrsgqrzjqtx3k77yrrav9hye7zar2rtqlfkytl094dsp0ms5majzth6gt7ca6uhdkxl983uywgqqqqlgqqqvx5qqjqrzjqd98kxkpyw0l9tyy8r8q57k7zpy9zjmh6sez752wj6gcumqnj3yxzhdsmg6qq56utgqqqqqqqqqqqeqqjq7jd56882gtxhrjm03c93aacyfy306m4fq0tskf83c0nmet8zc2lxyyg3saz8x6vwcp26xnrlagf9semau3qm2glysp7sv95693fphvsp54l567";
 
 const AMOUNTLESS = "lnbc1notarealinvoice"; // undecodable => treated as amountless
+
+// A 2,000-sat invoice whose preimage is known (sha256(0x42 × 32) is its payment
+// hash; the same sample as spark-agent-l402.test.js), so payAndSettle's proof
+// check passes for real.
+const KNOWN_INVOICE = "lnbc20u1p4tzwuqpp5gf0dfe9rdvcw5gdepcsuwykxf85zznpfkl40dqyf6ypecmj48pxqsp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygsdp5wdcxzuntvf6xxcn0wss8getnwsazq6mwdamkugrswfjkjmtpvajsxqrrssfgmzf4e3aygc36mfrkgfj23fs5l3v4a0ztu34u5uu0ws9eycv4psq4msf75685vluz7kg7n3pvvzme375yjx63zjt2nxs9vgspgspvcp45esgz";
+const KNOWN_PREIMAGE = "42".repeat(32);
 
 const orig = process.env.SPARK_LEAF_VAULT;
 afterEach(() => { if (orig === undefined) delete process.env.SPARK_LEAF_VAULT; else process.env.SPARK_LEAF_VAULT = orig; });
@@ -390,5 +396,161 @@ describe("fetchL402 strictness", () => {
   it("allows localhost for testing", async () => {
     // Reaches the network layer (fetch fails), proving the scheme gate passed.
     await expect(agent().fetchL402("http://localhost:9/x")).rejects.not.toThrow(/https/i);
+  });
+});
+
+// What hosted REGTEST did (2026-10-02): the SDK's
+// payLightningInvoice answered TRANSFER_COMPLETED with the preimage and a fee
+// of 0 msat before the SSP had priced the payment; a status read right after
+// said 5,000 msat, and 1,005 sats had left for a 1,000-sat invoice. The
+// wrapper passed that 0 on, and the funded test's fee check passed vacuously.
+// The fee now comes from status reads, a 0 counts only when the transfer
+// confirms it, and an unknown fee is reported as the cap with a note.
+describe("the reported Lightning fee", () => {
+  const msat = (v) => ({ originalValue: v, originalUnit: "MILLISATOSHI" });
+  const sats = (v) => ({ originalValue: v, originalUnit: "SATOSHI" });
+  // `reads`: what each status read adds to a settled send request, the last
+  // repeating. `answer`: "completed" (preimage at once, fee 0), "initiated"
+  // (no preimage yet) or "spark" (paid over Spark: a transfer, not a send request).
+  const mk = ({ answer = "completed", reads = [{ fee: msat(0) }], readThrows = null } = {}) => {
+    process.env.SPARK_LEAF_VAULT = "off";
+    const asked = [];
+    const wallet = {
+      getSparkAddress: async () => "sp1from",
+      getLightningSendFeeEstimate: async () => 5,
+      payLightningInvoice: async (p) => {
+        if (answer === "spark") return { id: "0199c0de-0000-7000-8000-00000000bbbb", status: "TRANSFER_STATUS_COMPLETED", leaves: [] };
+        const base = { id: "ls-1", encodedInvoice: p.invoice, fee: msat(0) };
+        return answer === "completed" ? { ...base, status: "TRANSFER_COMPLETED", paymentPreimage: KNOWN_PREIMAGE } : { ...base, status: "LIGHTNING_PAYMENT_INITIATED" };
+      },
+      getLightningSendRequest: async (id) => {
+        asked.push(id);
+        if (readThrows) throw readThrows;
+        const extra = reads[Math.min(asked.length, reads.length) - 1];
+        return { id, encodedInvoice: KNOWN_INVOICE, status: "TRANSFER_COMPLETED", paymentPreimage: KNOWN_PREIMAGE, ...extra };
+      },
+    };
+    return { agent: new SparkAgent(wallet, "MAINNET"), asked };
+  };
+  // payLightningInvoice waits 2 s between reads: record the waits, skip them.
+  let waits;
+  beforeEach(() => {
+    waits = [];
+    const real = globalThis.setTimeout;
+    vi.stubGlobal("setTimeout", (fn, ms, ...args) => (waits.push(ms), real(fn, 0, ...args)));
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("a completed answer with fee 0: the fee comes from the status read that follows", async () => {
+    const { agent, asked } = mk({ reads: [{ fee: msat(5_000) }] });
+    const r = await agent.payLightningInvoice(KNOWN_INVOICE, { maxFeeSats: 30 });
+    expect(r).toMatchObject({ id: "ls-1", status: "TRANSFER_COMPLETED", feeSats: 5 });
+    expect(r.feeNote).toBeUndefined();
+    expect(r.fee).toEqual(msat(0)); // the SDK's own first answer, left as it came
+    expect(asked).toEqual(["ls-1"]);
+    expect(waits).toEqual([]);
+  });
+
+  it("the fee is what the transfer took beyond the amount when the SSP reports less; a 0 counts when the transfer confirms it", async () => {
+    let { agent } = mk({ reads: [{ fee: msat(0), transfer: { totalAmount: sats(2_007) } }] });
+    expect((await agent.payLightningInvoice(KNOWN_INVOICE, { maxFeeSats: 30 })).feeSats).toBe(7);
+    ({ agent } = mk({ reads: [{ fee: msat(0), transfer: { totalAmount: sats(2_000) } }] }));
+    const zero = await agent.payLightningInvoice(KNOWN_INVOICE, { maxFeeSats: 30 });
+    expect(zero.feeSats).toBe(0);
+    expect(zero.feeNote).toBeUndefined();
+    ({ agent } = mk({ reads: [{ fee: msat(5_001) }] }));
+    expect((await agent.payLightningInvoice(KNOWN_INVOICE, { maxFeeSats: 30 })).feeSats).toBe(6); // whole sats, rounded up
+  });
+
+  it("priced on a later read: reads go on, 2 s apart, until one says", async () => {
+    const { agent, asked } = mk({ reads: [{ fee: msat(0) }, { fee: msat(0) }, { fee: msat(6_000) }] });
+    const r = await agent.payLightningInvoice(KNOWN_INVOICE, { maxFeeSats: 30 });
+    expect(r.feeSats).toBe(6);
+    expect(asked).toHaveLength(3);
+    expect(waits).toEqual([2_000, 2_000]);
+  });
+
+  it("a fee of 0 with no transfer to check it against, on every read: the cap, with a note", async () => {
+    const { agent, asked } = mk();
+    const r = await agent.payLightningInvoice(KNOWN_INVOICE, { maxFeeSats: 30 });
+    expect(r.feeSats).toBe(30);
+    expect(r.feeNote).toMatch(/fee cap: the wallet hasn't reported what this payment cost\. It was at most 30 sats/);
+    expect(asked).toHaveLength(5);
+    expect(waits).toEqual([2_000, 2_000, 2_000, 2_000]);
+  });
+
+  it("status reads that fail: the payment still succeeds, its fee reported as the cap", async () => {
+    const { agent, asked } = mk({ readThrows: new Error("unavailable") });
+    const r = await agent.payLightningInvoice(KNOWN_INVOICE, { maxFeeSats: 30 });
+    expect(r).toMatchObject({ status: "TRANSFER_COMPLETED", paymentPreimage: KNOWN_PREIMAGE, feeSats: 30 });
+    expect(r.feeNote).toMatch(/at most 30 sats/);
+    expect(asked).toHaveLength(5);
+  });
+
+  it("the default cap stands in when no maxFeeSats is passed", async () => {
+    const { agent } = mk();
+    expect((await agent.payLightningInvoice(KNOWN_INVOICE)).feeSats).toBe(25); // lightningFeeCap: max(25, 0.5% of 2,000)
+  });
+
+  it("not settled yet: no reads, the cap with a note", async () => {
+    const { agent, asked } = mk({ answer: "initiated" });
+    const r = await agent.payLightningInvoice(KNOWN_INVOICE, { maxFeeSats: 30 });
+    expect(r).toMatchObject({ status: "LIGHTNING_PAYMENT_INITIATED", feeSats: 30 });
+    expect(r.feeNote).toMatch(/hasn't settled/);
+    expect(asked).toEqual([]);
+  });
+
+  it("paid over Spark (the invoice's fallback): no Lightning fee, no reads", async () => {
+    const { agent, asked } = mk({ answer: "spark" });
+    const r = await agent.payLightningInvoice(KNOWN_INVOICE, { maxFeeSats: 30 });
+    expect(r.feeSats).toBe(0);
+    expect(r.feeNote).toBeUndefined();
+    expect(asked).toEqual([]);
+  });
+
+  it("payAndSettle: the read that brings the preimage counts as the first fee read; the next prices it", async () => {
+    const { agent, asked } = mk({ answer: "initiated", reads: [{ fee: msat(0) }, { fee: msat(6_000) }] });
+    const r = await agent.payAndSettle(KNOWN_INVOICE, { maxFeeSats: 30, pollMs: 7 });
+    expect(r).toMatchObject({ settled: true, paymentPreimage: KNOWN_PREIMAGE, feeSats: 6 });
+    expect(r.feeNote).toBeUndefined();
+    expect(asked).toHaveLength(2);
+    expect(waits).toEqual([7, 7]); // one poll, then one fee read at payAndSettle's pace
+  });
+
+  it("payAndSettle on a completed answer reads the fee once (not twice through payLightningInvoice)", async () => {
+    const { agent, asked } = mk({ reads: [{ fee: msat(5_000) }] });
+    const r = await agent.payAndSettle(KNOWN_INVOICE, { maxFeeSats: 30, pollMs: 7 });
+    expect(r).toMatchObject({ settled: true, feeSats: 5, fee: msat(0) });
+    expect(asked).toEqual(["ls-1"]);
+  });
+
+  it("payAndSettle: unpriced after every read, or never settled: the cap, with a note saying which", async () => {
+    let { agent } = mk({ answer: "completed" });
+    const unpriced = await agent.payAndSettle(KNOWN_INVOICE, { maxFeeSats: 30, pollMs: 1 });
+    expect(unpriced).toMatchObject({ settled: true, feeSats: 30 });
+    expect(unpriced.feeNote).toMatch(/hasn't reported/);
+    const pending = { status: "LIGHTNING_PAYMENT_INITIATED", paymentPreimage: undefined };
+    ({ agent } = mk({ answer: "initiated", reads: [pending] }));
+    const open = await agent.payAndSettle(KNOWN_INVOICE, { maxFeeSats: 30, pollMs: 1, maxPolls: 3 });
+    expect(open).toMatchObject({ settled: false, feeSats: 30 });
+    expect(open.feeNote).toMatch(/hasn't settled/);
+  });
+
+  it("fetchL402 doesn't read the fee: it reports none, and its paid pass is waiting to be presented", async () => {
+    const { agent, asked } = mk();
+    let n = 0;
+    const res = (status, body) => ({ status, headers: { get: () => "application/json" }, json: async () => body, text: async () => JSON.stringify(body) });
+    vi.stubGlobal("fetch", async () => (++n === 1 ? res(402, { invoice: KNOWN_INVOICE, macaroon: "mac1" }) : res(200, { ok: true })));
+    const r = await agent.fetchL402("https://api.example/paid", { maxAmountSats: 3000 });
+    expect(r).toMatchObject({ paid: true, preimage: KNOWN_PREIMAGE, data: { ok: true } });
+    expect(asked).toEqual([]);
+    expect(waits).toEqual([]);
+  });
+
+  it("a dry run reports no fee fields", async () => {
+    const { agent } = mk();
+    const preview = await agent.payLightningInvoice(KNOWN_INVOICE, { dryRun: true, maxFeeSats: 30 });
+    expect(preview).not.toHaveProperty("feeSats");
+    expect(await agent.payAndSettle(KNOWN_INVOICE, { dryRun: true, maxFeeSats: 30 })).not.toHaveProperty("feeSats");
   });
 });

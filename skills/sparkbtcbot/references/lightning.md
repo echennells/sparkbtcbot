@@ -71,6 +71,8 @@ const result = await wallet.payLightningInvoice({
 
 The `SparkAgent` wrapper sizes `maxFeeSats` automatically (`lib/fee-guards.js` → `lightningFeeCap`) and, on a dry run, reports `withinCap` / `capReason` so an over-cap send is previewed rather than failing opaquely.
 
+**What a payment cost: read `feeSats`, not `fee`.** The SDK's first answer can be `TRANSFER_COMPLETED`, preimage included, with `fee` at 0 msat before the SSP has priced the payment (hosted REGTEST, 2026-10-02: the next `getLightningSendRequest` said 5,000 msat, and 1,005 sats had left for a 1,000-sat invoice). The wrapper's `payLightningInvoice` and `payAndSettle` add `feeSats`, read from status reads once the payment has settled: the larger of the reported fee and what the transfer took beyond the amount. Until the cost is known (not settled, or still unpriced after 5 reads), `feeSats` is the fee cap and `feeNote` says why. A payment made over Spark through the invoice's fallback reports `feeSats: 0`. On the raw SDK, read the fee from `getLightningSendRequest(id)` after settlement, not from the first answer.
+
 ### Polling for Async Completion
 
 If `payLightningInvoice` returns immediately with `status === "LIGHTNING_PAYMENT_INITIATED"` and no preimage, poll:

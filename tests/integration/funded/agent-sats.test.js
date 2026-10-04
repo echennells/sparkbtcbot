@@ -119,10 +119,19 @@ describeFunded("funded SparkAgent sats flows (REGTEST)", () => {
       ({ invoice: { encodedInvoice: bolt11 } } = await receiver.createLightningInvoice({ amountSats: 1_000, memo: "funded ln", expirySeconds: 600 }));
     });
 
-    it("pays a BOLT11 invoice: the receiver gets exactly the amount; the fee is under the cap", async () => {
+    // The SDK's own answer comes back completed with a fee of 0 msat before
+    // the SSP has priced the payment (2026-10-02: the next status read said
+    // 5,000 msat), so `result.fee` proved nothing. feeSats comes from status
+    // reads; a feeNote would mean none of them said, and feeSats is the cap.
+    it("pays a BOLT11 invoice: the receiver gets exactly the amount; the fee is read from the payment's status, under the cap", async () => {
       const result = await payer.payLightningInvoice(bolt11, { maxFeeSats: 50 });
       expect(result.status).toBe("TRANSFER_COMPLETED");
-      expect(result.fee?.originalValue ?? 0).toBeLessThanOrEqual(50);
+      expect(result.feeNote).toBeUndefined();
+      expect(result.feeSats).toBeGreaterThan(0);
+      expect(result.feeSats).toBeLessThanOrEqual(50);
+      const { fee } = await payer.getLightningSendRequest(result.id);
+      const reportedSats = Math.ceil(Number(fee.originalValue) / (fee.originalUnit === "MILLISATOSHI" ? 1_000 : 1));
+      expect(result.feeSats).toBeGreaterThanOrEqual(reportedSats);
       expect(await waitForSettled(receiver, 1_000n)).toEqual(settled(1_000));
     });
 
