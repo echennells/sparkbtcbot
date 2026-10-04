@@ -80,6 +80,7 @@
     "test:integration": "node tests/check-dev-deps.js && vitest run tests/integration --exclude tests/integration/funded",
     "test:funded": "node tests/check-dev-deps.js && vitest run tests/integration/funded",
     "test:all": "node tests/check-dev-deps.js && vitest run",
+    "sync:agent-listing": "node tests/agent-listing.js",
     "reveal-mnemonic": "node skills/sparkbtcbot/scripts/reveal-mnemonic.js",
     "set-policy": "node skills/sparkbtcbot/scripts/set-policy.js",
     "reset-ledger": "node skills/sparkbtcbot/scripts/reset-ledger.js",

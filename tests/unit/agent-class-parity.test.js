@@ -9,6 +9,7 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { SparkAgent } from "../../skills/sparkbtcbot/scripts/spark-agent.js";
+import { listingFromSource, listingBounds } from "../agent-listing.js";
 
 const MD_PATH = join(dirname(fileURLToPath(import.meta.url)), "../../skills/sparkbtcbot/references/agent-class.md");
 const SRC_PATH = join(dirname(fileURLToPath(import.meta.url)), "../../skills/sparkbtcbot/scripts/spark-agent.js");
@@ -55,5 +56,14 @@ describe("agent-class.md ↔ shipped SparkAgent parity", () => {
       [...text.matchAll(/^  (?:static )?(?:async )?[a-zA-Z][a-zA-Z0-9]*\(.*\) \{$/gm)].map((m) => m[0]).sort();
     expect(signatures(classBody).length).toBeGreaterThan(10);
     expect(signatures(code)).toEqual(signatures(classBody));
+  });
+
+  // The listing is generated from the shipped file (tests/agent-listing.js).
+  // Every hand-synced version drifted; this is the check that it can't.
+  it("the doc listing is exactly the shipped file (run `npm run sync:agent-listing`)", async () => {
+    const md = await readFile(MD_PATH, "utf8");
+    const src = await readFile(SRC_PATH, "utf8");
+    const [a, b] = listingBounds(md);
+    expect(md.slice(a, b) === listingFromSource(src), "agent-class.md's listing differs from spark-agent.js: run `npm run sync:agent-listing`").toBe(true);
   });
 });
