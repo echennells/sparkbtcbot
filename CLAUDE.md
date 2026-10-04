@@ -35,7 +35,12 @@ lib/
   transfer-ids.js                     # persisted per-invoice Lightning dedup transferId (safe retries)
   wallet-privacy.js                   # SDK-free: turn the operators' per-wallet privacy setting on (wallets are public by default)
   recipients-allowlist.js             # opt-in outbound allowlist guardrail
-  index.js / index.d.ts               # npm entry (also exports ./leaf-vault subpaths)
+  wallet-options.js                   # sparkWalletOptions: every wallet opens with SDK 0.13's fee ladders OFF
+  token-units.js                      # exact human <-> base-unit token amounts (decimal strings / bigints, never floats)
+  bolt11.js                           # read-only BOLT11 helpers: amount, payment hash (and match against a checkout's), expiry
+  payment-outcome.js                  # did a failed SDK call PROVE nothing left? else PaymentCommittedError (PAYMENT_COMMITTED)
+  l402-token.js                       # read-only L402 token/macaroon caveat inspection
+  index.js / index.d.ts               # npm entry (also exports ./leaf-vault, ./leaf-vault/core, ./agent subpaths)
 skills/
   sparkbtcbot/
     SKILL.md                          # Always-loaded skill body (security, setup, navigator)
