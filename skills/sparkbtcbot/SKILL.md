@@ -188,11 +188,13 @@ SPARK_NETWORK=MAINNET
 import "dotenv/config";
 import { SparkWallet } from "@buildonspark/spark-sdk";
 import { loadMnemonicFromEnv } from "./lib/encrypted-seed.js";
+import { sparkWalletOptions } from "./lib/wallet-options.js";
 
 const mnemonic = await loadMnemonicFromEnv(); // reads SPARK_PASSPHRASE, decrypts seed.enc
 const { wallet } = await SparkWallet.initialize({
   mnemonicOrSeed: mnemonic,
-  options: { network: process.env.SPARK_NETWORK || "MAINNET" },
+  // network + the SDK's fee ladders OFF, so the exit backup stays exitable (unilateral-exit.md)
+  options: sparkWalletOptions(process.env.SPARK_NETWORK || "MAINNET"),
 });
 
 const address = await wallet.getSparkAddress();

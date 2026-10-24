@@ -466,6 +466,32 @@ export function ensureWalletPrivacy(
   options?: { enabled?: boolean },
 ): Promise<{ changed: boolean; settings: WalletSettingsLike | undefined }>;
 
+// --- Wallet options ---
+
+/**
+ * SDK 0.13's two fee-ladder options, both false. Every wallet this package
+ * opens passes them: a refund signed with the refund ladder on has no anchor,
+ * and the exit tool the leaf-vault backup is for can't exit such a leaf.
+ */
+export const FEE_LADDERS_OFF: Readonly<{
+  enableCpfpRefundLadder: false;
+  enableDirectNodeFeeLadder: false;
+}>;
+
+/**
+ * Options for SparkWallet.initialize: `extra`, the network, and FEE_LADDERS_OFF
+ * (applied last, so `extra` can't turn a ladder back on). The settings belong
+ * to the wallet object, so every program opening the seed must pass them.
+ */
+export function sparkWalletOptions<T extends Record<string, unknown> = {}>(
+  network: string,
+  extra?: T,
+): Omit<T, "network" | "enableCpfpRefundLadder" | "enableDirectNodeFeeLadder"> & {
+  network: string;
+  enableCpfpRefundLadder: false;
+  enableDirectNodeFeeLadder: false;
+};
+
 // --- Skill-content helpers (for non-Claude LLM frameworks) ---
 
 /** Absolute path to the bundled SKILL.md inside this npm package. */

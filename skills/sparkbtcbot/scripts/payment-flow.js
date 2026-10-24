@@ -3,6 +3,7 @@ import { pathToFileURL } from "node:url";
 import { realpathSync } from "node:fs";
 import { SparkWallet } from "@buildonspark/spark-sdk";
 import { loadMnemonicFromEnv } from "../../../lib/encrypted-seed.js";
+import { sparkWalletOptions } from "../../../lib/wallet-options.js";
 
 const network = process.env.SPARK_NETWORK || "MAINNET";
 
@@ -10,7 +11,7 @@ async function main() {
   const mnemonic = await loadMnemonicFromEnv();
   const { wallet } = await SparkWallet.initialize({
     mnemonicOrSeed: mnemonic,
-    options: { network },
+    options: sparkWalletOptions(network),
   });
 
   const { satsBalance } = await wallet.getBalance();

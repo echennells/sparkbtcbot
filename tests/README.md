@@ -16,13 +16,14 @@ Three tiers, run via `npm` scripts.
 ```
 tests/
   setup.js                          # loads .env
-  helpers/wallet.js                 # createTestWallet, cleanupAllWallets, getFundedMnemonic
+  helpers/wallet.js                 # createTestWallet (fee ladders off like the package), cleanupAllWallets, getFundedMnemonic
   unit/
     imports.test.js                 # SDK export sanity, SparkWallet method surface
     balance-shape.test.js           # regression: ownedBalance / availableToSendBalance
     encrypted-seed.test.js          # seed encrypt/decrypt round-trip, EEXIST, perms, NO_PASSPHRASE
     leaf-vault.test.js              # bundle shape validation (Blink compatibility contract)
     leaf-vault-fixes.test.js        # ToB regression pins — H-3 concurrency, M-1 content gate, M-2 transient-empty, shrink guard, H-2 marker, flush-on-dispose
+    leaf-vault-anchorless.test.js   # verifyVault fails SDK 0.13 anchorless refunds (real REGTEST fixtures in fixtures/leaf-vault/); every initialize passes sparkWalletOptions
     leaf-vault-hardening.test.js    # network derivation, identity guard, union rescue, skip accounting, re-arm, dispose races, atomic-writer failures, exports map
     spark-agent-vault.test.js       # SparkAgent vault wiring: opt-out normalization + enabled path
     wallet-privacy.test.js          # per-wallet privacy: env opt-out, idempotent ensure, echo check, boot wiring warns-not-blocks
@@ -41,6 +42,7 @@ tests/
     funded/
       transfer.test.js              # spark-to-spark transfer
       lightning.test.js             # Lightning fee estimate, payment
+      fee-ladder.test.js            # same 5,000 sats to a ladders-off and a ladders-on wallet: verify passes the first, names the 1,024+ sat leaves in the second
       privacy.test.js               # with real sats: private → public/stranger readers see 0; granted viewer sees the balance; revoke/off restore
 ```
 

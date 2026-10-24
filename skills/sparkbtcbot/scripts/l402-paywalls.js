@@ -10,6 +10,7 @@ import { SparkWallet } from "@buildonspark/spark-sdk";
 import { decode } from "light-bolt11-decoder";
 import { checkL402Amount, lightningFeeCap } from "../../../lib/fee-guards.js";
 import { loadMnemonicFromEnv } from "../../../lib/encrypted-seed.js";
+import { sparkWalletOptions } from "../../../lib/wallet-options.js";
 
 const network = process.env.SPARK_NETWORK || "MAINNET";
 
@@ -212,7 +213,7 @@ async function main() {
   // leaf state half-reconciled). See references/wallet.md → Cleanup.
   const { wallet } = await SparkWallet.initialize({
     mnemonicOrSeed: mnemonic,
-    options: { network, optimizationOptions: { auto: false } },
+    options: sparkWalletOptions(network, { optimizationOptions: { auto: false } }),
   });
 
   const { satsBalance } = await wallet.getBalance();

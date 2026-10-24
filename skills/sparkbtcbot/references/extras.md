@@ -105,11 +105,12 @@ npm install @buildonspark/issuer-sdk
 ```javascript
 import { IssuerSparkWallet } from "@buildonspark/issuer-sdk";
 import { loadMnemonicFromEnv } from "./lib/encrypted-seed.js";
+import { sparkWalletOptions } from "./lib/wallet-options.js";
 
 const mnemonic = await loadMnemonicFromEnv(); // reads SPARK_PASSPHRASE
 const { wallet } = await IssuerSparkWallet.initialize({
   mnemonicOrSeed: mnemonic,
-  options: { network: "REGTEST" },
+  options: sparkWalletOptions("REGTEST"), // the SDK's fee ladders off
 });
 
 // One token per wallet — check first

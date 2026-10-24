@@ -82,8 +82,8 @@
     "reset-ledger": "node skills/sparkbtcbot/scripts/reset-ledger.js"
   },
   "dependencies": {
-    "@buildonspark/issuer-sdk": "0.1.48",
-    "@buildonspark/spark-sdk": "0.12.0",
+    "@buildonspark/issuer-sdk": "0.2.1",
+    "@buildonspark/spark-sdk": "0.14.0",
     "@noble/curves": "1.9.7",
     "dotenv": "17.4.2",
     "light-bolt11-decoder": "3.2.0"

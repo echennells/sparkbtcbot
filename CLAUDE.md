@@ -33,6 +33,7 @@ lib/
   transfer-ids.js                     # persisted per-invoice Lightning dedup transferId (safe retries)
   wallet-privacy.js                   # SDK-free: turn the operators' per-wallet privacy setting on (wallets are public by default)
   recipients-allowlist.js             # opt-in outbound allowlist guardrail
+  wallet-options.js                   # sparkWalletOptions: every wallet opens with the SDK's fee ladders OFF (default ON since 0.13)
   index.js / index.d.ts               # npm entry (also exports ./leaf-vault subpaths)
 skills/
   sparkbtcbot/

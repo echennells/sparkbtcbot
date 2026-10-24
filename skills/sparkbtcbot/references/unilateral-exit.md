@@ -95,6 +95,27 @@ The race above has a quieter cousin that needs no recovery tool: the operators' 
 
 The direct chain carries no fee-bumping anchor: each direct transaction pays a **flat 955-sat fee out of the parent amount**, fixed at signing time. Nothing in the protocol checks that against Bitcoin Core's relay policy — the operators' validation recomputes the same fee and checks equality, but no node is in the loop until a watchtower or recovery tool calls `sendrawtransaction`. So a leaf whose parent is small enough that `parent − 955` lands **below the 330-sat P2TR dust floor** has a direct transaction that is validly signed and **unrelayable**: it will never be broadcast, and the watchtower defence for that leaf does not exist. Spark-sdk 0.12.0 fixed exactly one member of the class: a **1,024-sat** parent (fee capped to 694 so the output is exactly 330). Verified against the real signing binding on 2026-09-15, the class is wider — a **2,048-sat** parent's direct *refund* still leaves 138 sats, dust; every parent ≤ 512 sats has a zero-fee direct chain (watchtower-blind by construction); and any output ≤ 329 sats is dust on every path. Two consequences for this backup: **upgrading the SDK does not repair existing leaves** — the fee is baked into the signed transaction, and only a transfer, claim or timelock refresh re-signs it (the last signer's SDK version wins), so a leaf-vault snapshot after the bump carries the same unrelayable direct txs until the leaf next moves; and Blink's tool never constructs these transactions itself, only uses their txids, so a re-signed leaf shows up as a stale bundle (`unexpected spender`), which the vault's refresh cadence is what covers. The default leaf optimizer keeps a 1, 2, 4, … ladder, so nearly every wallet over ~2,000 sats holds a 1,024-sat leaf. The honest reading of the watchtower fix is "one denomination now relays", not "the direct route is defended".
 
+### The SDK's fee ladders are off in this package, and `verify` checks for them
+
+Since spark-sdk 0.13, two **fee ladders** are on by default:
+
+- **Refund ladder** (`enableCpfpRefundLadder`). At each claim, a leaf of about 1,024 sats or more gets a refund with **no anchor and no fee**. The wallet signs up to 24 fee steps that spend it, each paying more to miners, and hands them to the operators. The top step leaves the owner 330 sats.
+- **Node-hop ladder** (`enableDirectNodeFeeLadder`). When a leaf's refund timelock is renewed, the wallet signs fee variants of its direct transaction.
+
+The upside is that the operators' watchtower can publish an exit at the fee the chain needs instead of the flat fee above. Every wallet this package opens turns **both off** (`sparkWalletOptions()` from `sparkbtcbot-skill`), for two reasons:
+
+1. **This backup's exit tool can't use an anchorless refund.** It fee-bumps every refund through its anchor and fails on the whole backup if one is missing (verified on REGTEST, 2026-10-01). The SDK's own `constructUnilateralExitFeeBumpPackages` can exit such a leaf, but only when given the seed's signer.
+2. **The operators hold the fee steps as fully signed transactions.** The operator code that stores and publishes them isn't public, so how they're protected, and whether one operator's copy is enough to publish a top step, can't be checked yet. A top step published early costs the owner everything but 330 sats of that leaf.
+
+What to know:
+
+- **The setting belongs to the wallet object, not the seed.** Each program that opens the seed decides for itself. Your own `SparkWallet.initialize` calls should pass `sparkWalletOptions(network, extra)`.
+- **A wallet with the ladder off re-anchors whatever it claims.** Leaves claimed by another program on the SDK default (0.13 or later) stay anchorless until they next move. `npm run leaf-vault -- verify` lists them under `anchorless` and fails.
+- **Off has a cost.** The direct route keeps its flat fee and the dust gaps described below.
+- **Off is reversible; on isn't.** Flip the option and the next claims change, but fee steps already handed to the operators can't be recalled.
+
+## What to expect (from Blink's real mainnet exit)
+
 - **Expensive and slow by construction.** A 100k-sat wallet across 22 leaves needed
   253 packages; exiting everything would have cost ~79% of the balance in fees at
   the rate that run faced. With economic triage (skip dust leaves), ~90% reached the

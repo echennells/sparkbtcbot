@@ -34,6 +34,7 @@ function info(msg) {
 }
 
 import { promptStderr } from "./prompt.js";
+import { sparkWalletOptions } from "../../../lib/wallet-options.js";
 
 async function getPassphrase() {
   if (env.SPARK_PASSPHRASE) {
@@ -74,7 +75,7 @@ async function getMnemonicSource() {
   // Generate fresh
   info(`Generating a fresh ${NETWORK} mnemonic...`);
   const { SparkWallet } = await import("@buildonspark/spark-sdk");
-  const result = await SparkWallet.initialize({ options: { network: NETWORK } });
+  const result = await SparkWallet.initialize({ options: sparkWalletOptions(NETWORK) });
   const mnemonic = normalizeMnemonic(result.mnemonic);
   await result.wallet.cleanup();
   return { mnemonic, source: "generated" };
@@ -153,7 +154,7 @@ export async function main() {
   const { SparkWallet } = await import("@buildonspark/spark-sdk");
   const { wallet } = await SparkWallet.initialize({
     mnemonicOrSeed: mnemonic,
-    options: { network: NETWORK },
+    options: sparkWalletOptions(NETWORK),
   });
   const address = await wallet.getSparkAddress();
   // Spark wallets are PUBLICLY readable by default (balance + full history by
@@ -219,8 +220,9 @@ export async function main() {
 
   stdout.write("\nIn your app:\n");
   stdout.write("  import { loadMnemonicFromEnv } from \"./lib/encrypted-seed.js\";\n");
+  stdout.write("  import { sparkWalletOptions } from \"./lib/wallet-options.js\";\n");
   stdout.write("  const mnemonic = await loadMnemonicFromEnv();\n");
-  stdout.write("  const { wallet } = await SparkWallet.initialize({ mnemonicOrSeed: mnemonic, ... });\n");
+  stdout.write(`  const { wallet } = await SparkWallet.initialize({ mnemonicOrSeed: mnemonic, options: sparkWalletOptions("${NETWORK}") });\n`);
 }
 
 // Run main() only when executed directly (node script.js), not when this

@@ -27,6 +27,7 @@ import { createSpendLedger } from "../../../lib/spend-ledger.js";
 import { createTransferIdStore } from "../../../lib/transfer-ids.js";
 import { ensureWalletPrivacy, privacyPreferenceFromEnv } from "../../../lib/wallet-privacy.js";
 import { enableLeafVault } from "./leaf-vault.js";
+import { sparkWalletOptions } from "../../../lib/wallet-options.js";
 
 // Best-effort BOLT11 amount in sats (undefined for amountless invoices or on a
 // decode error) — used to size the amount-aware Lightning fee cap. Delegates to
@@ -314,7 +315,7 @@ export class SparkAgent {
     }
     const { wallet, mnemonic: generated } = await SparkWallet.initialize({
       mnemonicOrSeed: mnemonic,
-      options: { network, optimizationOptions: { auto: optimizeLeaves } },
+      options: sparkWalletOptions(network, { optimizationOptions: { auto: optimizeLeaves } }),
     });
     const agent = new SparkAgent(wallet, network);
     // Surface a broken recovery backup LOUDLY at startup instead of the silent

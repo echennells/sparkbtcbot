@@ -10,6 +10,7 @@ import "dotenv/config";
 import { pathToFileURL } from "node:url";
 import { realpathSync } from "node:fs";
 import { snapshotLeafVault, verifyVault, reportedBalanceSats, judgeMissingVault } from "./leaf-vault.js";
+import { sparkWalletOptions } from "../../../lib/wallet-options.js";
 
 export async function main() {
   // Arg gate FIRST — the no-arg default takes a snapshot (a side effect), so an
@@ -53,7 +54,7 @@ export async function main() {
     const { wallet } = await SparkWallet.initialize({
       mnemonicOrSeed: await loadMnemonicFromEnv(),
       accountNumber,
-      options: { network: process.env.SPARK_NETWORK || "MAINNET" },
+      options: sparkWalletOptions(process.env.SPARK_NETWORK || "MAINNET"),
     });
     return wallet;
   };
