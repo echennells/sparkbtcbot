@@ -1,0 +1,1 @@
+{"name":"flashnet-try","private":true,"type":"module","dependencies":{"@buildonspark/issuer-sdk":"0.2.0","@buildonspark/spark-sdk":"0.13.0","@flashnet/sdk":"0.5.10"}}

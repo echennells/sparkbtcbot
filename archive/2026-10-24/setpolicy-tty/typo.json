@@ -1,0 +1,2 @@
+{ "dailyBudgetSats": 50000,
+  "tokenLimits": { "btkn1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqst3p42w": { "maxPerTx": "1000", "dailyBudget": "5000" } } }

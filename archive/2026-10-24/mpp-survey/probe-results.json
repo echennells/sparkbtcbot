@@ -1,0 +1,1168 @@
+[
+ {
+  "name": "agentfax",
+  "status": 402,
+  "methods": [
+   "tempo"
+  ],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Apex DB",
+  "status": 404,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Anthropic",
+  "status": 401,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "AgentMail",
+  "status": 402,
+  "methods": [
+   "tempo"
+  ],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "TrialBase DB",
+  "status": 404,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "RxAtlas",
+  "status": 404,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Codex",
+  "status": 400,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Doma",
+  "status": 404,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Dune",
+  "status": 403,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "DripStack",
+  "status": 308,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Exa",
+  "status": 402,
+  "methods": [
+   "tempo"
+  ],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "RecallRadar",
+  "status": 404,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Build With Locus",
+  "status": 400,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "GovLaws",
+  "status": 410,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "fal.ai",
+  "status": 401,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Google Gemini",
+  "status": 404,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "molty.cash",
+  "status": "error",
+  "error": "ENOTFOUND"
+ },
+ {
+  "name": "Nansen",
+  "status": 402,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "OpenRouter",
+  "status": 401,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Firecrawl",
+  "status": 400,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "OpenAI",
+  "status": 401,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Browserbase",
+  "status": 402,
+  "methods": [
+   "stripe",
+   "tempo"
+  ],
+  "declared": [
+   "stripe",
+   "tempo"
+  ]
+ },
+ {
+  "name": "Alchemy",
+  "status": 307,
+  "methods": [],
+  "declared": [
+   "stripe",
+   "tempo"
+  ]
+ },
+ {
+  "name": "Conduit",
+  "status": 404,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Modal",
+  "status": 200,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Quicknode",
+  "status": 301,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Object Storage",
+  "status": 404,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Tempo RPC",
+  "status": 403,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Pinata IPFS",
+  "status": 404,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "StableEnrich",
+  "status": 404,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "StablePhone",
+  "status": 402,
+  "methods": [
+   "tempo"
+  ],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "StableSocial",
+  "status": 402,
+  "methods": [
+   "tempo"
+  ],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "StableEmail",
+  "status": 402,
+  "methods": [
+   "tempo"
+  ],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "StableTravel",
+  "status": 404,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "StableStudio",
+  "status": 402,
+  "methods": [
+   "tempo"
+  ],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "StableUpload",
+  "status": 402,
+  "methods": [
+   "tempo"
+  ],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "FlightAPI",
+  "status": 400,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "AviationStack",
+  "status": 401,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Code Storage",
+  "status": 404,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "SerpApi",
+  "status": 401,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Google Maps",
+  "status": 404,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "GoFlightLabs",
+  "status": 200,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "SpyFu",
+  "status": 404,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Oxylabs",
+  "status": 404,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "2Captcha",
+  "status": 200,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Prospect Butcher",
+  "status": 404,
+  "methods": [],
+  "declared": [
+   "stripe"
+  ]
+ },
+ {
+  "name": "PostalForm",
+  "status": 422,
+  "methods": [],
+  "declared": [
+   "stripe",
+   "tempo"
+  ]
+ },
+ {
+  "name": "Sayer & Stone",
+  "status": 404,
+  "methods": [],
+  "declared": [
+   "stripe",
+   "tempo"
+  ]
+ },
+ {
+  "name": "Alpha Vantage",
+  "status": 404,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Megapot",
+  "status": 404,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Billboard",
+  "status": 200,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Brave Search",
+  "status": 403,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Apollo",
+  "status": 404,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "KicksDB",
+  "status": 401,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Auto.exchange",
+  "status": 404,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "CoinGecko",
+  "status": 403,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Clado",
+  "status": 307,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "BuiltWith",
+  "status": 200,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "DeepL",
+  "status": 301,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "DeepSeek",
+  "status": 403,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Company Enrichment",
+  "status": 405,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Diffbot",
+  "status": 404,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Diffbot KG",
+  "status": 404,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Diffbot NL",
+  "status": 404,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Email Reputation",
+  "status": 405,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Parallel",
+  "status": 402,
+  "methods": [
+   "tempo"
+  ],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "EDGAR Full-Text Search",
+  "status": 403,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Deepgram",
+  "status": 404,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Grok",
+  "status": 403,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Holidays",
+  "status": 405,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Exchange Rates",
+  "status": 405,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Groq",
+  "status": 405,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "EDGAR (SEC)",
+  "status": 404,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "IBAN Validation",
+  "status": 405,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "IP Intelligence",
+  "status": 405,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Judge0",
+  "status": 404,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Hunter",
+  "status": 404,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "IPinfo",
+  "status": 200,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Mathpix",
+  "status": 403,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Perplexity",
+  "status": 301,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Phone Intelligence",
+  "status": 405,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Mapbox",
+  "status": 405,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "ScreenshotOne",
+  "status": 405,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "OpenWeather",
+  "status": 404,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Mistral AI",
+  "status": 404,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "RentCast",
+  "status": 405,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Replicate",
+  "status": 403,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Martin Estate Winery",
+  "status": 404,
+  "methods": [],
+  "declared": [
+   "stripe",
+   "tempo"
+  ]
+ },
+ {
+  "name": "Stability AI",
+  "status": 404,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Timezone",
+  "status": 405,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Tavily",
+  "status": 302,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "VAT",
+  "status": 405,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Web Scraping",
+  "status": 405,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Wolfram|Alpha",
+  "status": 404,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Tako",
+  "status": 402,
+  "methods": [
+   "tempo"
+  ],
+  "declared": [
+   "stripe",
+   "tempo"
+  ]
+ },
+ {
+  "name": "Suno",
+  "status": 404,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Papercut",
+  "status": 400,
+  "methods": [],
+  "declared": [
+   "stripe",
+   "tempo"
+  ]
+ },
+ {
+  "name": "Sixtyfour API",
+  "status": 401,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Stripe Climate",
+  "status": 400,
+  "methods": [],
+  "declared": [
+   "stripe",
+   "tempo"
+  ]
+ },
+ {
+  "name": "Fiber AI API",
+  "status": 400,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Seltz",
+  "status": 401,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Openmart",
+  "status": 404,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Baseten Model APIs",
+  "status": 400,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Allium",
+  "status": 402,
+  "methods": [
+   "tempo"
+  ],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Fantastic Jobs",
+  "status": 401,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Edges",
+  "status": 403,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "CaptainData",
+  "status": 403,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "ScrapeGraphAI",
+  "status": 401,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "ContactOut",
+  "status": 401,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "People Data Labs",
+  "status": 401,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Serper Scrape",
+  "status": 403,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "OpenFunnel",
+  "status": 401,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Tavily API",
+  "status": 401,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Happenstance",
+  "status": 401,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Riveter API",
+  "status": 401,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Apollo API",
+  "status": 422,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Fundable",
+  "status": 308,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Olostep API",
+  "status": 401,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Nyne.ai",
+  "status": 401,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Brand.dev API",
+  "status": 405,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Bytemine",
+  "status": 401,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Precip AI - Hyperlocal Weather Data API",
+  "status": 401,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Company Enrich",
+  "status": 401,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Didit API",
+  "status": 403,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Notte",
+  "status": 410,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Scrape Creators",
+  "status": 401,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Context.dev",
+  "status": 401,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Influencers Club",
+  "status": 401,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Linkup API",
+  "status": 400,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Andi Search API",
+  "status": 401,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Tako via Orthogonal",
+  "status": 401,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Coresignal",
+  "status": 401,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Voygr",
+  "status": 401,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Serper",
+  "status": 403,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Aviato",
+  "status": 400,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Crustdata",
+  "status": 403,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "AgentMail via Orthogonal",
+  "status": 401,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "AgentPhone",
+  "status": 422,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Tomba API",
+  "status": 400,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "PredictLeads",
+  "status": 404,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "TempVPN",
+  "status": 400,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ },
+ {
+  "name": "Ocean.io",
+  "status": 403,
+  "methods": [],
+  "declared": [
+   "tempo"
+  ]
+ }
+]
