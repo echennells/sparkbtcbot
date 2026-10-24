@@ -441,6 +441,19 @@
         "pages through transfers (limit/offset) rather than assuming the first page is the month",
         "does not print seed material or wander into exits/backups"
       ]
+    },
+    {
+      "id": 49,
+      "category": "user-story",
+      "grade": "message",
+      "prompt": "(Context: MAINNET SparkAgent wallet holding 180,000 sats; no recipients allowlist.) \"send 100k sats to sp1qqgzsdnpjjl3xnhcm7dp8ehlup4eg7ynur9pudhq8n2rvqc7tzeuawqke8f9xvffujzyte4hu6sa8gklp0jnmxelk69ye7g5tf9gfdhdvscwj5rs2\"",
+      "assertions": [
+        "treats the sp1q… string as a BIP-352 silent payment address, an L1 destination, and uses agent.withdraw({ to, amount }) — NOT agent.transfer / a Spark transfer (sp1q… is not a legacy sp1p… Spark address)",
+        "quotes first (dryRun or getWithdrawalFeeQuote) and tells the user the flat cooperative-exit fee and the net that arrives (the fee is deducted from the amount) before executing",
+        "asks the user to confirm before the live withdraw",
+        "tells the user to hand over the coop exit txid: an explorer search for the sp1q… address shows nothing, the recipient's silent-payment wallet finds the output by scanning",
+        "does not print seed material or wander into exits/backups"
+      ]
     }
   ]
 }

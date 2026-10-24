@@ -177,6 +177,28 @@ The total fee is **flat with respect to amount**: `userFee` (operator's fee — 
 
 Unilateral exit (without operator cooperation) is also possible as a safety mechanism — see `references/unilateral-exit.md` — but cooperative exit is the standard path. **Discourage withdrawals under 25,000 sats** and batch small balances into one larger exit. Third-party swap routes (Boltz) are no longer a dependable alternative — Boltz disabled all swaps indefinitely in August 2026.
 
+### Silent payment addresses (spark-sdk ≥ 0.14)
+
+`withdraw` and `getWithdrawalFeeQuote` also accept a version 0 BIP-352 silent payment address as the destination: `sp1q…` on MAINNET, `tsp1q…` on testnet/signet, `sprt1q…` on REGTEST. It is the same call, the same quote, and the same flat fee. Through the wrapper, nothing changes:
+
+```javascript
+const preview = await agent.withdraw({ to: "sp1q…", amount: 50_000, dryRun: true }); // fee guard applies as usual
+const result = await agent.withdraw({ to: "sp1q…", amount: 50_000 });
+console.log(result.coopExitTxid); // hand this to the recipient (see below)
+```
+
+What the SDK checks: before it signs anything, it verifies the SSP's proof that the exit transaction's output 0 pays the address for at least `amount − fee`. A mismatch, or an address for another network, fails the withdrawal before any leaf moves.
+
+What to know:
+
+- **The address does not appear on chain.** The output is a taproot output derived from the address and the exit transaction's inputs. An explorer search for the `sp1q…` string finds nothing. Give the recipient `result.coopExitTxid`; their silent-payment wallet finds the output by scanning. Don't tell a user the withdrawal "isn't showing" because the address has no history.
+- **The recipient's wallet must support receiving silent payments.** Only such a wallet produces these addresses, so this mostly comes up when a user pastes one.
+- **`sp1…` is also the legacy Spark address prefix.** `sp1q…` / `sprt1q…` (a `q` right after the `1`) is a silent payment address, an L1 destination for `withdraw`. `sp1p…` is a legacy Spark address, for `transfer`. Don't route by prefix alone. A Spark `transfer` to a silent payment address fails before anything moves, but its **`dryRun` preview does not check the address** and looks fine.
+- **Allowlist entries match exactly.** Put the whole address on one line of `~/.spark/recipients.allow`. These addresses are long (116+ characters).
+- **Not supported for `refundStaticDeposit()` or `recoverWatchtowerExitedLeaf()`.** Both throw an explicit unsupported-operation error; use a regular address there.
+
+Tested on REGTEST through `SparkAgent.withdraw` (`tests/integration/funded/silent-payment-withdraw.test.js`). The exit's output 0 carried exactly `amount − quoted fee`, and an independent BIP-352 scan, checked against the BIP's test vectors, matched it to the receiver's keys and no others.
+
 ## Cleanup
 
 ```javascript

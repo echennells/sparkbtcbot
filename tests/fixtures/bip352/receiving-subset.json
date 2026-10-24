@@ -1,0 +1,411 @@
+{
+ "source": "https://github.com/bitcoin/bips/blob/master/bip-0352/send_and_receive_test_vectors.json (BSD-2-Clause), fetched 2026-10-24",
+ "note": "Receiving cases with no labels whose inputs are P2WPKH, or P2PKH with a compressed key. Generated; do not edit by hand.",
+ "addresses": [
+  {
+   "comment": "Simple send: two inputs",
+   "scan": "0f694e068028a717f8af6b9411f9a133dd3565258714cc226594b34db90c1f2c",
+   "spend": "9d6ad855ce3417ef84e836892e5a56392bfba05fa5d97ccea30e266f540e08b3",
+   "address": "sp1qqgste7k9hx0qftg6qmwlkqtwuy6cycyavzmzj85c6qdfhjdpdjtdgqjuexzk6murw56suy3e0rd2cgqvycxttddwsvgxe2usfpxumr70xc9pkqwv"
+  },
+  {
+   "comment": "Simple send: two inputs, order reversed",
+   "scan": "0f694e068028a717f8af6b9411f9a133dd3565258714cc226594b34db90c1f2c",
+   "spend": "9d6ad855ce3417ef84e836892e5a56392bfba05fa5d97ccea30e266f540e08b3",
+   "address": "sp1qqgste7k9hx0qftg6qmwlkqtwuy6cycyavzmzj85c6qdfhjdpdjtdgqjuexzk6murw56suy3e0rd2cgqvycxttddwsvgxe2usfpxumr70xc9pkqwv"
+  },
+  {
+   "comment": "Simple send: two inputs from the same transaction",
+   "scan": "0f694e068028a717f8af6b9411f9a133dd3565258714cc226594b34db90c1f2c",
+   "spend": "9d6ad855ce3417ef84e836892e5a56392bfba05fa5d97ccea30e266f540e08b3",
+   "address": "sp1qqgste7k9hx0qftg6qmwlkqtwuy6cycyavzmzj85c6qdfhjdpdjtdgqjuexzk6murw56suy3e0rd2cgqvycxttddwsvgxe2usfpxumr70xc9pkqwv"
+  },
+  {
+   "comment": "Simple send: two inputs from the same transaction, order reversed",
+   "scan": "0f694e068028a717f8af6b9411f9a133dd3565258714cc226594b34db90c1f2c",
+   "spend": "9d6ad855ce3417ef84e836892e5a56392bfba05fa5d97ccea30e266f540e08b3",
+   "address": "sp1qqgste7k9hx0qftg6qmwlkqtwuy6cycyavzmzj85c6qdfhjdpdjtdgqjuexzk6murw56suy3e0rd2cgqvycxttddwsvgxe2usfpxumr70xc9pkqwv"
+  },
+  {
+   "comment": "Outpoint ordering byte-lexicographically vs. vout-integer",
+   "scan": "0f694e068028a717f8af6b9411f9a133dd3565258714cc226594b34db90c1f2c",
+   "spend": "9d6ad855ce3417ef84e836892e5a56392bfba05fa5d97ccea30e266f540e08b3",
+   "address": "sp1qqgste7k9hx0qftg6qmwlkqtwuy6cycyavzmzj85c6qdfhjdpdjtdgqjuexzk6murw56suy3e0rd2cgqvycxttddwsvgxe2usfpxumr70xc9pkqwv"
+  },
+  {
+   "comment": "Single recipient: multiple UTXOs from the same public key",
+   "scan": "0f694e068028a717f8af6b9411f9a133dd3565258714cc226594b34db90c1f2c",
+   "spend": "9d6ad855ce3417ef84e836892e5a56392bfba05fa5d97ccea30e266f540e08b3",
+   "address": "sp1qqgste7k9hx0qftg6qmwlkqtwuy6cycyavzmzj85c6qdfhjdpdjtdgqjuexzk6murw56suy3e0rd2cgqvycxttddwsvgxe2usfpxumr70xc9pkqwv"
+  },
+  {
+   "comment": "Single recipient: taproot only inputs with even y-values",
+   "scan": "0f694e068028a717f8af6b9411f9a133dd3565258714cc226594b34db90c1f2c",
+   "spend": "9d6ad855ce3417ef84e836892e5a56392bfba05fa5d97ccea30e266f540e08b3",
+   "address": "sp1qqgste7k9hx0qftg6qmwlkqtwuy6cycyavzmzj85c6qdfhjdpdjtdgqjuexzk6murw56suy3e0rd2cgqvycxttddwsvgxe2usfpxumr70xc9pkqwv"
+  },
+  {
+   "comment": "Single recipient: taproot only with mixed even/odd y-values",
+   "scan": "0f694e068028a717f8af6b9411f9a133dd3565258714cc226594b34db90c1f2c",
+   "spend": "9d6ad855ce3417ef84e836892e5a56392bfba05fa5d97ccea30e266f540e08b3",
+   "address": "sp1qqgste7k9hx0qftg6qmwlkqtwuy6cycyavzmzj85c6qdfhjdpdjtdgqjuexzk6murw56suy3e0rd2cgqvycxttddwsvgxe2usfpxumr70xc9pkqwv"
+  },
+  {
+   "comment": "Single recipient: taproot input with even y-value and non-taproot input",
+   "scan": "0f694e068028a717f8af6b9411f9a133dd3565258714cc226594b34db90c1f2c",
+   "spend": "9d6ad855ce3417ef84e836892e5a56392bfba05fa5d97ccea30e266f540e08b3",
+   "address": "sp1qqgste7k9hx0qftg6qmwlkqtwuy6cycyavzmzj85c6qdfhjdpdjtdgqjuexzk6murw56suy3e0rd2cgqvycxttddwsvgxe2usfpxumr70xc9pkqwv"
+  },
+  {
+   "comment": "Single recipient: taproot input with odd y-value and non-taproot input",
+   "scan": "0f694e068028a717f8af6b9411f9a133dd3565258714cc226594b34db90c1f2c",
+   "spend": "9d6ad855ce3417ef84e836892e5a56392bfba05fa5d97ccea30e266f540e08b3",
+   "address": "sp1qqgste7k9hx0qftg6qmwlkqtwuy6cycyavzmzj85c6qdfhjdpdjtdgqjuexzk6murw56suy3e0rd2cgqvycxttddwsvgxe2usfpxumr70xc9pkqwv"
+  },
+  {
+   "comment": "Multiple outputs: multiple outputs, same recipient",
+   "scan": "0f694e068028a717f8af6b9411f9a133dd3565258714cc226594b34db90c1f2c",
+   "spend": "9d6ad855ce3417ef84e836892e5a56392bfba05fa5d97ccea30e266f540e08b3",
+   "address": "sp1qqgste7k9hx0qftg6qmwlkqtwuy6cycyavzmzj85c6qdfhjdpdjtdgqjuexzk6murw56suy3e0rd2cgqvycxttddwsvgxe2usfpxumr70xc9pkqwv"
+  },
+  {
+   "comment": "Multiple outputs: multiple outputs, multiple recipients",
+   "scan": "060b751d7892149006ed7b98606955a29fe284a1e900070c0971f5fb93dbf422",
+   "spend": "9902c3c56e84002a7cd410113a9ab21d142be7f53cf5200720bb01314c5eb920",
+   "address": "sp1qqgrz6j0lcqnc04vxccydl0kpsj4frfje0ktmgcl2t346hkw30226xqupawdf48k8882j0strrvcmgg2kdawz53a54dd376ngdhak364hzcmynqtn"
+  },
+  {
+   "comment": "Single recipient: use silent payments for sender change",
+   "scan": "0f694e068028a717f8af6b9411f9a133dd3565258714cc226594b34db90c1f2c",
+   "spend": "9d6ad855ce3417ef84e836892e5a56392bfba05fa5d97ccea30e266f540e08b3",
+   "address": "sp1qqgste7k9hx0qftg6qmwlkqtwuy6cycyavzmzj85c6qdfhjdpdjtdgqjuexzk6murw56suy3e0rd2cgqvycxttddwsvgxe2usfpxumr70xc9pkqwv"
+  },
+  {
+   "comment": "Single recipient: taproot input with NUMS point",
+   "scan": "0f694e068028a717f8af6b9411f9a133dd3565258714cc226594b34db90c1f2c",
+   "spend": "9d6ad855ce3417ef84e836892e5a56392bfba05fa5d97ccea30e266f540e08b3",
+   "address": "sp1qqgste7k9hx0qftg6qmwlkqtwuy6cycyavzmzj85c6qdfhjdpdjtdgqjuexzk6murw56suy3e0rd2cgqvycxttddwsvgxe2usfpxumr70xc9pkqwv"
+  },
+  {
+   "comment": "Pubkey extraction from malleated p2pkh",
+   "scan": "0f694e068028a717f8af6b9411f9a133dd3565258714cc226594b34db90c1f2c",
+   "spend": "9d6ad855ce3417ef84e836892e5a56392bfba05fa5d97ccea30e266f540e08b3",
+   "address": "sp1qqgste7k9hx0qftg6qmwlkqtwuy6cycyavzmzj85c6qdfhjdpdjtdgqjuexzk6murw56suy3e0rd2cgqvycxttddwsvgxe2usfpxumr70xc9pkqwv"
+  },
+  {
+   "comment": "P2PKH and P2WPKH Uncompressed Keys are skipped",
+   "scan": "0f694e068028a717f8af6b9411f9a133dd3565258714cc226594b34db90c1f2c",
+   "spend": "9d6ad855ce3417ef84e836892e5a56392bfba05fa5d97ccea30e266f540e08b3",
+   "address": "sp1qqgste7k9hx0qftg6qmwlkqtwuy6cycyavzmzj85c6qdfhjdpdjtdgqjuexzk6murw56suy3e0rd2cgqvycxttddwsvgxe2usfpxumr70xc9pkqwv"
+  },
+  {
+   "comment": "Skip invalid P2SH inputs",
+   "scan": "0f694e068028a717f8af6b9411f9a133dd3565258714cc226594b34db90c1f2c",
+   "spend": "9d6ad855ce3417ef84e836892e5a56392bfba05fa5d97ccea30e266f540e08b3",
+   "address": "sp1qqgste7k9hx0qftg6qmwlkqtwuy6cycyavzmzj85c6qdfhjdpdjtdgqjuexzk6murw56suy3e0rd2cgqvycxttddwsvgxe2usfpxumr70xc9pkqwv"
+  },
+  {
+   "comment": "Recipient ignores unrelated outputs",
+   "scan": "0f694e068028a717f8af6b9411f9a133dd3565258714cc226594b34db90c1f2c",
+   "spend": "9d6ad855ce3417ef84e836892e5a56392bfba05fa5d97ccea30e266f540e08b3",
+   "address": "sp1qqgste7k9hx0qftg6qmwlkqtwuy6cycyavzmzj85c6qdfhjdpdjtdgqjuexzk6murw56suy3e0rd2cgqvycxttddwsvgxe2usfpxumr70xc9pkqwv"
+  },
+  {
+   "comment": "No valid inputs, sender generates no outputs",
+   "scan": "0f694e068028a717f8af6b9411f9a133dd3565258714cc226594b34db90c1f2c",
+   "spend": "9d6ad855ce3417ef84e836892e5a56392bfba05fa5d97ccea30e266f540e08b3",
+   "address": "sp1qqgste7k9hx0qftg6qmwlkqtwuy6cycyavzmzj85c6qdfhjdpdjtdgqjuexzk6murw56suy3e0rd2cgqvycxttddwsvgxe2usfpxumr70xc9pkqwv"
+  },
+  {
+   "comment": "Input keys sum up to zero / point at infinity: sending fails, receiver skips tx",
+   "scan": "0000000000000000000000000000000000000000000000000000000000000002",
+   "spend": "0000000000000000000000000000000000000000000000000000000000000001",
+   "address": "sp1qqtrqglu5g8kh6mfsg4qxa9wq0nv9cauwfwxw70984wkqnw2uwz0w2qnehen8a7wuhwk9tgrzjh8gwzc8q2dlekedec5djk0js9d3d7qhnq6lqj3s"
+  },
+  {
+   "comment": "Input keys intermediate sum is zero but final sum is non-zero",
+   "scan": "0f694e068028a717f8af6b9411f9a133dd3565258714cc226594b34db90c1f2c",
+   "spend": "9d6ad855ce3417ef84e836892e5a56392bfba05fa5d97ccea30e266f540e08b3",
+   "address": "sp1qqgste7k9hx0qftg6qmwlkqtwuy6cycyavzmzj85c6qdfhjdpdjtdgqjuexzk6murw56suy3e0rd2cgqvycxttddwsvgxe2usfpxumr70xc9pkqwv"
+  }
+ ],
+ "scans": [
+  {
+   "comment": "Simple send: two inputs",
+   "scan": "0f694e068028a717f8af6b9411f9a133dd3565258714cc226594b34db90c1f2c",
+   "spend": "9d6ad855ce3417ef84e836892e5a56392bfba05fa5d97ccea30e266f540e08b3",
+   "inputs": [
+    {
+     "txid": "f4184fc596403b9d638783cf57adfe4c75c605f6356fbc91338530e9831e9e16",
+     "vout": 0,
+     "pubkey": "025a1e61f898173040e20616d43e9f496fba90338a39faa1ed98fcbaeee4dd9be5"
+    },
+    {
+     "txid": "a1075db55d416d3ca199f55b6084e2115b9345e16c5cf302fc80e9d5fbf5d48d",
+     "vout": 0,
+     "pubkey": "03bd85685d03d111699b15d046319febe77f8de5286e9e512703cdee1bf3be3792"
+    }
+   ],
+   "outputs": [
+    "3e9fce73d4e77a4809908e3c3a2e54ee147b9312dc5044a193d1fc85de46e3c1"
+   ],
+   "expected": [
+    {
+     "pub_key": "3e9fce73d4e77a4809908e3c3a2e54ee147b9312dc5044a193d1fc85de46e3c1",
+     "priv_key_tweak": "f438b40179a3c4262de12986c0e6cce0634007cdc79c1dcd3e20b9ebc2e7eef6"
+    }
+   ]
+  },
+  {
+   "comment": "Simple send: two inputs, order reversed",
+   "scan": "0f694e068028a717f8af6b9411f9a133dd3565258714cc226594b34db90c1f2c",
+   "spend": "9d6ad855ce3417ef84e836892e5a56392bfba05fa5d97ccea30e266f540e08b3",
+   "inputs": [
+    {
+     "txid": "a1075db55d416d3ca199f55b6084e2115b9345e16c5cf302fc80e9d5fbf5d48d",
+     "vout": 0,
+     "pubkey": "025a1e61f898173040e20616d43e9f496fba90338a39faa1ed98fcbaeee4dd9be5"
+    },
+    {
+     "txid": "f4184fc596403b9d638783cf57adfe4c75c605f6356fbc91338530e9831e9e16",
+     "vout": 0,
+     "pubkey": "03bd85685d03d111699b15d046319febe77f8de5286e9e512703cdee1bf3be3792"
+    }
+   ],
+   "outputs": [
+    "3e9fce73d4e77a4809908e3c3a2e54ee147b9312dc5044a193d1fc85de46e3c1"
+   ],
+   "expected": [
+    {
+     "pub_key": "3e9fce73d4e77a4809908e3c3a2e54ee147b9312dc5044a193d1fc85de46e3c1",
+     "priv_key_tweak": "f438b40179a3c4262de12986c0e6cce0634007cdc79c1dcd3e20b9ebc2e7eef6"
+    }
+   ]
+  },
+  {
+   "comment": "Simple send: two inputs from the same transaction",
+   "scan": "0f694e068028a717f8af6b9411f9a133dd3565258714cc226594b34db90c1f2c",
+   "spend": "9d6ad855ce3417ef84e836892e5a56392bfba05fa5d97ccea30e266f540e08b3",
+   "inputs": [
+    {
+     "txid": "f4184fc596403b9d638783cf57adfe4c75c605f6356fbc91338530e9831e9e16",
+     "vout": 3,
+     "pubkey": "025a1e61f898173040e20616d43e9f496fba90338a39faa1ed98fcbaeee4dd9be5"
+    },
+    {
+     "txid": "f4184fc596403b9d638783cf57adfe4c75c605f6356fbc91338530e9831e9e16",
+     "vout": 7,
+     "pubkey": "03bd85685d03d111699b15d046319febe77f8de5286e9e512703cdee1bf3be3792"
+    }
+   ],
+   "outputs": [
+    "79e71baa2ba3fc66396de3a04f168c7bf24d6870ec88ca877754790c1db357b6"
+   ],
+   "expected": [
+    {
+     "pub_key": "79e71baa2ba3fc66396de3a04f168c7bf24d6870ec88ca877754790c1db357b6",
+     "priv_key_tweak": "4851455bfbe1ab4f80156570aa45063201aa5c9e1b1dcd29f0f8c33d10bf77ae"
+    }
+   ]
+  },
+  {
+   "comment": "Simple send: two inputs from the same transaction, order reversed",
+   "scan": "0f694e068028a717f8af6b9411f9a133dd3565258714cc226594b34db90c1f2c",
+   "spend": "9d6ad855ce3417ef84e836892e5a56392bfba05fa5d97ccea30e266f540e08b3",
+   "inputs": [
+    {
+     "txid": "a1075db55d416d3ca199f55b6084e2115b9345e16c5cf302fc80e9d5fbf5d48d",
+     "vout": 7,
+     "pubkey": "025a1e61f898173040e20616d43e9f496fba90338a39faa1ed98fcbaeee4dd9be5"
+    },
+    {
+     "txid": "a1075db55d416d3ca199f55b6084e2115b9345e16c5cf302fc80e9d5fbf5d48d",
+     "vout": 3,
+     "pubkey": "03bd85685d03d111699b15d046319febe77f8de5286e9e512703cdee1bf3be3792"
+    }
+   ],
+   "outputs": [
+    "f4c2da807f89cb1501f1a77322a895acfb93c28e08ed2724d2beb8e44539ba38"
+   ],
+   "expected": [
+    {
+     "pub_key": "f4c2da807f89cb1501f1a77322a895acfb93c28e08ed2724d2beb8e44539ba38",
+     "priv_key_tweak": "ab0c9b87181bf527879f48db9f14a02233619b986f8e8f2d5d408ce68a709f51"
+    }
+   ]
+  },
+  {
+   "comment": "Outpoint ordering byte-lexicographically vs. vout-integer",
+   "scan": "0f694e068028a717f8af6b9411f9a133dd3565258714cc226594b34db90c1f2c",
+   "spend": "9d6ad855ce3417ef84e836892e5a56392bfba05fa5d97ccea30e266f540e08b3",
+   "inputs": [
+    {
+     "txid": "f4184fc596403b9d638783cf57adfe4c75c605f6356fbc91338530e9831e9e16",
+     "vout": 1,
+     "pubkey": "025a1e61f898173040e20616d43e9f496fba90338a39faa1ed98fcbaeee4dd9be5"
+    },
+    {
+     "txid": "f4184fc596403b9d638783cf57adfe4c75c605f6356fbc91338530e9831e9e16",
+     "vout": 256,
+     "pubkey": "03bd85685d03d111699b15d046319febe77f8de5286e9e512703cdee1bf3be3792"
+    }
+   ],
+   "outputs": [
+    "a85ef8701394b517a4b35217c4bd37ac01ebeed4b008f8d0879f9e09ba95319c"
+   ],
+   "expected": [
+    {
+     "pub_key": "a85ef8701394b517a4b35217c4bd37ac01ebeed4b008f8d0879f9e09ba95319c",
+     "priv_key_tweak": "c8ac0292997b5bca98b3ebd99a57e253071137550f270452cd3df8a3e2266d36"
+    }
+   ]
+  },
+  {
+   "comment": "Single recipient: multiple UTXOs from the same public key",
+   "scan": "0f694e068028a717f8af6b9411f9a133dd3565258714cc226594b34db90c1f2c",
+   "spend": "9d6ad855ce3417ef84e836892e5a56392bfba05fa5d97ccea30e266f540e08b3",
+   "inputs": [
+    {
+     "txid": "f4184fc596403b9d638783cf57adfe4c75c605f6356fbc91338530e9831e9e16",
+     "vout": 0,
+     "pubkey": "025a1e61f898173040e20616d43e9f496fba90338a39faa1ed98fcbaeee4dd9be5"
+    },
+    {
+     "txid": "a1075db55d416d3ca199f55b6084e2115b9345e16c5cf302fc80e9d5fbf5d48d",
+     "vout": 0,
+     "pubkey": "025a1e61f898173040e20616d43e9f496fba90338a39faa1ed98fcbaeee4dd9be5"
+    }
+   ],
+   "outputs": [
+    "548ae55c8eec1e736e8d3e520f011f1f42a56d166116ad210b3937599f87f566"
+   ],
+   "expected": [
+    {
+     "pub_key": "548ae55c8eec1e736e8d3e520f011f1f42a56d166116ad210b3937599f87f566",
+     "priv_key_tweak": "f032695e2636619efa523fffaa9ef93c8802299181fd0461913c1b8daf9784cd"
+    }
+   ]
+  },
+  {
+   "comment": "Multiple outputs: multiple outputs, same recipient",
+   "scan": "0f694e068028a717f8af6b9411f9a133dd3565258714cc226594b34db90c1f2c",
+   "spend": "9d6ad855ce3417ef84e836892e5a56392bfba05fa5d97ccea30e266f540e08b3",
+   "inputs": [
+    {
+     "txid": "f4184fc596403b9d638783cf57adfe4c75c605f6356fbc91338530e9831e9e16",
+     "vout": 0,
+     "pubkey": "025a1e61f898173040e20616d43e9f496fba90338a39faa1ed98fcbaeee4dd9be5"
+    },
+    {
+     "txid": "a1075db55d416d3ca199f55b6084e2115b9345e16c5cf302fc80e9d5fbf5d48d",
+     "vout": 0,
+     "pubkey": "03782eeb913431ca6e9b8c2fd80a5f72ed2024ef72a3c6fb10263c379937323338"
+    }
+   ],
+   "outputs": [
+    "e976a58fbd38aeb4e6093d4df02e9c1de0c4513ae0c588cef68cda5b2f8834ca",
+    "f207162b1a7abc51c42017bef055e9ec1efc3d3567cb720357e2b84325db33ac"
+   ],
+   "expected": [
+    {
+     "pub_key": "e976a58fbd38aeb4e6093d4df02e9c1de0c4513ae0c588cef68cda5b2f8834ca",
+     "priv_key_tweak": "d97e442d110c0bdd31161a7bb6e7862e038d02a09b1484dfbb463f2e0f7c9230"
+    },
+    {
+     "pub_key": "f207162b1a7abc51c42017bef055e9ec1efc3d3567cb720357e2b84325db33ac",
+     "priv_key_tweak": "33ce085c3c11eaad13694aae3c20301a6c83382ec89a7cde96c6799e2f88805a"
+    }
+   ]
+  },
+  {
+   "comment": "Multiple outputs: multiple outputs, multiple recipients",
+   "scan": "060b751d7892149006ed7b98606955a29fe284a1e900070c0971f5fb93dbf422",
+   "spend": "9902c3c56e84002a7cd410113a9ab21d142be7f53cf5200720bb01314c5eb920",
+   "inputs": [
+    {
+     "txid": "f4184fc596403b9d638783cf57adfe4c75c605f6356fbc91338530e9831e9e16",
+     "vout": 0,
+     "pubkey": "025a1e61f898173040e20616d43e9f496fba90338a39faa1ed98fcbaeee4dd9be5"
+    },
+    {
+     "txid": "a1075db55d416d3ca199f55b6084e2115b9345e16c5cf302fc80e9d5fbf5d48d",
+     "vout": 0,
+     "pubkey": "03782eeb913431ca6e9b8c2fd80a5f72ed2024ef72a3c6fb10263c379937323338"
+    }
+   ],
+   "outputs": [
+    "2e847bb01d1b491da512ddd760b8509617ee38057003d6115d00ba562451323a",
+    "841792c33c9dc6193e76744134125d40add8f2f4a96475f28ba150be032d64e8",
+    "f207162b1a7abc51c42017bef055e9ec1efc3d3567cb720357e2b84325db33ac"
+   ],
+   "expected": [
+    {
+     "pub_key": "2e847bb01d1b491da512ddd760b8509617ee38057003d6115d00ba562451323a",
+     "priv_key_tweak": "72cd082cccb633bf85240a83494b32dc943a4d05647a6686d23ad4ca59c0ebe4"
+    },
+    {
+     "pub_key": "841792c33c9dc6193e76744134125d40add8f2f4a96475f28ba150be032d64e8",
+     "priv_key_tweak": "2f17ea873a0047fc01ba8010fef0969e76d0e4283f600d48f735098b1fee6eb9"
+    }
+   ]
+  },
+  {
+   "comment": "Single recipient: use silent payments for sender change",
+   "scan": "0f694e068028a717f8af6b9411f9a133dd3565258714cc226594b34db90c1f2c",
+   "spend": "9d6ad855ce3417ef84e836892e5a56392bfba05fa5d97ccea30e266f540e08b3",
+   "inputs": [
+    {
+     "txid": "f4184fc596403b9d638783cf57adfe4c75c605f6356fbc91338530e9831e9e16",
+     "vout": 0,
+     "pubkey": "025a1e61f898173040e20616d43e9f496fba90338a39faa1ed98fcbaeee4dd9be5"
+    },
+    {
+     "txid": "a1075db55d416d3ca199f55b6084e2115b9345e16c5cf302fc80e9d5fbf5d48d",
+     "vout": 0,
+     "pubkey": "03782eeb913431ca6e9b8c2fd80a5f72ed2024ef72a3c6fb10263c379937323338"
+    }
+   ],
+   "outputs": [
+    "be368e28979d950245d742891ae6064020ba548c1e2e65a639a8bb0675d95cff",
+    "f207162b1a7abc51c42017bef055e9ec1efc3d3567cb720357e2b84325db33ac"
+   ],
+   "expected": [
+    {
+     "pub_key": "f207162b1a7abc51c42017bef055e9ec1efc3d3567cb720357e2b84325db33ac",
+     "priv_key_tweak": "33ce085c3c11eaad13694aae3c20301a6c83382ec89a7cde96c6799e2f88805a"
+    }
+   ]
+  },
+  {
+   "comment": "Input keys intermediate sum is zero but final sum is non-zero",
+   "scan": "0f694e068028a717f8af6b9411f9a133dd3565258714cc226594b34db90c1f2c",
+   "spend": "9d6ad855ce3417ef84e836892e5a56392bfba05fa5d97ccea30e266f540e08b3",
+   "inputs": [
+    {
+     "txid": "3a286147b25e16ae80aff406f2673c6e565418c40f45c071245cdebc8a94174e",
+     "vout": 0,
+     "pubkey": "02557ef3e55b0a52489b4454c1169e06bdea43687a69c1f190eb50781644ab6975"
+    },
+    {
+     "txid": "3a286147b25e16ae80aff406f2673c6e565418c40f45c071245cdebc8a94174e",
+     "vout": 1,
+     "pubkey": "03557ef3e55b0a52489b4454c1169e06bdea43687a69c1f190eb50781644ab6975"
+    },
+    {
+     "txid": "3a286147b25e16ae80aff406f2673c6e565418c40f45c071245cdebc8a94174e",
+     "vout": 2,
+     "pubkey": "02557ef3e55b0a52489b4454c1169e06bdea43687a69c1f190eb50781644ab6975"
+    }
+   ],
+   "outputs": [
+    "7e88a7536c90770be4d2693a84ed03abe3fdcc5a29f96ec3433effec3b0c2194"
+   ],
+   "expected": [
+    {
+     "pub_key": "7e88a7536c90770be4d2693a84ed03abe3fdcc5a29f96ec3433effec3b0c2194",
+     "priv_key_tweak": "3d5b7a284108f93b9fe78f2c300d2ca9ef3b4e0cd0de673fc72990f2a4f417b9"
+    }
+   ]
+  }
+ ]
+}

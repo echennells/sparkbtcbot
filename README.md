@@ -34,7 +34,7 @@ Spark is a Bitcoin Layer 2 that lets you send and receive Bitcoin instantly with
 - **Lightning Invoices** — Create and pay BOLT11 invoices for Lightning compatibility
 - **Spark Invoices** — Native invoices payable in sats or BTKN tokens
 - **Token Operations** — Transfer BTKN/LRC20 tokens, batch transfers, token invoices
-- **Withdrawal** — Cooperative exit back to L1 Bitcoin with fee estimation
+- **Withdrawal** — Cooperative exit back to L1 Bitcoin with fee estimation, to a regular address or a BIP-352 silent payment address (`sp1q…`)
 - **Message Signing** — Prove identity via cryptographic signatures
 - **L402 Paywalls** — Pay-per-request APIs via Lightning. Preview costs, pay invoices, cache tokens.
 - **Merchant Purchases** — Buy real-world goods and services (gift cards via [Bitrefill](https://www.bitrefill.com), eSIMs/VPNs/burner numbers via [nadanada](https://nadanada.me), 10,500+ brands including flights and hotels via [Cryptorefills](https://www.cryptorefills.com)) over Lightning, governed by a shared payment policy: invoice-vs-quote verification, amount ceilings, confirm-before-buy, PII consent, bearer-secret handling. Live-validated with real purchases at all three.

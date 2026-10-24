@@ -361,3 +361,21 @@ keep the operating rule (probe before quoting) rather than the now-stale
 snapshot, and eval 14's SKU assertion de-hardcoded to reward probing over
 memorizing a namespace. Lesson for merchant docs generally: pin the RULE, date
 the SNAPSHOT — merchant-side facts have a half-life measured in days.
+
+## Eval 49 run (2026-10-24, silent payment withdrawal, subagents)
+
+Id 49, not 39: ids 39–48 are already taken on unmerged lines (local `main` and
+the parked `sdk-013`). The prompt is "send 100k sats to sp1q…" (a real v0
+mainnet address shape), the wallet context is inline, and nothing was executed.
+
+- **with-skill 5/5.** It read the `q` after `sp1` as a silent payment address,
+  routed it to `agent.withdraw`, not `transfer`, and said why: `sp1p…` is the
+  Spark one, and a transfer dry run would look fine. It previewed the flat
+  ~2,400-sat fee and the net the recipient gets (the fee is deducted), offered a
+  gross-up, and confirmed before sending. It promised the coop exit txid,
+  because an explorer search for the address shows nothing. No seed or exit lore.
+- **baseline 1/5.** It identified the address type correctly from the BIP-352
+  shape, then concluded Spark *can't* pay a silent payment address ("the
+  operators build that transaction from their own inputs"). That was true before
+  spark-sdk 0.14, and 0.14 does it with an SSP proof. So it refused and asked for
+  another destination. Only "no seed/exit lore" passes.

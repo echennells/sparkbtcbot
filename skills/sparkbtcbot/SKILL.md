@@ -233,7 +233,7 @@ Load only what's needed for the user's task. Each reference is a self-contained 
 |---|---|
 | `references/first-spend.md` | **The product path for a user who doesn't know Bitcoin**: "friend owes me $100, make something they can pay"; "I got paid — what is this / how do I spend it / cash out"; tips, split bills. Fiat-first invoice (live rate via `fetchBtcPrice`), then a country-aware gift card sized under the balance with `maxSpendableFace`. Load BEFORE answering any post-receive "what now" |
 | `references/architecture.md` | User asks how Spark works, weighs against Lightning/on-chain, or reasons about fees |
-| `references/wallet.md` | Sats operations: balance, deposits, transfers, list transfers, withdrawal |
+| `references/wallet.md` | Sats operations: balance, deposits, transfers, list transfers, withdrawal (incl. to `sp1q…` silent payment addresses) |
 | `references/lightning.md` | Lightning interop — BOLT11 invoices, payments, fee estimation; the raw-vs-wrapper `payLightningInvoice` shape trap |
 | `references/tokens.md` | BTKN/LRC20 token transfers and balances |
 | `references/spark-invoices.md` | Spark native invoice format (sats and tokens), `fulfillSparkInvoice` |
