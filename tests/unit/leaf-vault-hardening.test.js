@@ -11,6 +11,7 @@ import { atomicWriteJson, readVault } from "../../lib/leaf-vault.js";
 import { atomicWriteFile } from "../../lib/atomic-file.js";
 import { snapshotLeafVault, verifyVault, enableLeafVault, judgeMissingVault } from "../../skills/sparkbtcbot/scripts/leaf-vault.js";
 import { TreeNode } from "@buildonspark/spark-sdk/proto/spark";
+import { LEAF_TXS } from "../helpers/leaf-txs.js";
 
 const enc = (node) => Buffer.from(TreeNode.encode(TreeNode.fromPartial(node)).finish()).toString("hex");
 const uniq = (n) => join(tmpdir(), `${n}-${process.pid}-${Math.random().toString(16).slice(2)}`);
@@ -19,7 +20,7 @@ const exists = (p) => stat(p).then(() => true, () => false);
 
 // Real SDK getBalance shape (top-level `balance` = deprecated AVAILABLE alias).
 const mkBalance = (owned, available = owned) => ({ balance: available, satsBalance: { available, owned, incoming: 0n } });
-const leafObj = (id, value, extra = {}) => ({ id, status: "AVAILABLE", value, nodeTx: Uint8Array.from([1, 2, 3]), refundTx: Uint8Array.from([4, 5, 6]), ...extra });
+const leafObj = (id, value, extra = {}) => ({ id, status: "AVAILABLE", value, ...LEAF_TXS, ...extra });
 
 const mkWallet = ({ leaves = [], owned = 0n, available, identity } = {}) => {
   const ee = new EventEmitter();
@@ -121,7 +122,7 @@ describe("union rescue: a blocked shrink still persists the fresh leaves' exit m
     const p = uniq("lv-union") + ".json";
     try {
       // The prior leaf must be genuinely provable offline for the union to publish.
-      const provablePrior = { id: "leaf-locked", status: "AVAILABLE", nodeTx: Uint8Array.from([9]), refundTx: Uint8Array.from([8]) };
+      const provablePrior = { id: "leaf-locked", status: "AVAILABLE", ...LEAF_TXS };
       await atomicWriteJson(p, priorBundle({ leaves: [{ id: "leaf-locked", valueSats: 100000, treeNodeHex: enc(provablePrior) }] }));
       // Fresh capture: only the new deposit; owned still counts the locked leaf.
       const w = mkWallet({ leaves: [leafObj("leaf-new", 50000n)], owned: 150000n, available: 50000n });
@@ -148,7 +149,7 @@ describe("integrity gate refuses via snapshotLeafVault (not just verifyVault)", 
     try {
       await atomicWriteJson(p, priorBundle());
       const w = mkWallet({ leaves: [{ id: "leaf1", status: "AVAILABLE" }], owned: 100000n });
-      await expect(snapshotLeafVault(w, { path: p, networkLabel: "LOCAL" })).rejects.toThrow(/missing pre-signed/);
+      await expect(snapshotLeafVault(w, { path: p, networkLabel: "LOCAL" })).rejects.toThrow(/missing or unparseable/);
       expect((await readVault(p)).leaves.map((l) => l.id)).toEqual(["leaf1"]);
     } finally { await rm(p, { force: true }); }
   });

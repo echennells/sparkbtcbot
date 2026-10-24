@@ -240,6 +240,19 @@ export class SparkAgent {
     this.#network = network;
     this.#ledger = spendLedgerFromEnv(seedContext !== undefined ? seedContext : getLoadedSeedContext());
     this.#lnDedup = lnDedupFromEnv();
+    // The fee ladders belong to the wallet object, so a wallet opened without
+    // sparkWalletOptions (raw SDK defaults, 0.13+) arrives here with them on:
+    // each claim hands the operators signed fee steps and leaves an anchorless
+    // refund the exit backup can't use. `config` is SDK-internal; absent = unknown.
+    let ladderOn = false;
+    try { ladderOn = !!(wallet?.config?.getEnableCpfpRefundLadder?.() || wallet?.config?.getEnableDirectNodeFeeLadder?.()); } catch {}
+    if (ladderOn) {
+      console.warn(
+        "⚠️  this wallet was opened with the SDK's fee ladders ON. Every claim it makes leaves an anchorless\n" +
+          "   refund the unilateral-exit backup can't use. Open it with sparkWalletOptions(network) instead\n" +
+          "   (references/unilateral-exit.md → fee ladders).",
+      );
+    }
     // Automatically mirror the unilateral-exit material to disk so funds stay
     // recoverable if the Spark operators go offline — snapshots on boot and on
     // every leaf change (send/receive/deposit) + a refresh safety timer. Opt out
@@ -277,7 +290,7 @@ export class SparkAgent {
     const vaultReady = await agent.#vault?.ready;
     if (vaultReady && !vaultReady.ok) {
       console.warn(
-        `⚠️  leaf-vault backup is NOT active: ${vaultReady.error}\n` +
+        `⚠️  leaf-vault backup ${vaultReady.anchorless ? "is written but the exit tool can't use it" : "is NOT active"}: ${vaultReady.error}\n` +
         `   The wallet works, but UNILATERAL EXIT may be impossible until this is fixed.\n` +
         `   Set SPARK_LEAF_VAULT=off to silence, or see references/unilateral-exit.md.`,
       );
@@ -1067,7 +1080,8 @@ export class SparkAgent {
   }
 
   // Recovery-backup health: { healthy, lastSuccessAt, consecutiveFailures,
-  // lastError }, or { disabled: true } when opted out via SPARK_LEAF_VAULT.
+  // lastError, anchorless }, or { disabled: true } when opted out via
+  // SPARK_LEAF_VAULT. A non-empty `anchorless` makes it unhealthy.
   vaultHealth() {
     return this.#vault?.health?.() ?? { disabled: true };
   }

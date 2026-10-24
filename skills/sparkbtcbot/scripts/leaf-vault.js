@@ -157,24 +157,57 @@ export function assertLeafInternalsIntact(wallet, TreeNode) {
   }
 }
 
+const parsesAsTx = (bytes) => { try { getTxFromRawTxBytes(bytes); return true; } catch { return false; } };
+
+// Whether a refund has the ephemeral anchor output the exit tool fee-bumps
+// through. SDK 0.13's refund ladder (enableCpfpRefundLadder, signed at claim
+// when it is on) leaves it out; this package keeps the ladder off, but another
+// program opening the same seed may not. Blink's exit tool fails on the WHOLE
+// backup if any refund lacks one; SDK 0.13's own exit helper can exit such a
+// leaf only with the seed's signer.
+function refundHasAnchor(refundBytes) {
+  const refund = getTxFromRawTxBytes(refundBytes);
+  for (let i = 0; i < refund.outputsLength; i++) {
+    const o = refund.getOutput(i);
+    if (isEphemeralAnchorOutput(o.script, o.amount)) return true;
+  }
+  return false;
+}
+
 // Decode a bundle's leaves+nodes and prove each leaf reconstructs OFFLINE (no
-// client, no operators): per leaf — its pre-signed txs are present, and its
-// leaf→root chain rebuilds from the bundle's own nodes. This is the single
-// statement of "what proves a bundle can recover funds", consumed by both the
-// snapshot integrity gate and verifyVault so the two cannot drift.
+// client, no operators): per leaf — its pre-signed txs are present and parse as
+// transactions, its leaf→root chain rebuilds from the bundle's own nodes, and
+// whether its refund keeps its anchor. This is the single statement of "what
+// proves a bundle can recover funds", consumed by both the snapshot integrity
+// gate and verifyVault so the two cannot drift.
 async function proveOffline(TreeNode, leaves, nodes) {
   const reMap = new Map([...leaves, ...(nodes ?? [])].map((n) => [n.id, decodeNode(TreeNode, n.treeNodeHex)]));
   const proofs = new Map();
   for (const leaf of leaves) {
     const ln = reMap.get(leaf.id);
     const chain = await buildUnilateralExitChain(ln, reMap, undefined, undefined); // NO client
+    // Non-empty is not enough: truncated or garbage bytes would pass it, and the
+    // exit tool has to decode both to broadcast them.
+    const hasTxs = ln?.nodeTx?.length > 0 && ln?.refundTx?.length > 0 && parsesAsTx(ln.nodeTx) && parsesAsTx(ln.refundTx);
     proofs.set(leaf.id, {
-      hasTxs: ln?.nodeTx?.length > 0 && ln?.refundTx?.length > 0,
+      hasTxs,
+      anchored: hasTxs ? refundHasAnchor(ln.refundTx) : null, // null: no refund to judge (hasTxs fails it)
       chainLen: chain.length,
       reachesRoot: chain.some((n) => !n?.parentNodeId),
     });
   }
   return proofs;
+}
+
+const anchorlessIds = (leaves, proofs) => leaves.filter((l) => proofs.get(l.id)?.anchored === false).map((l) => l.id);
+
+// Shared by verifyVault, the snapshot result and SparkAgent's boot warning.
+export function anchorlessReason(count) {
+  return (
+    `${count} leaf/leaves have an anchorless refund (SDK 0.13 fee ladder): the exit tool this backup ` +
+    "is for can't fee-bump them and fails on the whole backup. A wallet opened by this package (ladder off) " +
+    "re-anchors the leaves it receives, so move these funds through one, or exit them with SDK 0.13's helper and the seed"
+  );
 }
 
 // Take an online snapshot into a Blink `spark.unilateral-exit-bundle.v1` bundle:
@@ -274,7 +307,7 @@ export async function snapshotLeafVault(wallet, { path = defaultVaultPath(), net
   for (const leaf of persisted.leaves) {
     const p = proofs.get(leaf.id);
     // content: the exit consumes nodeTx/refundTx — topology alone is not enough (M-1).
-    if (!p.hasTxs) throw new Error(`leaf-vault: leaf ${leaf.id} missing pre-signed nodeTx/refundTx — not exitable; NOT written.`);
+    if (!p.hasTxs) throw new Error(`leaf-vault: leaf ${leaf.id} pre-signed nodeTx/refundTx missing or unparseable — not exitable; NOT written.`);
     // completeness: the chain must reach a genuine tree root — guards the bulk-query
     // root-skip that silently produced incomplete bundles in Blink's case study.
     if (!reachesRoot.get(leaf.id)) throw new Error(`leaf-vault: leaf ${leaf.id} exit chain never reaches a tree root — incomplete bundle; NOT written.`);
@@ -348,6 +381,7 @@ export async function snapshotLeafVault(wallet, { path = defaultVaultPath(), net
         // that is harmless to the Blink contract and self-heals on the next clean
         // snapshot.
         let unionWritten = null;
+        let unionAnchorless = [];
         try {
           const nodeById = new Map();
           for (const n of prior.nodes ?? []) nodeById.set(n.id, n);
@@ -368,6 +402,7 @@ export async function snapshotLeafVault(wallet, { path = defaultVaultPath(), net
             if (allProven) {
               await atomicWriteJson(path, union);
               unionWritten = union;
+              unionAnchorless = anchorlessIds(union.leaves, unionProofs);
             }
           }
         } catch { /* best-effort; the guard error below still fires */ }
@@ -401,7 +436,7 @@ export async function snapshotLeafVault(wallet, { path = defaultVaultPath(), net
           // Same invariant as the clean path below: a gate-proven bundle was written,
           // so a stale BROKEN marker may be cleared.
           await unlink(join(dirname(path), "BROKEN")).catch(() => {});
-          return { path, leafCount: unionWritten.leaves.length, nodeCount: (unionWritten.nodes ?? []).length, network };
+          return { path, leafCount: unionWritten.leaves.length, nodeCount: (unionWritten.nodes ?? []).length, network, anchorless: unionAnchorless };
         }
 
         throw new Error(
@@ -422,7 +457,10 @@ export async function snapshotLeafVault(wallet, { path = defaultVaultPath(), net
   // the ONLY place the marker is cleared for a funded wallet, so a skip or a
   // manual CLI run can never clear it without actually writing a bundle.
   await unlink(join(dirname(path), "BROKEN")).catch(() => {});
-  return { path, leafCount: persisted.leaves.length, nodeCount: (persisted.nodes ?? []).length, network };
+  // Anchorless refunds don't stop the write: refusing would freeze an older
+  // bundle and leave every new leaf unbacked, and the other leaves are still
+  // exitable. The caller gets the ids; enableLeafVault reports them unhealthy.
+  return { path, leafCount: persisted.leaves.length, nodeCount: (persisted.nodes ?? []).length, network, anchorless: anchorlessIds(persisted.leaves, proofs) };
 }
 
 // Severity of "no vault on disk" given the wallet's OWNED sats (null =
@@ -433,31 +471,6 @@ export function judgeMissingVault(sats) {
   if (sats == null) return { level: "INDETERMINATE", exitCode: 2 };
   if (sats > 0n) return { level: "CRITICAL", exitCode: 1 };
   return { level: "OK", exitCode: 0 };
-}
-
-// Leaves whose refund has no fee-bump anchor: SDK 0.13's anchorless refund,
-// signed when a wallet claims with enableCpfpRefundLadder on (this package
-// keeps it off; another program opening the same seed may not). Blink's exit
-// tool fee-bumps every refund through its anchor and fails on the WHOLE
-// backup if any refund lacks one; SDK 0.13's own exit helper can exit such a
-// leaf only with the seed's signer. A leaf that can't be decoded is left to
-// proveOffline to report.
-function anchorlessLeaves(TreeNode, leaves) {
-  const ids = [];
-  for (const l of leaves) {
-    try {
-      const refund = getTxFromRawTxBytes(decodeNode(TreeNode, l.treeNodeHex).refundTx);
-      let anchored = false;
-      for (let i = 0; i < refund.outputsLength && !anchored; i++) {
-        const o = refund.getOutput(i);
-        anchored = isEphemeralAnchorOutput(o.script, o.amount);
-      }
-      if (!anchored) ids.push(l.id);
-    } catch {
-      // not decodable: proveOffline reports it
-    }
-  }
-  return ids;
 }
 
 // "Can Blink's tool actually recover from this file?" — reload a bundle, validate
@@ -483,16 +496,10 @@ export async function verifyVault(path = defaultVaultPath()) {
   const failed = bundle.leaves
     .filter((l) => { const p = proofs.get(l.id); return !p.chainLen || !p.reachesRoot || !p.hasTxs; })
     .map((l) => l.id);
-  const anchorless = anchorlessLeaves(TreeNode, bundle.leaves);
+  const anchorless = anchorlessIds(bundle.leaves, proofs);
   const reasons = [];
-  if (failed.length) reasons.push(`${failed.length} leaf/leaves do not reconstruct offline to a root (or lack pre-signed txs)`);
-  if (anchorless.length) {
-    reasons.push(
-      `${anchorless.length} leaf/leaves have an anchorless refund (SDK 0.13 fee ladder): the exit tool this backup ` +
-        "is for can't fee-bump them and fails on the whole backup. A wallet opened by this package (ladder off) " +
-        "re-anchors the leaves it receives, so move these funds through one, or exit them with SDK 0.13's helper and the seed",
-    );
-  }
+  if (failed.length) reasons.push(`${failed.length} leaf/leaves do not reconstruct offline to a root (or their pre-signed txs are missing or don't parse)`);
+  if (anchorless.length) reasons.push(anchorlessReason(anchorless.length));
   return {
     ok: failed.length === 0 && anchorless.length === 0,
     reason: reasons.length ? reasons.join("; ") : "all leaves reconstruct offline to a root",
@@ -523,7 +530,8 @@ async function writeBrokenMarker(markerPath, err, failures) {
 // low-frequency safety-net timer (catches timelock refreshes). Overlapping
 // triggers are single-flighted so concurrent writes can't race; a burst of events
 // is also debounced. Returns `{ dispose, ready, health }` — `ready` resolves to
-// `{ ok, error? }` for the boot snapshot so a caller can surface a broken backup.
+// `{ ok, error?, anchorless? }` for the boot snapshot so a caller can surface a
+// broken backup, or one written with leaves the exit tool can't fee-bump.
 export function enableLeafVault(wallet, { path = defaultVaultPath(), networkLabel, intervalMs = 20 * 60_000, debounceMs = 4000, maxConsecutiveFailures = 3, onError } = {}) {
   debounceMs = Number.isFinite(debounceMs) && debounceMs >= 0 ? debounceMs : 4000;
   intervalMs = Number.isFinite(intervalMs) && intervalMs > 0 ? intervalMs : 20 * 60_000;
@@ -533,6 +541,7 @@ export function enableLeafVault(wallet, { path = defaultVaultPath(), networkLabe
   let consecutiveTransientSkips = 0;
   let lastSuccessAt = null;
   let lastError = null;
+  let anchorless = []; // leaf ids in the last written bundle whose refund has no anchor
   let inFlight = null;
   let disposed = false;
   // Track uncaptured leaf changes so a short-lived process (init -> transact ->
@@ -544,6 +553,18 @@ export function enableLeafVault(wallet, { path = defaultVaultPath(), networkLabe
   const isDirty = () => changeGen > snappedGen;
 
   const report = (e) => (onError ? onError(e) : console.error(`[leaf-vault] snapshot FAILED (${consecutiveFailures}x in a row): ${e?.message ?? e}`));
+  // The bundle was written, so this is not a failure; say it once per change of
+  // the anchorless set, not on every snapshot.
+  const noteAnchorless = (found) => {
+    const ids = [...found].sort(); // getLeaves order varies between snapshots
+    const changed = ids.join() !== anchorless.join();
+    anchorless = ids;
+    if (!changed || !ids.length) return;
+    const e = new Error(`leaf-vault: ${anchorlessReason(ids.length)}: ${ids.join(", ")}`);
+    e.code = "LEAF_VAULT_ANCHORLESS";
+    e.anchorless = ids;
+    onError ? onError(e) : console.warn(`[leaf-vault] ${e.message}`);
+  };
 
   const runSnapshot = () => {
     if (disposed) return Promise.resolve(null);
@@ -562,6 +583,7 @@ export function enableLeafVault(wallet, { path = defaultVaultPath(), networkLabe
           persistedRun = true;
           consecutiveTransientSkips = 0;
           lastSuccessAt = Date.now();
+          noteAnchorless(r.anchorless ?? []);
         } else if (r.skipped === "transient-empty-getLeaves") {
           // Nothing persisted while the wallet still reports funds: the prior
           // bundle is aging. One is noise; a chronic streak means the capture
@@ -582,6 +604,7 @@ export function enableLeafVault(wallet, { path = defaultVaultPath(), networkLabe
           // state — nothing to protect, nothing stale.
           consecutiveTransientSkips = 0;
           lastSuccessAt = Date.now();
+          anchorless = [];
         }
         return r;
       } catch (e) {
@@ -614,7 +637,10 @@ export function enableLeafVault(wallet, { path = defaultVaultPath(), networkLabe
     debounceTimer.unref?.();
   };
 
-  const ready = runSnapshot().then(() => ({ ok: true }), (e) => ({ ok: false, error: e?.message ?? String(e) }));
+  const ready = runSnapshot().then(
+    (r) => (r?.anchorless?.length ? { ok: false, anchorless: r.anchorless, error: anchorlessReason(r.anchorless.length) } : { ok: true }),
+    (e) => ({ ok: false, error: e?.message ?? String(e) }),
+  );
 
   const events = ["balance:update", "transfer:claimed", "deposit:confirmed"];
   for (const ev of events) wallet.on?.(ev, schedule);
@@ -642,11 +668,12 @@ export function enableLeafVault(wallet, { path = defaultVaultPath(), networkLabe
     dispose,
     ready,
     health: () => ({
-      healthy: consecutiveFailures === 0 && lastSuccessAt != null && consecutiveTransientSkips < maxConsecutiveFailures,
+      healthy: consecutiveFailures === 0 && lastSuccessAt != null && consecutiveTransientSkips < maxConsecutiveFailures && anchorless.length === 0,
       lastSuccessAt,
       consecutiveFailures,
       consecutiveTransientSkips,
       lastError: lastError?.message ?? null,
+      anchorless: [...anchorless],
     }),
   };
 }

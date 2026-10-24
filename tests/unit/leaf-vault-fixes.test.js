@@ -9,6 +9,7 @@ import { EventEmitter } from "node:events";
 import { atomicWriteJson, readVault } from "../../lib/leaf-vault.js";
 import { snapshotLeafVault, verifyVault, enableLeafVault } from "../../skills/sparkbtcbot/scripts/leaf-vault.js";
 import { TreeNode } from "@buildonspark/spark-sdk/proto/spark";
+import { LEAF_TXS } from "../helpers/leaf-txs.js";
 
 const enc = (node) => Buffer.from(TreeNode.encode(TreeNode.fromPartial(node)).finish()).toString("hex");
 const uniq = (n) => join(tmpdir(), `${n}-${process.pid}-${Math.random().toString(16).slice(2)}`);
@@ -42,7 +43,7 @@ describe("integrity CONTENT gate (M-1)", () => {
     const good = uniq("lv-m1-good") + ".json";
     const bad = uniq("lv-m1-bad") + ".json";
     try {
-      const withTx = { id: "leaf1", status: "AVAILABLE", nodeTx: Uint8Array.from([1, 2, 3]), refundTx: Uint8Array.from([4, 5, 6]) };
+      const withTx = { id: "leaf1", status: "AVAILABLE", ...LEAF_TXS };
       const withoutTx = { id: "leaf1", status: "AVAILABLE" }; // chain length 1 (topology OK), but zero tx bytes
       await atomicWriteJson(good, bundle(withTx));
       await atomicWriteJson(bad, bundle(withoutTx));
@@ -159,7 +160,7 @@ describe("auto-vault surfaces failure loudly (H-2)", () => {
 // legitimately only if it was SPENT (balance fell to match); otherwise it is a
 // partial capture and the prior complete bundle must be kept.
 describe("partial getLeaves shrink guard", () => {
-  const leafObj = (id, value) => ({ id, status: "AVAILABLE", value, nodeTx: Uint8Array.from([1, 2, 3]), refundTx: Uint8Array.from([4, 5, 6]) });
+  const leafObj = (id, value) => ({ id, status: "AVAILABLE", value, ...LEAF_TXS });
   const writePriorTwo = (p) => atomicWriteJson(p, {
     schema: "spark.unilateral-exit-bundle.v1", createdAt: "2026-07-09T00:00:00.000Z", network: "LOCAL",
     leaves: [{ id: "leaf1", valueSats: 100000, treeNodeHex: "0a020102" }, { id: "leaf2", valueSats: 100000, treeNodeHex: "0a020102" }],
@@ -223,7 +224,7 @@ describe("partial getLeaves shrink guard", () => {
 // process transacts then exits before the 4s debounce fires — but a read-only run
 // (no leaf change) must NOT pay for a redundant snapshot on the way out.
 describe("leaf-vault flush-on-dispose (dirty tracking)", () => {
-  const leaf = (id) => ({ id, status: "AVAILABLE", nodeTx: Uint8Array.from([1, 2, 3]), refundTx: Uint8Array.from([4, 5, 6]) });
+  const leaf = (id) => ({ id, status: "AVAILABLE", ...LEAF_TXS });
   const mkWallet = (onGetLeaves, owned) => {
     const ee = new EventEmitter();
     return {

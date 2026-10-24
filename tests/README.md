@@ -17,13 +17,14 @@ Three tiers, run via `npm` scripts.
 tests/
   setup.js                          # loads .env
   helpers/wallet.js                 # createTestWallet (fee ladders off like the package), cleanupAllWallets, getFundedMnemonic
+  helpers/leaf-txs.js               # real nodeTx/refundTx bytes for mock leaves (the vault gate parses them)
   unit/
     imports.test.js                 # SDK export sanity, SparkWallet method surface
     balance-shape.test.js           # regression: ownedBalance / availableToSendBalance
     encrypted-seed.test.js          # seed encrypt/decrypt round-trip, EEXIST, perms, NO_PASSPHRASE
     leaf-vault.test.js              # bundle shape validation (Blink compatibility contract)
     leaf-vault-fixes.test.js        # ToB regression pins — H-3 concurrency, M-1 content gate, M-2 transient-empty, shrink guard, H-2 marker, flush-on-dispose
-    leaf-vault-anchorless.test.js   # verifyVault fails SDK 0.13 anchorless refunds (real REGTEST fixtures in fixtures/leaf-vault/); every initialize passes sparkWalletOptions
+    leaf-vault-anchorless.test.js   # verify, snapshot and vault health flag SDK 0.13 anchorless refunds (real REGTEST fixtures in fixtures/leaf-vault/); unparseable txs fail; SparkAgent warns on a ladder-on wallet; no shipped file opens a wallet without sparkWalletOptions
     silent-payment-helper.test.js   # tests/helpers/silent-payment.js (receiver-side BIP-352) against the BIP's vectors (fixtures/bip352/)
     leaf-vault-hardening.test.js    # network derivation, identity guard, union rescue, skip accounting, re-arm, dispose races, atomic-writer failures, exports map
     spark-agent-vault.test.js       # SparkAgent vault wiring: opt-out normalization + enabled path
@@ -43,7 +44,7 @@ tests/
     funded/
       transfer.test.js              # spark-to-spark transfer
       lightning.test.js             # Lightning fee estimate, payment
-      fee-ladder.test.js            # same 5,000 sats to a ladders-off and a ladders-on wallet: verify passes the first, names the 1,024+ sat leaves in the second
+      fee-ladder.test.js            # same 5,000 sats to a ladders-off and a ladders-on wallet: verify and snapshot pass the first, name the 1,024+ sat leaves in the second; SparkAgent warns on the second only
       silent-payment-withdraw.test.js # withdraw through SparkAgent to an sprt1q… address; an independent BIP-352 scan of the broadcast exit finds output 0 = amount − fee under our keys only
       privacy.test.js               # with real sats: private → public/stranger readers see 0; granted viewer sees the balance; revoke/off restore
 ```

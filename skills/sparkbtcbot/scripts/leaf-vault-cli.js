@@ -9,7 +9,7 @@
 import "dotenv/config";
 import { pathToFileURL } from "node:url";
 import { realpathSync } from "node:fs";
-import { snapshotLeafVault, verifyVault, reportedBalanceSats, judgeMissingVault } from "./leaf-vault.js";
+import { snapshotLeafVault, verifyVault, reportedBalanceSats, judgeMissingVault, anchorlessReason } from "./leaf-vault.js";
 import { sparkWalletOptions } from "../../../lib/wallet-options.js";
 
 export async function main() {
@@ -100,7 +100,14 @@ export async function main() {
   } else {
     const wallet = await openWallet();
     try {
-      console.log("✅ leaf-vault snapshot:", JSON.stringify(await snapshotLeafVault(wallet, { networkLabel: process.env.SPARK_NETWORK || "MAINNET" })));
+      const r = await snapshotLeafVault(wallet, { networkLabel: process.env.SPARK_NETWORK || "MAINNET" });
+      if (r.anchorless?.length) {
+        // Written, but the exit tool would refuse it: same exit code as a failing verify.
+        console.log("❌ leaf-vault snapshot:", JSON.stringify(r), `\n${anchorlessReason(r.anchorless.length)}.`);
+        process.exitCode = 1;
+      } else {
+        console.log("✅ leaf-vault snapshot:", JSON.stringify(r));
+      }
     } finally {
       await wallet.cleanup();
     }

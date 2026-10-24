@@ -9,6 +9,7 @@ import { rm } from "node:fs/promises";
 import { EventEmitter } from "node:events";
 import { SparkAgent } from "../../skills/sparkbtcbot/scripts/spark-agent.js";
 import { readVault } from "../../lib/leaf-vault.js";
+import { LEAF_TXS } from "../helpers/leaf-txs.js";
 
 describe("SparkAgent SPARK_LEAF_VAULT opt-out normalization (L-3)", () => {
   const orig = process.env.SPARK_LEAF_VAULT;
@@ -75,7 +76,7 @@ describe("SparkAgent enabled path (auto-vault through the agent surface)", () =>
     const wallet = {
       on: (ev, cb) => ee.on(ev, cb),
       off: (ev, cb) => ee.off(ev, cb),
-      leafManager: { getLeaves: async () => [{ id: "leaf1", status: "AVAILABLE", nodeTx: Uint8Array.from([1]), refundTx: Uint8Array.from([2]) }] },
+      leafManager: { getLeaves: async () => [{ id: "leaf1", status: "AVAILABLE", ...LEAF_TXS }] },
       connectionManager: { createSparkClient: async () => ({}) },
       config: { getCoordinatorAddress: () => "coord" },
       getBalance: async () => ({ balance: 1000n, satsBalance: { available: 1000n, owned: 1000n, incoming: 0n } }),

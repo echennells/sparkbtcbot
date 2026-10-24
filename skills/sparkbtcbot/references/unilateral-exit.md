@@ -35,8 +35,11 @@ validates and consumes:
 keys** — the refund pays a P2TR address the *seed* re-derives, so a stolen bundle
 cannot move funds; only the seed can spend the recovered output. The leaf-vault's
 integrity gate refuses to write a bundle unless every leaf reconstructs a complete
-exit chain offline (down to a genuine tree root) with its pre-signed txs intact — so
-a written bundle is a recoverable one.
+exit chain offline (down to a genuine tree root) with its pre-signed txs present and
+parseable — so a written bundle is a recoverable one. The one exception is a refund
+without its anchor (the SDK fee ladder, below): refusing would freeze an older bundle
+and leave new leaves unbacked, so the bundle is written and the vault reports
+unhealthy, naming those leaves.
 
 ## Recovering
 
@@ -110,7 +113,7 @@ The upside is that the operators' watchtower can publish an exit at the fee the 
 What to know:
 
 - **The setting belongs to the wallet object, not the seed.** Each program that opens the seed decides for itself. Your own `SparkWallet.initialize` calls should pass `sparkWalletOptions(network, extra)`.
-- **A wallet with the ladder off re-anchors whatever it claims.** Leaves claimed by another program on the SDK default (0.13 or later) stay anchorless until they next move. `npm run leaf-vault -- verify` lists them under `anchorless` and fails.
+- **A wallet with the ladder off re-anchors whatever it claims.** Leaves claimed by another program on the SDK default (0.13 or later) stay anchorless until they next move. `npm run leaf-vault -- verify` and a snapshot both list them under `anchorless` and exit 1; `SparkAgent` warns at boot and `vaultHealth()` reports unhealthy with the same list. `SparkAgent` also warns when it's handed a wallet that was opened with the ladders on.
 - **Off has a cost.** The direct route keeps its flat fee and the dust gaps described below.
 - **Off is reversible; on isn't.** Flip the option and the next claims change, but fee steps already handed to the operators can't be recalled.
 

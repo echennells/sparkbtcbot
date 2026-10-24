@@ -17,13 +17,14 @@ import { EventEmitter } from "node:events";
 import { atomicWriteJson, readVault } from "../../lib/leaf-vault.js";
 import { snapshotLeafVault, pendingCoopExitCount } from "../../skills/sparkbtcbot/scripts/leaf-vault.js";
 import { TreeNode } from "@buildonspark/spark-sdk/proto/spark";
+import { LEAF_TXS } from "../helpers/leaf-txs.js";
 
 const enc = (node) => Buffer.from(TreeNode.encode(TreeNode.fromPartial(node)).finish()).toString("hex");
 const uniq = (n) => join(tmpdir(), `${n}-${process.pid}-${Math.random().toString(16).slice(2)}`);
 const exists = (p) => stat(p).then(() => true, () => false);
 
 const mkBalance = (owned, available = owned) => ({ balance: available, satsBalance: { available, owned, incoming: 0n } });
-const leafObj = (id, value, extra = {}) => ({ id, status: "AVAILABLE", value, nodeTx: Uint8Array.from([1, 2, 3]), refundTx: Uint8Array.from([4, 5, 6]), ...extra });
+const leafObj = (id, value, extra = {}) => ({ id, status: "AVAILABLE", value, ...LEAF_TXS, ...extra });
 
 const mkWallet = ({ leaves = [], owned = 0n, available, getUserRequests } = {}) => {
   const ee = new EventEmitter();
@@ -40,7 +41,7 @@ const mkWallet = ({ leaves = [], owned = 0n, available, getUserRequests } = {}) 
 
 // Prior bundle holding a PROVABLE leaf that the fresh capture is missing —
 // the QA scenario: that leaf's sats are the in-flight exit.
-const provablePrior = { id: "leaf-exiting", status: "AVAILABLE", nodeTx: Uint8Array.from([9]), refundTx: Uint8Array.from([8]) };
+const provablePrior = { id: "leaf-exiting", status: "AVAILABLE", ...LEAF_TXS };
 const priorBundle = () => ({
   schema: "spark.unilateral-exit-bundle.v1",
   createdAt: "2026-07-09T00:00:00.000Z",
