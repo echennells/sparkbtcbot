@@ -87,4 +87,14 @@ describe("fetchL402", () => {
     await expect(agent.fetchL402("https://api.example/paid", { maxAmountSats: 1000 })).rejects.toThrow(/blocked/i);
     expect(calls.pay).toBeNull(); // never paid
   });
+
+  // The preimage is the L402 credential, and a Spark-direct payment returns
+  // none: paying a Spark-backed paywall's fallback would buy nothing.
+  it("pays over Lightning only, never Spark-direct", async () => {
+    const inv = await invoice2000();
+    vi.stubGlobal("fetch", async () => resp(402, { invoice: inv, macaroon: "mac1" }));
+    const { agent, calls } = mkAgent();
+    await agent.fetchL402("https://api.example/paid", { maxAmountSats: 3000 }).catch(() => {}); // the stub preimage doesn't hash to the invoice
+    expect(calls.pay).toMatchObject({ invoice: inv, preferSpark: false });
+  });
 });

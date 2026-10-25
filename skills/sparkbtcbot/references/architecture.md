@@ -29,7 +29,7 @@ Load when the user wants to understand how Spark works, weigh it against Lightni
 |-----------|-----|
 | **Spark-to-Spark transfer** | Free (small flat fee coming in 6-12 months) |
 | **Lightning to Spark** (receive) | 0.15% (charged via route hints; a live 2026-08 receive was credited in full — treat as worst case) |
-| **Spark to Lightning** (send) | 0.25% + Lightning routing fees (live-measured 0.32% all-in; **free** when the payee is Spark-backed — see `references/lightning.md`) |
+| **Spark to Lightning** (send) | 0.25% + Lightning routing fees (live-measured 0.32% all-in; **free** when the payee is Spark-backed and nothing pins the payment hash — see `references/lightning.md`) |
 | **L1 deposit to Spark** | On-chain tx fee (paid by user) **plus an SSP claim spread** at claim time — see below (live-measured: 297 sats on a 10,350-sat deposit) |
 | **Cooperative exit to L1** | Flat per exit, not per sat: operator fee + feerate-tracking L1 broadcast fee, deducted from the amount (live 2026-08: ~2,000–2,700 sats at MEDIUM). Always quote first — `references/wallet.md` |
 | **Unilateral exit to L1** | On-chain tx fee (paid by user) |

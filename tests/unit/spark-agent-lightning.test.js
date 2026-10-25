@@ -8,7 +8,9 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtemp, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { UUID } from "@buildonspark/spark-sdk";
+import { UUID, SparkWallet, decodeSparkAddress } from "@buildonspark/spark-sdk";
+import { decode } from "light-bolt11-decoder";
+import { decodeInvoiceSats, invoicePaymentHash, paymentHashMatches } from "../../lib/bolt11.js";
 import { SparkAgent } from "../../skills/sparkbtcbot/scripts/spark-agent.js";
 
 // Amount-ful sample (2,000 sats embedded) from light-bolt11-decoder's README.
@@ -390,5 +392,163 @@ describe("fetchL402 strictness", () => {
   it("allows localhost for testing", async () => {
     // Reaches the network layer (fetch fails), proving the scheme gate passed.
     await expect(agent().fetchL402("http://localhost:9/x")).rejects.not.toThrow(/https/i);
+  });
+});
+
+// Spark-direct pays an invoice's Spark fallback as a plain transfer to the
+// fallback key: the payment hash plays no part and no preimage comes back. A
+// payment pinned to a hash (a merchant checkout's) must go over Lightning, or
+// the pin checks nothing. Everything else keeps Spark-direct.
+describe("Spark-direct and hash-bound payments", () => {
+  const HASH = invoicePaymentHash(INVOICE_2000_SATS);
+  const mk = () => {
+    process.env.SPARK_LEAF_VAULT = "off";
+    const calls = { pay: null, estimates: 0 };
+    const wallet = {
+      getSparkAddress: async () => "sp1from",
+      getLightningSendFeeEstimate: async () => { calls.estimates++; return 5; },
+      payLightningInvoice: async (params) => { calls.pay = params; return { id: "pay-1" }; },
+    };
+    return { agent: new SparkAgent(wallet, "MAINNET"), calls };
+  };
+
+  it("pays Spark-direct by default, and when expectedPaymentHash is null (no binding)", async () => {
+    for (const opts of [{}, { expectedPaymentHash: null }]) {
+      const { agent, calls } = mk();
+      await agent.payLightningInvoice(INVOICE_2000_SATS, opts);
+      expect(calls.pay.preferSpark).toBe(true);
+    }
+  });
+
+  it("pays over Lightning when expectedPaymentHash matches, or with preferSpark: false", async () => {
+    for (const opts of [{ expectedPaymentHash: HASH }, { expectedPaymentHash: HASH.toUpperCase() }, { preferSpark: false }]) {
+      const { agent, calls } = mk();
+      await agent.payLightningInvoice(INVOICE_2000_SATS, opts);
+      expect(calls.pay.preferSpark).toBe(false);
+    }
+  });
+
+  it("refuses a hash mismatch before any I/O, dry run included", async () => {
+    for (const dryRun of [false, true]) {
+      const { agent, calls } = mk();
+      await expect(agent.payLightningInvoice(INVOICE_2000_SATS, { expectedPaymentHash: "bb".repeat(32), dryRun }))
+        .rejects.toThrow(/Payment blocked: .*is not expectedPaymentHash/);
+      expect(calls.estimates).toBe(0);
+      expect(calls.pay).toBeNull();
+    }
+  });
+
+  it("refuses preferSpark: true with a hash, and malformed values", async () => {
+    const { agent, calls } = mk();
+    await expect(agent.payLightningInvoice(INVOICE_2000_SATS, { expectedPaymentHash: HASH, preferSpark: true }))
+      .rejects.toThrow(/ignores the payment hash/);
+    await expect(agent.payLightningInvoice(INVOICE_2000_SATS, { expectedPaymentHash: "abc" })).rejects.toThrow(TypeError);
+    await expect(agent.payLightningInvoice(INVOICE_2000_SATS, { expectedPaymentHash: 42 })).rejects.toThrow(TypeError);
+    await expect(agent.payLightningInvoice(INVOICE_2000_SATS, { preferSpark: "no" })).rejects.toThrow(TypeError);
+    expect(calls.pay).toBeNull();
+  });
+
+  it("the dry-run preview says whether Spark-direct is allowed", async () => {
+    const { agent } = mk();
+    expect((await agent.payLightningInvoice(INVOICE_2000_SATS, { dryRun: true })).preferSpark).toBe(true);
+    expect((await agent.payLightningInvoice(INVOICE_2000_SATS, { dryRun: true, expectedPaymentHash: HASH })).preferSpark).toBe(false);
+  });
+
+  it("payAndSettle passes the binding through", async () => {
+    const { agent, calls } = mk();
+    await expect(agent.payAndSettle(INVOICE_2000_SATS, { expectedPaymentHash: "bb".repeat(32) })).rejects.toThrow(/Payment blocked/);
+    expect(calls.pay).toBeNull();
+    await agent.payAndSettle(INVOICE_2000_SATS, { expectedPaymentHash: HASH, maxPolls: 0 });
+    expect(calls.pay.preferSpark).toBe(false);
+  });
+});
+
+// The attack the binding exists for, through the REAL SDK payLightningInvoice
+// (network edges stubbed). A Spark fallback spliced into a signed invoice
+// keeps its hash, amount and description: nothing checks the signature
+// without an `n` tag. (An attacker can also get a properly SSP-signed invoice
+// with the merchant's hash and their own fallback, via
+// createLightningHodlInvoice; the wrapper sees the same thing.)
+describe("a spliced Spark fallback, through the real SDK", () => {
+  // The secp256k1 generator: a valid key nobody was shown.
+  const ATTACKER = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
+  // Minimal BIP-173 bech32 (BOLT11's encoding), so the test needs no
+  // transitive dependency.
+  const CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
+  const polymod = (values) => {
+    const GEN = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
+    let chk = 1;
+    for (const v of values) {
+      const top = chk >> 25;
+      chk = ((chk & 0x1ffffff) << 5) ^ v;
+      for (let i = 0; i < 5; i++) if ((top >> i) & 1) chk ^= GEN[i];
+    }
+    return chk;
+  };
+  const hrpExpand = (hrp) => [...[...hrp].map((c) => c.charCodeAt(0) >> 5), 0, ...[...hrp].map((c) => c.charCodeAt(0) & 31)];
+  const toWords = (bytes) => {
+    const out = [];
+    let acc = 0, bits = 0;
+    for (const b of bytes) {
+      acc = (acc << 8) | b; bits += 8;
+      while (bits >= 5) { bits -= 5; out.push((acc >> bits) & 31); }
+    }
+    if (bits > 0) out.push((acc << (5 - bits)) & 31);
+    return out;
+  };
+  // Appends one route hint (pubkey, Spark's short channel id) and keeps the
+  // ORIGINAL signature.
+  const spliceSparkHint = (invoice, pubkeyHex) => {
+    const sep = invoice.lastIndexOf("1");
+    const hrp = invoice.slice(0, sep);
+    const words = [...invoice.slice(sep + 1, -6)].map((c) => CHARSET.indexOf(c));
+    const hop = new Uint8Array(51);
+    hop.set(Buffer.from(pubkeyHex, "hex"), 0);
+    hop.set(Buffer.from("f42400f424000001", "hex"), 33);
+    const hopWords = toWords(hop);
+    const r = [3, hopWords.length >> 5, hopWords.length & 31, ...hopWords];
+    const data = [...words.slice(0, -104), ...r, ...words.slice(-104)];
+    const mod = polymod([...hrpExpand(hrp), ...data, 0, 0, 0, 0, 0, 0]) ^ 1;
+    const checksum = [0, 1, 2, 3, 4, 5].map((i) => (mod >> (5 * (5 - i))) & 31);
+    return `${hrp}1${[...data, ...checksum].map((w) => CHARSET[w]).join("")}`;
+  };
+  const MERCHANT_HASH = invoicePaymentHash(INVOICE_2000_SATS);
+  const TAMPERED = spliceSparkHint(INVOICE_2000_SATS, ATTACKER);
+
+  const mkSdkAgent = () => {
+    process.env.SPARK_LEAF_VAULT = "off";
+    const rails = [];
+    const wallet = Object.create(SparkWallet.prototype);
+    Object.assign(wallet, {
+      logger: { warn() {}, info() {}, debug() {}, error() {}, trace() {} },
+      assertInvoiceNetworkMatchesWallet: () => 0, // Network.MAINNET
+      getSparkAddress: async () => "sp1from",
+      getLightningSendFeeEstimate: async () => 5,
+      getSspClient: () => ({}),
+      transferInternal: async ({ receiverSparkAddress }) => { rails.push(["spark", receiverSparkAddress]); return { id: "xfer-1" }; },
+      leafManager: { selectLeavesAndExecute: async () => { rails.push(["lightning"]); return { id: "ln-1", encodedInvoice: TAMPERED, status: "LIGHTNING_PAYMENT_INITIATED" }; } },
+    });
+    return { agent: new SparkAgent(wallet, "MAINNET"), rails };
+  };
+
+  it("keeps the merchant's hash and amount, so the checkout checks pass (the premise)", () => {
+    expect(paymentHashMatches(TAMPERED, MERCHANT_HASH)).toBe(true);
+    expect(decodeInvoiceSats(TAMPERED)).toBe(2000);
+    expect(decode(TAMPERED).sections.some((s) => s.name === "payee")).toBe(false);
+    expect(decode(TAMPERED).route_hints.flat().some((h) => h.short_channel_id === "f42400f424000001" && h.pubkey === ATTACKER)).toBe(true);
+  });
+
+  it("bound to the merchant's hash, it goes over Lightning, never to the spliced key", async () => {
+    const { agent, rails } = mkSdkAgent();
+    const r = await agent.payLightningInvoice(TAMPERED, { maxAmountSats: 5000, expectedPaymentHash: MERCHANT_HASH });
+    expect(rails).toEqual([["lightning"]]);
+    expect("encodedInvoice" in r).toBe(true);
+  });
+
+  it("unbound, it goes Spark-direct to the spliced key: no worse than a swapped invoice", async () => {
+    const { agent, rails } = mkSdkAgent();
+    await agent.payLightningInvoice(TAMPERED, { maxAmountSats: 5000 });
+    expect(rails.map(([rail]) => rail)).toEqual(["spark"]);
+    expect(decodeSparkAddress(rails[0][1], "MAINNET").identityPublicKey).toBe(ATTACKER);
   });
 });

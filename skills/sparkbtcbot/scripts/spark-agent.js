@@ -15,7 +15,7 @@ import {
   DEFAULT_ALLOWLIST_PATH,
 } from "../../../lib/recipients-allowlist.js";
 import { createHash } from "node:crypto";
-import { decodeInvoiceSats, invoicePaymentHash } from "../../../lib/bolt11.js";
+import { decodeInvoiceSats, invoicePaymentHash, paymentHashMatches } from "../../../lib/bolt11.js";
 import {
   lightningEstimateSats,
   lightningFeeCap,
@@ -530,8 +530,10 @@ export class SparkAgent {
   // paying. Lightning recipients are node pubkeys embedded in the BOLT11,
   // so the allowlist (which targets Spark/L1 addresses) does not apply here
   // — confirm the invoice's amount and decoded payee with the operator
-  // before paying when stakes warrant it.
-  async payLightningInvoice(bolt11, { maxFeeSats, amountSats, maxAmountSats = 10_000, transferId, dryRun = false, ...rest } = {}) {
+  // before paying when stakes warrant it. A Spark-backed invoice settles
+  // Spark-direct (free) unless `expectedPaymentHash` binds it or
+  // `preferSpark: false` is passed; both pay over Lightning.
+  async payLightningInvoice(bolt11, { maxFeeSats, amountSats, maxAmountSats = 10_000, transferId, preferSpark, expectedPaymentHash, dryRun = false, ...rest } = {}) {
     // The raw SDK takes ONE object ({ invoice, ... }); this wrapper takes a bare
     // BOLT11 string + options. The raw layer crashes opaquely on the mix-up
     // ("Cannot read properties of undefined (reading 'toLowerCase')" — no
@@ -561,6 +563,41 @@ export class SparkAgent {
         );
       }
     }
+    // Spark-direct pays an invoice's Spark fallback as a plain transfer to the
+    // fallback key: the payment hash plays no part and no preimage comes back.
+    // So it defeats any check that pins the hash. A fallback spliced into a
+    // merchant's invoice keeps the hash, amount and description (nothing
+    // checks the signature without an `n` tag), and any Spark user can get a
+    // genuinely SSP-signed invoice with a hash of their choosing and their own
+    // fallback (createLightningHodlInvoice). Over Lightning, the payment only
+    // completes against the preimage of that hash. expectedPaymentHash checks
+    // the binding here, before any I/O, and pays over Lightning; preferSpark:
+    // false alone is for a caller that needs the preimage (fetchL402).
+    if (preferSpark !== undefined && typeof preferSpark !== "boolean") {
+      throw new TypeError(`SparkAgent.payLightningInvoice: preferSpark must be a boolean, got ${JSON.stringify(preferSpark)}.`);
+    }
+    const hashBound = expectedPaymentHash !== undefined && expectedPaymentHash !== null;
+    if (hashBound) {
+      if (typeof expectedPaymentHash !== "string" || !/^[0-9a-f]{64}$/i.test(expectedPaymentHash)) {
+        throw new TypeError(
+          `SparkAgent.payLightningInvoice: expectedPaymentHash must be a 64-character hex string, or null for ` +
+          `no binding — got ${JSON.stringify(expectedPaymentHash)}.`,
+        );
+      }
+      if (preferSpark === true) {
+        throw new Error(
+          `SparkAgent.payLightningInvoice: preferSpark: true can't be combined with expectedPaymentHash — ` +
+          `a Spark-direct payment ignores the payment hash, so the binding would check nothing.`,
+        );
+      }
+      if (!paymentHashMatches(bolt11, expectedPaymentHash)) {
+        throw new Error(
+          `Payment blocked: the invoice's payment hash (${invoicePaymentHash(bolt11) ?? "none readable"}) is not ` +
+          `expectedPaymentHash (${expectedPaymentHash.toLowerCase()}) — this is not the invoice the checkout issued.`,
+        );
+      }
+    }
+    const sparkDirect = !hashBound && preferSpark !== false;
     // Validate BEFORE any I/O: a garbage ceiling must throw here, not degrade
     // to "no cap set" inside the guards (see requireNumericOption).
     const maxFee = requireNumericOption("payLightningInvoice", "maxFeeSats", maxFeeSats);
@@ -612,6 +649,7 @@ export class SparkAgent {
         withinCap: ok,
         capReason: ok ? "within caps" : reason,
         network: "lightning",
+        preferSpark: sparkDirect,
       };
     }
     if (!ok) {
@@ -653,7 +691,7 @@ export class SparkAgent {
       result = await this.#wallet.payLightningInvoice({
         invoice: bolt11,
         maxFeeSats: cap,
-        preferSpark: true,
+        preferSpark: sparkDirect, // false when a hash binds the payment or the caller opted out (above)
         ...(sdkTransferId !== undefined ? { transferId: sdkTransferId } : {}),
         ...(invoiceAmt === undefined && amtSats !== undefined ? { amountSatsToSend: amtSats } : {}),
       });
@@ -1099,8 +1137,9 @@ export class SparkAgent {
     // payAndSettle owns the poll loop: it throws on every terminal failure
     // status and reports { settled: false } on timeout instead of throwing —
     // because after this line the money is GONE. A thrown timeout invites a
-    // retry that pays the invoice a second time.
-    const payResult = await this.payAndSettle(invoice, { maxFeeSats: maxFee });
+    // retry that pays the invoice a second time. Over Lightning only: the
+    // preimage IS the credential, and a Spark-direct payment returns none.
+    const payResult = await this.payAndSettle(invoice, { maxFeeSats: maxFee, preferSpark: false });
     const preimage = payResult.paymentPreimage;
     if (!preimage) {
       const err = new Error(

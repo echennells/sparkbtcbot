@@ -6,6 +6,8 @@ Receiving from Lightning costs **0.15%** (charged via route hints) — though a 
 
 **When the payee is also Spark-backed, a BOLT11 settles Spark-direct: instant and free.** Live-measured: a 10,000-sat invoice from a Spark-backed wallet cost exactly 0 (the 26-sat Lightning estimate was never charged). The payment then completes as a *Spark transfer* — `getLightningSendRequest` has **no record of it**, so a missing send-request is not a failed payment; check the balance delta or transfer list before concluding failure (and never retry-pay on that evidence alone).
 
+**Spark-direct ignores the payment hash**, so `SparkAgent` pays over Lightning whenever the hash has to mean something. The Spark fallback is paid as a plain transfer to its key, and no preimage comes back. A fallback added to someone else's invoice keeps its hash, amount and description (the SDK checks the signature only when the invoice has an `n` tag). Any Spark user can also get a properly signed invoice that carries a hash they choose and their own fallback. So a check that pins the hash, like a merchant checkout's, checks nothing on that route. Pass `expectedPaymentHash` to `payLightningInvoice`/`payAndSettle`: the wrapper refuses an invoice without that hash before anything is sent, and pays over Lightning, where the payment completes only against the hash's preimage. `preferSpark: false` turns Spark-direct off without a binding. `fetchL402` and the merchant helper (`references/merchant-spending.md`) always pay over Lightning; everything else stays Spark-direct. The dry-run preview reports which one applies (`preferSpark`).
+
 ## Create Lightning Invoice (Receive)
 
 ```javascript
@@ -63,7 +65,9 @@ const result = await wallet.payLightningInvoice({
                       // so a flat 10 rejects mid-size sends and a pure 0.5% can
                       // too. Rule of thumb: max(25, ceil(amountSats * 0.005)),
                       // or better, estimate first and cap at estimate + headroom.
-  preferSpark: true,  // route via Spark when invoice has embedded Spark address
+  preferSpark: true,  // route via Spark when invoice has embedded Spark address;
+                      // never when you check the payment hash or need the
+                      // preimage: Spark-direct ignores both (top of this file)
 });
 ```
 

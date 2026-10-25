@@ -46,6 +46,17 @@ describe("invoicePaymentHash / paymentHashMatches", () => {
     expect(paymentHashMatches(INVOICE_2000_SATS, "")).toBe(false);
     expect(paymentHashMatches("lnbc1notarealinvoice", "ab".repeat(32))).toBe(false);
   });
+  // Two `p` fields (hash aa…aa, then bb…bb), signed by a throwaway test key.
+  // light-bolt11-decoder returns both; the SDK's decodeInvoice keeps the LAST
+  // and pays under it. Reading the first let this invoice pass a checkout's
+  // aa…aa binding while the payment went out under bb…bb.
+  it("refuses an invoice with two payment hashes (no hash, so no match either way)", () => {
+    const TWO_HASHES =
+      "lnbc10u1p54twgqpp5424242424242424242424242424242424242424242424242424qpp5hwamhwamhwamhwamhwamhwamhwamhwamhwamhwamhwamhwamhwassp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygsctsqx6xtn594jaehtkrgmjfzdaymv0tn5punzgw907zta6k5p8l8apveqx3q5uj58avd8xnnjylgndlk9sk36ar3e4j769aghj6cm4cppd49ag";
+    expect(invoicePaymentHash(TWO_HASHES)).toBe(null);
+    expect(paymentHashMatches(TWO_HASHES, "aa".repeat(32))).toBe(false);
+    expect(paymentHashMatches(TWO_HASHES, "bb".repeat(32))).toBe(false);
+  });
 });
 
 // The gap the on-ramp transcript exposed: a BOLT11's clock starts at creation,

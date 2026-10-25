@@ -45,6 +45,7 @@ tests/
       transfer.test.js              # spark-to-spark transfer
       lightning.test.js             # Lightning fee estimate, payment
       fee-ladder.test.js            # same 5,000 sats to a ladders-off and a ladders-on wallet: verify and snapshot pass the first, name the 1,024+ sat leaves in the second; SparkAgent warns on the second only
+      spark-direct-binding.test.js  # a Spark wallet's invoice through SparkAgent: unbound → Spark-direct; bound by expectedPaymentHash → Lightning, preimage matches; a wrong hash is refused before paying
       silent-payment-withdraw.test.js # withdraw through SparkAgent to an sprt1q… address; an independent BIP-352 scan of the broadcast exit finds output 0 = amount − fee under our keys only
       privacy.test.js               # with real sats: private → public/stranger readers see 0; granted viewer sees the balance; revoke/off restore
 ```

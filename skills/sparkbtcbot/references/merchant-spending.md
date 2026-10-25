@@ -14,7 +14,7 @@ Whatever returns the invoice — REST response, MCP tool result, CLI output — 
 // Code PLUGIN path neither relative path exists and the plugin cache is not
 // importable: `npm install sparkbtcbot-skill` in the user's project and use
 // this exact import — that's the one supported answer on every install path.
-import { decodeInvoiceSats, paymentHashMatches, checkInvoiceAgainstQuote } from "sparkbtcbot-skill";
+import { decodeInvoiceSats, checkInvoiceAgainstQuote } from "sparkbtcbot-skill";
 
 // `confirm` is REQUIRED, not optional: an async callback that shows the preview
 // and returns true only on an explicit human yes. It is a parameter rather than
@@ -31,16 +31,18 @@ async function payMerchantCheckout(agent, bolt11, quotedSats, {
     throw new Error("payMerchantCheckout: a confirm() callback is required (policy §3)");
   }
 
-  // Binding check: when the checkout echoed a paymentHash, the invoice must
-  // commit to it — a swapped invoice fails even if its amount matches the quote.
-  // `undefined` is refused: skipping the bind must be a deliberate, visible
-  // choice (explicit null) rather than a field the merchant can omit its way out of.
+  // Binding: when the checkout echoed a paymentHash, the invoice must commit to
+  // it — a swapped invoice fails even if its amount matches the quote. The
+  // wrapper checks it (both calls below) and pays over Lightning, where the
+  // payment completes only against that hash. `undefined` is refused: skipping
+  // the bind must be a deliberate, visible choice (explicit null) rather than
+  // a field the merchant can omit its way out of.
   if (expectedPaymentHash === undefined) {
     throw new Error("payMerchantCheckout: pass expectedPaymentHash, or null to acknowledge this merchant offers no binding");
   }
-  if (expectedPaymentHash !== null && !paymentHashMatches(bolt11, expectedPaymentHash)) {
-    throw new Error("Payment blocked: invoice payment_hash does not match the checkout's paymentHash");
-  }
+  // preferSpark: false even with no binding: a merchant is paid over Lightning,
+  // never through a Spark fallback someone added to its invoice.
+  const payOptions = { maxAmountSats, expectedPaymentHash, preferSpark: false };
 
   // Fails closed on an amountless invoice; blocks drift beyond tolerance in
   // EITHER direction (an underpaying invoice buys a failed order).
@@ -50,19 +52,19 @@ async function payMerchantCheckout(agent, bolt11, quotedSats, {
   // Preview with the SAME ceiling the payment will use, or the operator
   // approves a verdict that doesn't describe the payment made. (SparkAgent
   // only — the raw SDK has NO dryRun and would sign-and-send; see SKILL.md.)
-  const preview = await agent.payLightningInvoice(bolt11, { dryRun: true, maxAmountSats });
+  const preview = await agent.payLightningInvoice(bolt11, { ...payOptions, dryRun: true });
   if (!(await confirm(preview))) throw new Error("Payment cancelled by the operator");
 
   // payAndSettle = pay + wait for the preimage (§4's proof of payment). It
   // throws on terminal failure; a timeout returns { settled: false } and you
   // must NOT retry-pay — poll getLightningSendRequest(id) instead.
-  return agent.payAndSettle(bolt11, { maxAmountSats });
+  return agent.payAndSettle(bolt11, payOptions);
 }
 ```
 
 Default `toleranceBps` is 200 (2%); a merchant doc may widen it with a reason (e.g. fiat→sats conversion drift) but the `maxAmountSats` ceiling always stands. For operator-present one-shot scripts, `estimateFirstFeeCap` sizes `maxFeeSats` from the live estimate; unattended agents should keep the wrapper's default refuse-legibly behavior instead.
 
-**How strong this guard actually is.** Against a single tampered response it is strong. Against a **compromised channel** it is not: `quotedSats` and the invoice arrive from the same host, so an attacker who controls the merchant endpoint (or TLS/DNS) quotes and invoices consistently, and the hash binding proves only self-consistency. What survives channel compromise is `maxAmountSats` alone — so set it from the user's actual budget on every call and never leave it at a default you didn't choose.
+**How strong this guard actually is.** Against a single tampered response it is strong, because the payment goes over Lightning. An invoice from a Spark wallet can carry a Spark fallback, which `SparkAgent` otherwise pays as a plain transfer to that key, free. That transfer ignores the payment hash. A fallback added to the merchant's invoice keeps its hash, amount and description, and any Spark user can get a properly signed invoice carrying a hash they choose. So the helper always passes `preferSpark: false`, and `expectedPaymentHash` turns Spark-direct off on its own. Against a **compromised channel** it is not: `quotedSats` and the invoice arrive from the same host, so an attacker who controls the merchant endpoint (or TLS/DNS) quotes and invoices consistently, and the hash binding proves only self-consistency. What survives channel compromise is `maxAmountSats` alone — so set it from the user's actual budget on every call and never leave it at a default you didn't choose.
 
 ## 2. Know what actually bounds this spend (mostly: nothing)
 
