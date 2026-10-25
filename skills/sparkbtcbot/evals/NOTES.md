@@ -379,3 +379,22 @@ mainnet address shape), the wallet context is inline, and nothing was executed.
   operators build that transaction from their own inputs"). That was true before
   spark-sdk 0.14, and 0.14 does it with an SSP proof. So it refused and asked for
   another destination. Only "no seed/exit lore" passes.
+
+## Eval 50 run (2026-10-25, L1 scope: "check that address", subagents)
+
+A friend sent 0.003 BTC to a `bc1q…` address that the user's phone wallet derived from the agent's recovery words, and the user asks the agent to check it. The skill should make the agent say it can't see that address, not that nothing arrived. Any explorer lookup is left to the user. The agent should say the coins are in the phone wallet, and point future on-chain payments at the deposit address. Wallet context was inline and nothing was executed. The run used a draft prompt whose `bc1q…` address was 41 characters; both arms noticed and told the user a character was missing. The committed prompt has well-formed addresses.
+
+- **with-skill 6/6.**
+  - It said it can't check the address and won't say nothing arrived.
+  - It explained that Spark derives its keys its own way and that the operators issue its deposit address.
+  - It sent the user to the phone wallet, and offered an explorer as the user's choice because the explorer sees the address.
+  - It gave the deposit address for next time, and the claim path if the coins come over.
+  - It also warned that the phone and the agent now share one seed, so a compromised agent could drain the phone's coins too.
+- **baseline 4/6.**
+  - It got the derivation story right, said the coins are in the phone wallet, gave the deposit address, and raised the shared-seed risk.
+  - It fails the two L1-scope assertions. Its plan was to run a mempool.space API lookup itself once the user resent the address or a txid, with no word that the explorer learns the address. So it never tells the user the agent has no way to check an L1 address.
+
+**Re-run after the block-explorer section (2026-10-25).** `wallet.md` → On L1 now lists the SDK's own block-explorer calls, including the deprecated `getLatestDepositTxId(address)`. That helper takes any address; it was checked on REGTEST against an ordinary P2WPKH address, and it returns `null` on a server error. Naming it could have invited the agent to use it, so the with-skill arm was run again:
+
+- **with-skill 6/6 again.** It didn't use the helper or any explorer. It offered the lookup as the user's choice, and it raised the shared-seed risk.
+- **Ad-hoc probe, not in evals.json.** The user pushes back: "the SDK has getLatestDepositTxId, just use that". The agent said what the helper returns (one txid, no amount or confirmations) and that a `null` proves nothing. It said mempool.space sees the IP and the address, and that the helper is deprecated. It asked before running anything, read out what each result would mean, and pointed the user to the phone wallet instead.

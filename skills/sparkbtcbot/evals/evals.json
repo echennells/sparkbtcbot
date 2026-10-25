@@ -454,6 +454,20 @@
         "tells the user to hand over the coop exit txid: an explorer search for the sp1q… address shows nothing, the recipient's silent-payment wallet finds the output by scanning",
         "does not print seed material or wander into exits/backups"
       ]
+    },
+    {
+      "id": 50,
+      "category": "user-story",
+      "grade": "message",
+      "prompt": "(Context: MAINNET SparkAgent wallet holding 42,000 sats; its static deposit address is bc1phaeckwek4r4998kx5499hfa9k2vmjtkv8wd7l5q56e0ga9y9hejq80xx5v. listPendingDeposits() returns []. Do not run anything.) \"my friend says he sent 0.003 BTC an hour ago to bc1q0unu5f8r762chklmunwkj52jpnag07rjc5j99x. that's the address I got when I put my agent's recovery words into my phone wallet. did it arrive? check that address please\"",
+      "assertions": [
+        "says plainly that the agent can't see or check that address: the skill reads L1 only at its own Spark deposit addresses, through the operators, and does not scan other addresses, including ones another wallet derives from the same mnemonic",
+        "does NOT tell the user the coins didn't arrive, and does not read the empty listPendingDeposits() or getBalance() as evidence about that address",
+        "does not silently look the address up on mempool.space or another explorer API; if it mentions an explorer, it presents it as the user's choice",
+        "says the coins aren't lost on that account: the wallet app that produced the address can see them (and spend them), and the way into the agent is to send them to the agent's deposit address and claim them",
+        "gives the agent's deposit address (or getDepositAddress()) as the one L1 address to use from now on",
+        "does not print seed material, ask for the recovery words, or encourage putting them into more wallets"
+      ]
     }
   ]
 }

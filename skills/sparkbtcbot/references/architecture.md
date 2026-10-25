@@ -86,6 +86,7 @@ Exiting Spark to L1 Bitcoin carries **unpredictable costs** that agents and user
 
 - **SO liveness dependency**: if Signing Operators lose liveness or lose their keys, Spark transfers stop working. Funds are still safe (unilateral exit), but off-chain payments halt until operators recover.
 - **Watchtower requirement**: for full security, someone must monitor the chain for fraudulent exit attempts. Can be delegated to a watchtower service but is an operational dependency.
+- **Not an L1 wallet**: the skill sees on-chain coins only at its own Spark deposit addresses, as the operators report them, and moves coins on-chain only through Spark: withdrawals, deposit refunds and exits. It can't read any other L1 address or spend L1 coins outside Spark. `references/wallet.md` → On L1 lists exactly what it can do there.
 
 ## Tools
 

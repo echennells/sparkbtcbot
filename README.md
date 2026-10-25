@@ -29,7 +29,7 @@ Spark is a Bitcoin Layer 2 that lets you send and receive Bitcoin instantly with
 ## Capabilities
 
 - **Wallet Setup** — Generate or import wallets from a BIP39 mnemonic
-- **BTC Balance & Deposits** — Check balance, generate L1 deposit addresses, claim deposits
+- **BTC Balance & Deposits** — Check balance, generate L1 deposit addresses, claim deposits. Not an L1 wallet: on-chain, it sees only coins sent to its own Spark deposit addresses ([what it can and can't do on L1](./skills/sparkbtcbot/references/wallet.md#on-l1-what-this-skill-can-and-cant-do))
 - **Spark Transfers** — Instant, zero-fee BTC transfers between Spark wallets
 - **Lightning Invoices** — Create and pay BOLT11 invoices for Lightning compatibility
 - **Spark Invoices** — Native invoices payable in sats or BTKN tokens

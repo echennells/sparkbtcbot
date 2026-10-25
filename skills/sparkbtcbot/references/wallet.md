@@ -1,6 +1,6 @@
 # Wallet Operations (sats)
 
-Load for any task involving Bitcoin sats — checking balance, generating deposit addresses, claiming L1 deposits, sending Spark-to-Spark, listing transfers, or withdrawing to L1.
+Load for any task involving Bitcoin sats — checking balance, generating deposit addresses, claiming L1 deposits, sending Spark-to-Spark, listing transfers, or withdrawing to L1. Also for what it can and can't do on L1: it is not an L1 wallet.
 
 ## Check Balance
 
@@ -22,6 +22,51 @@ for (const [id, token] of tokenBalances) {
 `tokenBalances` is a `Map<Bech32mTokenIdentifier, { ownedBalance, availableToSendBalance, tokenMetadata }>`.
 
 > **⚠️ The `SparkAgent` wrapper's `getBalance()` returns a DIFFERENT shape** — normalized `{ sats, tokens }`, where `sats` is `satsBalance.available` **as a string** (the three raw sats figures flattened to the spendable one) and `tokens` is a plain object, not the raw `{ satsBalance, tokenBalances }` (bigint + Map) above. Same method name, not interchangeable — the same wrapper-vs-raw divergence family as `payLightningInvoice` (`references/lightning.md` → Pay). Destructure `{ satsBalance }` from the raw wallet and `{ sats }` from the agent; crossing them yields `undefined`, which reads as a zero balance.
+
+## On L1: what this skill can and can't do
+
+This is a Spark wallet, not an L1 Bitcoin wallet. It doesn't scan or watch the blockchain. It can't show the balance or history of an L1 address, and it can't spend L1 coins that aren't in Spark. What it does on L1 goes through the operators, plus a few lookups the SDK makes to a block explorer (below):
+
+| On L1 | Call | What actually happens |
+|---|---|---|
+| Receive on-chain bitcoin | `agent.getDepositAddress()` (static, reusable); `agent.getSingleUseDepositAddress()` | The operators issue a taproot address for your key combined with theirs. It is not an ordinary address from the mnemonic. |
+| See a deposit | `agent.listPendingDeposits()` | Asks the operators which unclaimed UTXOs sit at your **static** deposit addresses. They answer only for deposit addresses they issued; any other address returns an error. Single-use addresses aren't included. |
+| Move a deposit into Spark | `agent.claimDeposit({ txid, vout, maxFeeSats })` | After 3 confirmations, with the SSP's spread taken (below). Nothing shows in `getBalance()` until it's claimed. A single-use deposit is claimed with the raw `wallet.claimDeposit(txid)`, given its txid. The raw SDK also has SSP-priced instant claims (`getInstantStaticDepositQuote` / `claimInstantStaticDeposit`, 0–1 confirmations). Neither is wrapped or tested here. |
+| Return an unclaimed static deposit to L1 | raw `wallet.refundStaticDeposit({ depositTransactionId, destinationAddress, satsPerVbyteFee })` | The operators co-sign and you get the transaction hex; `refundAndBroadcastStaticDeposit` also broadcasts it. Not wrapped. |
+| Send to an L1 address | `agent.withdraw({ to, amount })` | A cooperative exit from the Spark balance to any address, including silent payment addresses (below). Flat fee, deducted from the amount. |
+| Follow a withdrawal | `result.coopExitTxid`; raw `wallet.getCoopExitRequest(id)` | The txid, and the SSP's record of the request. That's what the operators report, not a chain lookup. |
+| Exit without the operators | the leaf-vault backup, then Blink's exit tool | Runs outside this skill: `references/unilateral-exit.md`. |
+| Recover a leaf a watchtower exit cut off | raw `wallet.recoverWatchtowerExitedLeaf(...)` | The operators co-sign a spend of the leftover output: `references/unilateral-exit.md`. |
+| Broadcast a transaction | raw `wallet.broadcastTx(hex)` | Posts a transaction you already have to the SDK's block explorer (below). It builds nothing. |
+
+**What it can't do:**
+
+- **Read any other L1 address.** That includes addresses another wallet app derives from this same mnemonic: Spark's keys sit at `m/8797555'/…`, and nothing here scans the paths ordinary wallets use. It also includes a withdrawal's destination once the coins land, and the SDK's `getTokenL1Address()`, which nothing reads or spends. The SDK's one address lookup, the deprecated `getLatestDepositTxId`, is a block-explorer query: see below.
+- **Spend L1 coins outside Spark.** There is no coin selection, PSBT or signing for arbitrary UTXOs. To use on-chain coins here, send them to the deposit address and claim them.
+- **Estimate on-chain fees** beyond the SSP's quotes for withdrawals and claims.
+- **Watch the chain.** Nothing alerts on incoming coins except deposits the operators report.
+
+**The SDK's block-explorer calls.** For a few jobs the SDK skips the operators and queries one Esplora server (a block-explorer API) itself: `mempool.space` on MAINNET, and a regtest explorer built into the SDK on REGTEST. Wallet methods use the `electrsUrl` wallet option instead when it's set; the two standalone helpers at the bottom of the table below always use the built-in server. Each request shows that server your IP and the txid or address asked about.
+
+| Call | What it asks the explorer |
+|---|---|
+| `agent.claimDeposit` (via `claimStaticDepositWithMaxFee`), single-use `claimDeposit(txid)`, `claimMultiUtxoDeposit`, `refundStaticDeposit` | The deposit transaction, by txid, every time |
+| `getClaimStaticDepositQuote`, `claimStaticDeposit`, `getInstantStaticDepositQuote` | The same, but only when called without a `vout`. The wrapper always passes one. |
+| `broadcastTx`, `refundAndBroadcastStaticDeposit` | Posts the transaction |
+| `getWatchtowerExitedLeaves`, `recoverWatchtowerExitedLeaf` | Which transaction spent an output, and transaction hex |
+| standalone `constructUnilateralExitFeeBumpPackages` | Whether each exit transaction is already known (`isTxBroadcast`) |
+| standalone, deprecated `getLatestDepositTxId(address)` | The newest transaction at any address, Spark or not |
+
+Balance, transfers, Lightning, withdrawals and `listPendingDeposits()` don't touch it, and nothing asks it for a balance, a UTXO list, confirmations or a fee rate.
+
+**`getLatestDepositTxId` is not an L1 balance check.** Despite the name, it takes any address (checked on REGTEST against an ordinary P2WPKH address). It returns one txid, with no amount, confirmations or history. It returns `null` when the address is unused, when its newest transaction spends from it rather than paying it, and when the server answers with an error (seen on REGTEST for a busy address), so a `null` never means nothing arrived. Calling it is a block-explorer lookup like any other: the user's call, not something to run quietly. The SDK will remove it in a future release.
+
+**What to tell people:**
+
+- **Anyone paying on-chain gets the deposit address**, from `getDepositAddress()`. Never derive or hand out another L1 address from the mnemonic.
+- **Coins sent to any other address don't show up here.** Say the agent can't see that address. Don't report that nothing arrived, and don't quietly look it up on an explorer, `getLatestDepositTxId` included.
+- **"Did my withdrawal land?"** Give the `coopExitTxid`; the recipient's wallet or a block explorer shows it. Looking it up on an explorer is the user's call, since the explorer learns what was asked.
+- **Watching L1 addresses or spending L1 coins** needs a separate Bitcoin wallet with its own chain source. This skill doesn't include one.
 
 ## Generate Deposit Address
 
