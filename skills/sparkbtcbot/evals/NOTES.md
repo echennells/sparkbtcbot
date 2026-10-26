@@ -466,3 +466,8 @@ Two evals were re-run against the docs those fixes changed, ~250k tokens:
 ## Evals 51 and 52 added (2026-10-26, not yet run)
 
 Both come from the stuck single-use deposit. **51** asks for "a fresh deposit address per order": the pass is static address plus a Lightning invoice per order, with no single-use address. **52** is a user whose $2 sits at a single-use address an older version handed out: the pass is "it arrived, it's waiting on the operators, back up your recovery words", with no promise of a credit from a quote. Both are reply-graded, about 65–75k tokens per run.
+
+### First run (2026-10-26, with-skill only, ~178k tokens)
+
+- **51, address per order: 5/5** (109k). A Lightning invoice per order with the order number in the memo, the payment hash saved on the order, `getDepositAddress()` as an on-chain fallback matched by the customer's txid. No single-use call, nothing derived from the mnemonic. It said coins at a single-use address had "no way to get them back"; `wallet.md` now says they're stuck *until the operators switch the claim back on*.
+- **52, stuck coins: 5/6** (69k). Arrived, not lost; waiting on the operators; back up the words in your own terminal; spark#165; nothing imported elsewhere. **Failed** "no credit from a quote": it told the user to expect about $1.70, from the 1,703-sat SSP quote `wallet.md` cited as evidence the quote is bogus. The number is gone from `wallet.md`, which now says a single-use quote says nothing about the credit and never to quote one. Not re-run.
