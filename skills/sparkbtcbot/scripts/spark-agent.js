@@ -86,6 +86,49 @@ export function isTerminalLightningFailure(status) {
   return status.endsWith("_FAILED") || status === "USER_SWAP_RETURNED";
 }
 
+// What a Lightning payment cost comes from status reads, never from
+// payLightningInvoice's own answer: on REGTEST that answer came back
+// TRANSFER_COMPLETED with the preimage and a fee of 0 msat, before the SSP had
+// priced the payment (the next read said 5,000 msat, and 1,005 sats had left
+// for a 1,000-sat invoice). Reads made once a payment has settled: the first
+// at once, then LIGHTNING_FEE_POLL_MS apart (payAndSettle's pollMs), at most
+// this many.
+const LIGHTNING_FEE_READS = 5;
+const LIGHTNING_FEE_POLL_MS = 2_000;
+
+// The fee one status read shows, in whole sats: the fee the SSP reports, or
+// what the send's transfer took beyond the amount when that is more (the
+// wallet sends the amount plus its fee estimate). null when the read doesn't
+// say yet: it shows neither, or only a fee of 0 with no transfer to check it
+// against, which is what a read says before the SSP has priced the payment.
+function lightningPaidFeeSats(read, amountSats) {
+  const reported = wholeSats(read?.fee);
+  const total = wholeSats(read?.transfer?.totalAmount);
+  const taken = total !== null && total >= amountSats ? total - amountSats : null;
+  if (taken === null) return reported ? reported : null;
+  return Math.max(reported ?? 0, taken);
+}
+
+// A CurrencyAmount ({ originalValue, originalUnit }) or a bare number of sats
+// → whole sats (rounded up), or null when the unit isn't one this can read.
+function wholeSats(amount) {
+  if (typeof amount === "number") return Number.isSafeInteger(amount) && amount >= 0 ? amount : null;
+  const v = Number(amount?.originalValue);
+  if (!Number.isFinite(v) || v < 0) return null;
+  if (amount.originalUnit === "SATOSHI") return Math.ceil(v);
+  if (amount.originalUnit === "MILLISATOSHI") return Math.ceil(v / 1000);
+  return null;
+}
+
+// payAndSettle's private channel into payLightningInvoice (a Symbol, so no
+// caller can pass it): the call fills in the amount and fee cap it paid with,
+// and leaves the fee to payAndSettle, which reads it once the payment has settled.
+const LN_SETTLING = Symbol("sparkagent.lightningSettling");
+// fetchL402's flag to payAndSettle: skip the fee reads. Its paid pass is
+// waiting to be presented, and it reports no fee.
+const LN_NO_FEE_READS = Symbol("sparkagent.noFeeReads");
+
+
 // Cumulative-budget guardrail (lib/spend-ledger.js): every other guard is
 // per-call, so none of them stops a LOOP of individually-valid sends. Active
 // only when SPARK_DAILY_BUDGET_SATS is set (rolling 24h window; ledger at
@@ -855,15 +898,51 @@ export class SparkAgent {
           : "SPARK_LN_DEDUP is off, so even retrying this same invoice may pay twice: check agent.getTransfers() first.",
       });
     }
+    if (!result || typeof result !== "object") return result;
+    // A copy, so a frozen SDK result can't lose the fields added here.
+    const out = { ...result };
     // Surface the dedup verdict: a reused id means this "success" is the
     // ORIGINAL payment's result replayed (Lightning rail), not a new debit —
     // without the flag, a deliberate second pay of the same invoice reads as
     // a fresh payment while no money moved (ToB sharp-edges F3).
-    if (resolved) {
-      try { result.dedupReused = resolved.reused; } catch { /* frozen result — flag lost, payment fine */ }
+    if (resolved) out.dedupReused = resolved.reused;
+    const settling = rest[LN_SETTLING];
+    if (settling) {
+      Object.assign(settling, { amountSats: amt, capSats: cap });
+      return out;
     }
-    return result;
+    const fee = await this.#lightningFee(out, { amountSats: amt, capSats: cap, settled: Boolean(out.paymentPreimage), pollMs: LIGHTNING_FEE_POLL_MS });
+    return Object.assign(out, fee);
   }
+
+  // The fee fields of a paid Lightning result: `feeSats`, and `feeNote` when
+  // feeSats is the cap standing in for a cost nobody has reported. Paid over
+  // Spark (the invoice's fallback address: the SDK answers with a transfer,
+  // not a send request), there is no Lightning fee. Settled: status reads
+  // until one says what it cost, at most LIGHTNING_FEE_READS, counting
+  // `preimageRead`, the read that brought the preimage, if one did. Not
+  // settled, or no read says: the cap, which over-reports — the safe direction.
+  async #lightningFee(result, { amountSats, capSats, settled, pollMs, preimageRead = null }) {
+    if (!("encodedInvoice" in result)) return { feeSats: 0 };
+    for (let i = 0; settled && i < LIGHTNING_FEE_READS; i++) {
+      let read = i === 0 ? preimageRead : null;
+      if (!read) {
+        if (i > 0) await new Promise((r) => setTimeout(r, pollMs));
+        try {
+          read = await this.#wallet.getLightningSendRequest(result.id);
+        } catch {
+          read = null; // a failed status read says nothing about the payment
+        }
+      }
+      const fee = read && typeof read === "object" ? lightningPaidFeeSats(read, amountSats) : null;
+      if (fee !== null) return { feeSats: fee };
+    }
+    const why = settled
+      ? "the wallet hasn't reported what this payment cost"
+      : "the payment hasn't settled, so what it cost isn't known yet";
+    return { feeSats: capSats, feeNote: `feeSats is the fee cap: ${why}. It was at most ${capSats} sats.` };
+  }
+
 
   async estimateLightningFee(bolt11, amountSats) {
     return await this.#wallet.getLightningSendFeeEstimate({
@@ -901,7 +980,8 @@ export class SparkAgent {
   // hash = new dedup entry = a real second payment) and not via the raw SDK
   // (bypasses the store). Confirm via the balance/transfer list.
   async payAndSettle(bolt11, { pollMs = 2000, maxPolls = 30, ...payOptions } = {}) {
-    const result = await this.payLightningInvoice(bolt11, payOptions);
+    const sent = {}; // filled by payLightningInvoice: { amountSats, capSats }
+    const result = await this.payLightningInvoice(bolt11, { ...payOptions, [LN_SETTLING]: sent });
     if (payOptions.dryRun) return result;
     // Spark-direct: the SDK paid the invoice's Spark fallback as a plain
     // transfer (a WalletTransfer, not a LightningSendRequest). The payee has
@@ -909,16 +989,19 @@ export class SparkAgent {
     // polling Lightning status with a transfer id used to wait ~60 s and then
     // report settled: false for a payment that had gone through.
     if (result && !("encodedInvoice" in result) && "transferDirection" in result) {
-      return { ...result, paymentPreimage: null, settled: true, sparkDirect: true, lastStatus: result.status ?? null };
+      return { ...result, paymentPreimage: null, settled: true, sparkDirect: true, lastStatus: result.status ?? null, feeSats: 0 };
     }
     let preimage = result.paymentPreimage ?? null;
     let lastStatus = result.status ?? null;
+    let preimageRead = null;
     for (let i = 0; !preimage && result.id && i < maxPolls; i++) {
       await new Promise((r) => setTimeout(r, pollMs));
       const status = await this.#wallet.getLightningSendRequest(result.id);
       lastStatus = status?.status ?? lastStatus;
-      if (status?.paymentPreimage) preimage = status.paymentPreimage;
-      else if (isTerminalLightningFailure(status?.status)) {
+      if (status?.paymentPreimage) {
+        preimage = status.paymentPreimage;
+        preimageRead = status;
+      } else if (isTerminalLightningFailure(status?.status)) {
         // Distinguishing a DEFINITIVE failure from a slow settle is what makes
         // the never-retry-on-timeout rule safe: a failed-and-refunded payment
         // that merely timed out would otherwise look pending forever, and the
@@ -953,7 +1036,14 @@ export class SparkAgent {
         }
       }
     }
-    return { ...result, paymentPreimage: preimage, settled: Boolean(preimage), lastStatus };
+    // What it cost, read once it has settled (#lightningFee): the SDK's
+    // first answer can say 0 before the payment has been priced. Not for
+    // fetchL402: it reports no fee, and its paid pass is waiting to be
+    // presented before the token expires.
+    const fee = sent.capSats === undefined || payOptions[LN_NO_FEE_READS]
+      ? {}
+      : await this.#lightningFee(result, { ...sent, settled: Boolean(preimage), pollMs, preimageRead });
+    return { ...result, paymentPreimage: preimage, settled: Boolean(preimage), lastStatus, ...fee };
   }
 
   // --- Spark Invoices ---
@@ -1445,7 +1535,7 @@ export class SparkAgent {
     // because after this line the money is GONE. A thrown timeout invites a
     // retry that pays the invoice a second time. Over Lightning only: the
     // preimage IS the credential, and a Spark-direct payment returns none.
-    const payResult = await this.payAndSettle(invoice, { maxFeeSats: maxFee, preferSpark: false });
+    const payResult = await this.payAndSettle(invoice, { maxFeeSats: maxFee, preferSpark: false, [LN_NO_FEE_READS]: true });
     const preimage = payResult.paymentPreimage;
     if (!preimage) {
       this.#holdL402(key, { macaroon, invoice, amountSats, sendId: payResult.id, preimage: null });
