@@ -1,6 +1,6 @@
 # Complete SparkAgent Class
 
-Load when building an agent that wraps `SparkWallet` with a higher-level API for identity, balance, transfers, Lightning, Spark invoices, tokens, withdrawal, message signing, L402 paywalls, and event listeners. Drop-in implementation.
+Load when building an agent that wraps `SparkWallet` with a higher-level API for identity, balance, transfers, Lightning, Spark invoices, tokens, withdrawal, message signing, L402 paywalls, and event listeners. Import it from the package, `import { SparkAgent } from "sparkbtcbot-skill/agent"`; the listing below is the shipped file, for reading or for copying when a dependency is impossible.
 
 ## Methods at a glance
 
@@ -1626,7 +1626,8 @@ export class SparkAgent {
 ## Usage
 
 ```javascript
-import { loadMnemonicFromEnv } from "./lib/encrypted-seed.js";
+import { loadMnemonicFromEnv } from "sparkbtcbot-skill";
+import { SparkAgent } from "sparkbtcbot-skill/agent";
 
 const mnemonic = await loadMnemonicFromEnv(); // reads SPARK_PASSPHRASE
 const { agent } = await SparkAgent.create(mnemonic);

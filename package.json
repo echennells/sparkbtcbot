@@ -40,6 +40,9 @@
       "types": "./lib/index.d.ts",
       "import": "./lib/index.js"
     },
+    "./agent": {
+      "import": "./skills/sparkbtcbot/scripts/spark-agent.js"
+    },
     "./leaf-vault": {
       "import": "./skills/sparkbtcbot/scripts/leaf-vault.js"
     },

@@ -104,8 +104,7 @@ A few rough edges that bite agents running in containers, devcontainers, or sand
 ```javascript
 import "dotenv/config";
 import { SparkWallet } from "@buildonspark/spark-sdk";
-import { loadMnemonicFromEnv } from "./lib/encrypted-seed.js";
-import { sparkWalletOptions } from "./lib/wallet-options.js";
+import { loadMnemonicFromEnv, sparkWalletOptions } from "sparkbtcbot-skill";
 
 const mnemonic = await loadMnemonicFromEnv(); // reads SPARK_PASSPHRASE
 const { wallet } = await SparkWallet.initialize({

@@ -187,29 +187,24 @@ SPARK_NETWORK=MAINNET
 
 ```javascript
 import "dotenv/config";
-import { SparkWallet } from "@buildonspark/spark-sdk";
-import { loadMnemonicFromEnv } from "./lib/encrypted-seed.js";
-import { sparkWalletOptions } from "./lib/wallet-options.js";
+import { loadMnemonicFromEnv } from "sparkbtcbot-skill";
+import { SparkAgent } from "sparkbtcbot-skill/agent";
 
 const mnemonic = await loadMnemonicFromEnv(); // reads SPARK_PASSPHRASE, decrypts seed.enc
-const { wallet } = await SparkWallet.initialize({
-  mnemonicOrSeed: mnemonic,
-  // network + the SDK's fee ladders OFF, so the exit backup stays exitable (unilateral-exit.md)
-  options: sparkWalletOptions(process.env.SPARK_NETWORK || "MAINNET"),
-});
+// The wrapper carries every guard (allowlist, caps, budget, dedup, backup) and opens
+// the wallet with the SDK's fee ladders OFF, so the exit backup stays exitable.
+const { agent } = await SparkAgent.create(mnemonic, process.env.SPARK_NETWORK || "MAINNET");
 
-const address = await wallet.getSparkAddress();
-const identityKey = await wallet.getIdentityPublicKey();
-const { satsBalance } = await wallet.getBalance();
+const { address, publicKey } = await agent.getIdentity();
+const { sats } = await agent.getBalance();
+console.log("Spark Address:", address, "| Identity Key:", publicKey, "| Available:", sats, "sats");
 
-console.log("Spark Address:", address);
-console.log("Identity Key:", identityKey);
-console.log("Available:", satsBalance.available.toString(), "sats");
-
-await wallet.cleanup();
+await agent.cleanup();
 ```
 
-**One-shot scripts that move value:** after a claim/pay/transfer/withdraw the SDK starts a *detached* background leaf-optimization job. Calling `cleanup()` right away interrupts it — the SDK logs `Claim transfer process was interrupted due to cleanup`. **No funds are lost** (the op already settled; optimization resumes on next init), but for a short-lived script that moves value then exits, initialize it with `options: sparkWalletOptions(network, { optimizationOptions: { auto: false } })` (keeps the fee ladders off, like every wallet here) so there's nothing to interrupt — or let it settle a few seconds before `cleanup()`. Long-running agents keep the wallet open and don't hit this. See `references/wallet.md` → Cleanup.
+The raw SDK skips every guard. If you must call `SparkWallet.initialize` yourself, pass `options: sparkWalletOptions(network)` (from `sparkbtcbot-skill`) so the fee ladders stay off.
+
+**One-shot scripts** (boot, do a little, exit — read-only ones too, since boot claims pending transfers and that can start the leaf optimizer): use `SparkAgent.create(mnemonic, network, { optimizeLeaves: false })`, or for a raw wallet `options: sparkWalletOptions(network, { optimizationOptions: { auto: false } })`. Otherwise `cleanup()` interrupts the SDK's detached leaf optimization (it logs `Claim transfer process was interrupted due to cleanup`; no funds are lost). Long-running agents keep the wallet open and don't hit this. See `references/wallet.md` → Cleanup.
 
 Decrypt happens once at boot (~250ms scrypt). Hold the wallet — do not call `loadMnemonicFromEnv()` per request.
 
@@ -238,7 +233,7 @@ Load only what's needed for the user's task. Each reference is a self-contained 
 | `references/lightning.md` | Lightning interop — BOLT11 invoices, payments, fee estimation; the raw-vs-wrapper `payLightningInvoice` shape trap |
 | `references/tokens.md` | BTKN/LRC20 token transfers and balances |
 | `references/spark-invoices.md` | Spark native invoice format (sats and tokens), `fulfillSparkInvoice` |
-| `references/agent-class.md` | Drop-in `SparkAgent` class wrapping the SDK |
+| `references/agent-class.md` | The `SparkAgent` wrapper (`import { SparkAgent } from "sparkbtcbot-skill/agent"`): every method, full listing |
 | `references/l402.md` | L402 / LSAT paywalls — paying for HTTP APIs over Lightning |
 | `references/merchant-spending.md` | The shared payment policy for ALL merchant purchases — invoice-vs-quote guard, confirm-before-buy, bearer-secret deliverables, what actually bounds spend. Load alongside any merchant doc below |
 | `references/bitrefill.md` | Spending sats on real-world goods (gift cards, eSIMs, top-ups) via Bitrefill's agent MCP/CLI — Bitrefill-specific deltas on the shared policy (live-validated) |
