@@ -60,9 +60,9 @@ async function main() {
       if (singleUseAddrs.includes(addr)) {
         console.log(`  ${u.txid}:${u.vout}  arrived at single-use address ${addr}: can't be claimed now (references/wallet.md)`);
       } else {
-        console.log(
-          `  ${u.txid}:${u.vout}  ->  claimStaticDepositWithMaxFee({ transactionId: "${u.txid}", maxFee: <sats>, outputIndex: ${u.vout} })`,
-        );
+        // The SparkAgent wrapper checks the deposit is at the static address
+        // and caps the fee for you; the raw call trusts whatever you pass.
+        console.log(`  ${u.txid}:${u.vout}  ->  agent.claimDeposit({ txid: "${u.txid}", vout: ${u.vout} })`);
       }
     }
   }

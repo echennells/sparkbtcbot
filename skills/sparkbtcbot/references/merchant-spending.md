@@ -56,9 +56,11 @@ async function payMerchantCheckout(agent, bolt11, quotedSats, {
   if (!(await confirm(preview))) throw new Error("Payment cancelled by the operator");
 
   // payAndSettle = pay + wait for the preimage (§4's proof of payment). It
-  // throws LIGHTNING_PAYMENT_FAILED when the payment failed for good (nothing
-  // paid) and PAYMENT_COMMITTED when it may have gone through (never pay
-  // again another way). A timeout returns { settled: false }: do NOT
+  // throws LIGHTNING_PAYMENT_FAILED when the payment failed for good (the
+  // payee wasn't paid; err.status says whether the sats are still on their way
+  // back, PENDING_USER_SWAP_RETURN, or didn't come back, USER_SWAP_RETURN_FAILED:
+  // check the balance) and PAYMENT_COMMITTED when it may have gone through
+  // (never pay again another way). A timeout returns { settled: false }: do NOT
   // retry-pay — poll getLightningSendRequest(id) instead.
   return agent.payAndSettle(bolt11, payOptions);
 }

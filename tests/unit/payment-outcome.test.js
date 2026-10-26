@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { SparkValidationError, SparkRequestError, decodeSparkAddress, encodeSparkAddress } from "@buildonspark/spark-sdk";
 import { PRE_SEND_VALIDATION_MESSAGES, provesNothingSent, PaymentCommittedError } from "../../lib/payment-outcome.js";
 import { SparkAgent } from "../../skills/sparkbtcbot/scripts/spark-agent.js";
+import { freshInvoice } from "../helpers/bolt11.js";
 
 // Raised AFTER a request has gone out, while reading an operator's reply.
 const POST_SEND_VALIDATION_MESSAGES = [
@@ -80,7 +81,7 @@ describe("an unknown payment outcome stays counted against the budget", () => {
   });
 
   const invoice2000 = async () =>
-    (await readFile("node_modules/light-bolt11-decoder/README.md", "utf8")).match(/lnbc20u[a-z0-9]+/)[0];
+    freshInvoice((await readFile("node_modules/light-bolt11-decoder/README.md", "utf8")).match(/lnbc20u[a-z0-9]+/)[0]);
 
   it("a loop of ambiguous Lightning failures is stopped by the daily budget", async () => {
     const inv = await invoice2000();

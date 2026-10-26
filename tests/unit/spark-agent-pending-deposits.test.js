@@ -158,7 +158,8 @@ describe("claimDeposit looks the deposit up itself", () => {
       getUnusedDepositAddresses: async () => [],
       getUtxosForDepositAddress: async () => { asked++; return page; }, // ignores offset
     }, "MAINNET");
-    await expect(agent.claimDeposit({ txid: TX, maxFeeSats: 500 })).rejects.toMatchObject({ code: "DEPOSIT_NOT_FOUND" });
+    // "can't tell", not "not found": the deposit could be past the first page.
+    await expect(agent.claimDeposit({ txid: TX, maxFeeSats: 500 })).rejects.toMatchObject({ code: "DEPOSIT_LOOKUP_INCOMPLETE" });
     expect(asked).toBe(2);
   });
 

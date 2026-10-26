@@ -8,8 +8,8 @@ The `SparkAgent` class exposes these (all `async` unless noted); full signatures
 
 - **Identity & balance** — `getIdentity()`, `getBalance()` (returns normalized `{ sats, tokens }` — the raw `wallet.getBalance()` returns `{ satsBalance, tokenBalances }`; same name, different shape, not interchangeable)
 - **Deposits** — `getDepositAddress()`, `listPendingDeposits()` (entries typed `static` / `single-use`), `claimDeposit(...)`; `getSingleUseDepositAddress()` refuses, because the operators currently refuse single-use claims
-- **Send** — `transfer(...)`, `transferTokens(...)`, `batchTransferTokens(transfers)`, `withdraw(...)` (L1 cooperative exit), `getWithdrawalFeeQuote(amountSats, address)`, `getTransfers(limit, offset)` (sats only), `getTokenTransactions({ tokenIdentifier, limit })`
-- **Lightning** — `createLightningInvoice(amountSats, memo, options)`, `createTrackedInvoice(amountSats, memo, { expirySeconds })` → `{ id, invoice, paymentHash, expiresAt }` and `getInvoiceStatus(id)` → `{ status, paid, … }` (one per order: no Spark fallback, so every payment marks it paid), `payLightningInvoice(bolt11, ...)` (persists one dedup `transferId` per invoice, so a warranted retry of the same invoice cannot double-pay — `references/lightning.md` → Retry Dedup), `estimateLightningFee(bolt11, amountSats)`, `getLightningSendRequest(id)` (poll an initiated send for its preimage), `payAndSettle(bolt11, ...)` (pay + wait for the preimage, VERIFIED against the invoice's payment hash; check status before any retry on its timeout). A Spark-backed invoice settles Spark-direct (free) unless the payment passes `expectedPaymentHash` (checked before anything is sent) or `preferSpark: false`; then it goes over Lightning, because a Spark-direct payment ignores the hash. Merchant checkouts and `fetchL402` always go over Lightning. ⚠️ `payLightningInvoice` here takes a **bare BOLT11 string** first; the raw `wallet.payLightningInvoice` takes **one `{ invoice, ... }` object** — not interchangeable, and the raw layer crashes opaquely on a bare string (`references/lightning.md` → Pay)
+- **Send** — `transfer(...)`, `transferTokens(...)`, `batchTransferTokens(transfers)`, `withdraw(...)` (L1 cooperative exit), `getWithdrawalFeeQuote(amountSats, address)`, `getTransfers(limit, offset)` (sats only), `getTokenTransactions({ tokenIdentifier, limit })` (newest first, readable: `hash`, `status` finalized/pending/cancelled, `type`, `outputs` with `to`, `mine`, `amount`), `getTokenTransaction(hash)`
+- **Lightning** — `createLightningInvoice(amountSats, memo, options)`, `createTrackedInvoice(amountSats, memo, { expirySeconds })` → `{ id, invoice, paymentHash, expiresAt }` and `getInvoiceStatus(id)` → `{ state, paid, customerCharged, expired, canReinvoice, … }` (one per order: no Spark fallback, so every payment marks it paid; an amount is required; states in `references/wallet.md`), `payLightningInvoice(bolt11, ...)` (persists one dedup `transferId` per invoice, so a warranted retry of the same invoice cannot double-pay — `references/lightning.md` → Retry Dedup), `estimateLightningFee(bolt11, amountSats)`, `getLightningSendRequest(id)` (poll an initiated send for its preimage), `payAndSettle(bolt11, ...)` (pay + wait for the preimage, VERIFIED against the invoice's payment hash; check status before any retry on its timeout). A Spark-backed invoice settles Spark-direct (free) unless the payment passes `expectedPaymentHash` (checked before anything is sent) or `preferSpark: false`; then it goes over Lightning, because a Spark-direct payment ignores the hash. Merchant checkouts and `fetchL402` always go over Lightning. ⚠️ `payLightningInvoice` here takes a **bare BOLT11 string** first; the raw `wallet.payLightningInvoice` takes **one `{ invoice, ... }` object** — not interchangeable, and the raw layer crashes opaquely on a bare string (`references/lightning.md` → Pay)
 - **Spark invoices** — `createSatsInvoice(amountSats, memo)`, `createTokenInvoice(tokenIdentifier, amount, memo)`, `fulfillInvoice(invoices, options)` (allowlist-gated on each invoice's decoded receiver; supports `dryRun`)
 - **L402 paywalls** — `fetchL402(url, options)` (`{ resend: true }` re-sends a POST that may have reached the service), `previewL402(url)`, `forgetL402(url, { method })` (sync; lets the agent buy a URL again after it stopped, only on the user's say-so)
 - **Message signing** — `signMessage(text)`, `verifyOwnSignature(text, signature)`
@@ -38,7 +38,7 @@ import {
   DEFAULT_ALLOWLIST_PATH,
 } from "./lib/recipients-allowlist.js";
 import { createHash } from "node:crypto";
-import { decodeInvoiceSats, invoicePaymentHash, invoicePaymentHashCount, paymentHashMatches } from "./lib/bolt11.js";
+import { decodeInvoiceSats, invoicePaymentHash, invoicePaymentHashCount, invoiceSecondsRemaining, paymentHashMatches } from "./lib/bolt11.js";
 import {
   lightningEstimateSats,
   lightningFeeCap,
@@ -164,6 +164,90 @@ const LN_NO_FEE_READS = Symbol("sparkagent.noFeeReads");
 // fetchL402's flag when it settles a purchase an earlier call already
 // attempted: that attempt counted the spend, so this one doesn't again.
 const LN_RESUMING = Symbol("sparkagent.lightningResuming");
+
+// A tracked invoice's receive status, as a state a shop can act on. The order
+// of a receive, from the SSP's schema (spark repo, schemas/ssp_rc_schema.graphql)
+// and the operators' preimage swap (spark/so/handler/initiate_preimage_swap_flow_handler.go):
+// invoice created → HTLC received → transfer to this wallet created → preimage
+// released to the SSP, atomically with that transfer → the SSP collects the
+// payer's HTLC (LIGHTNING_PAYMENT_RECEIVED: the payer is charged) → this wallet
+// claims the transfer (TRANSFER_COMPLETED). A failure before the preimage is
+// released can't have charged the payer: without it the SSP can't collect.
+// These meanings are inferred from that flow, not documented, and whether an
+// early failure is final isn't known. SDK 0.14 names only some of these and
+// reports the SSP's others (HTLC_RECEIVED, HTLC_FAILED, …) as FUTURE_VALUE,
+// which maps to "unknown".
+const RECEIVE_STATES = {
+  INVOICE_CREATED: "unpaid",
+  HTLC_RECEIVED: "in_progress",
+  TRANSFER_CREATED: "in_progress",
+  PAYMENT_PREIMAGE_PENDING: "in_progress",
+  PAYMENT_PREIMAGE_RECOVERED: "in_progress",
+  LIGHTNING_PAYMENT_RECEIVED: "received",
+  TRANSFER_COMPLETED: "paid",
+  TRANSFER_CREATION_FAILED: "failed",
+  REFUND_SIGNING_COMMITMENTS_QUERYING_FAILED: "failed",
+  REFUND_SIGNING_FAILED: "failed",
+  PAYMENT_PREIMAGE_QUERYING_FAILED: "failed",
+  PAYMENT_PREIMAGE_RECOVERING_FAILED: "failed",
+  TRANSFER_CANCELED: "failed",
+  HTLC_FAILED: "failed",
+  TRANSFER_FAILED: "failed_after_payment",
+};
+// getInvoiceStatus allows a new invoice this long after the old one expired:
+// a payment already in flight at expiry can still complete for a moment.
+const REINVOICE_GRACE_MS = 2 * 60_000;
+
+// A token transaction from the operators, in readable form: hex hash, a
+// status (finalized; pending = started, signed or revealed, may still go
+// through, so don't send again; cancelled = nothing moved), the type,
+// createdAt (the sending client's clock, so not an ordering: two sends a few
+// ms apart came back stamped out of order on REGTEST), and each
+// output's recipient address, whether it is this wallet's, token and amount
+// (base units, as a string). A send shows the recipient's output and the
+// change back to this wallet.
+const TOKEN_TX_STATUS = {
+  0: ["TOKEN_TRANSACTION_STARTED", "pending"],
+  1: ["TOKEN_TRANSACTION_SIGNED", "pending"],
+  5: ["TOKEN_TRANSACTION_REVEALED", "pending"],
+  2: ["TOKEN_TRANSACTION_FINALIZED", "finalized"],
+  3: ["TOKEN_TRANSACTION_STARTED_CANCELLED", "cancelled"],
+  4: ["TOKEN_TRANSACTION_SIGNED_CANCELLED", "cancelled"],
+};
+const TOKEN_TX_MAX_LIMIT = 100;
+const TOKEN_TX_TYPES = { transferInput: "transfer", mintInput: "mint", createInput: "create" };
+
+function readableTokenTransaction(t, network, me) {
+  const tx = t?.tokenTransaction ?? {};
+  const hex = (b) => (b instanceof Uint8Array ? Buffer.from(b).toString("hex") : "");
+  const [statusCode, status] = TOKEN_TX_STATUS[t?.status] ?? [String(t?.status), "unknown"];
+  return {
+    hash: hex(t?.tokenTransactionHash),
+    status,
+    statusCode,
+    type: TOKEN_TX_TYPES[tx.tokenInputs?.$case] ?? "unknown",
+    createdAt: tx.clientCreatedTimestamp instanceof Date ? tx.clientCreatedTimestamp.toISOString() : null,
+    outputs: (tx.tokenOutputs ?? []).map((o) => {
+      const owner = hex(o.ownerPublicKey);
+      let to = null;
+      try {
+        to = owner ? encodeSparkAddress({ identityPublicKey: owner, network }) : null;
+      } catch {
+        // An owner key that won't encode must not hide the rest of the list.
+      }
+      return {
+        to,
+        mine: owner === me,
+        tokenIdentifier: o.tokenIdentifier?.length ? encodeBech32mTokenIdentifier({ tokenIdentifier: o.tokenIdentifier, network }) : null,
+        amount: o.tokenAmount?.length ? BigInt("0x" + hex(o.tokenAmount)).toString() : "0",
+      };
+    }),
+  };
+}
+
+// payLightningInvoice refuses an invoice with less than this many seconds
+// left: the SDK locks the coins before the SSP checks the expiry.
+const LIGHTNING_MIN_INVOICE_SECONDS = 30;
 
 // claimDeposit's lookup reads a deposit address's unclaimed UTXOs this many
 // at a time, until it finds the deposit or runs out, and gives up after
@@ -401,12 +485,19 @@ const l402RequestKey = (method, url) => `${String(method).toUpperCase()} ${url}`
 // ended with no proof. A PaymentCommittedError, so code that stops on
 // PAYMENT_COMMITTED stops here too; `reason` says which.
 function l402BlockedError(blocked) {
-  const e = new PaymentCommittedError(blocked.message, { settled: blocked.settled, op: "l402" });
+  const e = new PaymentCommittedError(blocked.message, { settled: blocked.settled, op: "l402", invoiceHash: blocked.invoiceHash, sendId: blocked.sendId });
   e.reason = blocked.reason;
   if (blocked.status !== undefined) e.status = blocked.status;
+  if (blocked.amountSats != null) e.amountSats = blocked.amountSats;
   e.paid = true;
   return e;
 }
+
+// How to lift a block for this request: forgetL402 defaults to GET.
+const forgetHint = (method) => {
+  const m = String(method).toUpperCase();
+  return `agent.forgetL402(url${m === "GET" ? "" : `, { method: "${m}" }`})`;
+};
 
 // A delivered body is data even when it is not the JSON its header claims:
 // after payment, a parse error must not become a reason to pay again.
@@ -731,15 +822,21 @@ export class SparkAgent {
         const utxos = await this.#wallet.getUtxosForDepositAddress(address, DEPOSIT_UTXO_PAGE, page * DEPOSIT_UTXO_PAGE, true);
         if (utxos.some((u) => String(u.txid).toLowerCase() === want && Number(u.vout) === vout)) return true;
         if (utxos.length < DEPOSIT_UTXO_PAGE) return false;
-        // The same page again means the server ignores the offset: stop.
+        // The same page again means the server ignores the offset: the rest
+        // can't be read, so say so rather than "not found".
         const first = `${utxos[0].txid}:${utxos[0].vout}`;
-        if (first === previous) return false;
+        if (first === previous) throw incomplete(address, "the operators returned the same page twice");
         previous = first;
       }
-      throw new Error(
-        `SparkAgent.claimDeposit: stopped looking for ${txid}:${vout} after ${DEPOSIT_UTXO_PAGE * DEPOSIT_UTXO_MAX_PAGES} ` +
-          `unclaimed UTXOs at ${address}. Nothing was spent or changed.`,
+      throw incomplete(address, `stopped after ${DEPOSIT_UTXO_PAGE * DEPOSIT_UTXO_MAX_PAGES} unclaimed UTXOs`);
+    };
+    const incomplete = (address, why) => {
+      const e = new Error(
+        `SparkAgent.claimDeposit: can't tell whether ${txid}:${vout} is at ${address}: ${why}. ` +
+          "Nothing was spent or changed.",
       );
+      e.code = "DEPOSIT_LOOKUP_INCOMPLETE";
+      return e;
     };
     const statics = await this.#wallet.queryStaticDepositAddresses();
     for (const address of statics) if (await holds(address)) return "static";
@@ -814,15 +911,37 @@ export class SparkAgent {
     return await this.#wallet.getTransfers(limit, offset);
   }
 
-  // Token transactions involving this wallet, newest first. getTransfers()
-  // lists sats transfers only, so this is where to look after a token send
-  // threw PAYMENT_COMMITTED. Optionally one token (btkn1… / btknrt1…).
-  async getTokenTransactions({ tokenIdentifier, limit = 20 } = {}) {
-    return await this.#wallet.queryTokenTransactionsWithFilters({
+  // This wallet's latest token transactions, NEWEST FIRST, readable (see
+  // readableTokenTransaction). getTransfers() lists sats transfers only, so
+  // this is where to look after a token send threw PAYMENT_COMMITTED: find the
+  // recipient, token and amount among the newest entries. Optionally one token
+  // (btkn1… / btknrt1…). The operators page oldest-first; asking for the
+  // previous page with no cursor returns the newest page (hosted REGTEST,
+  // 2026-10-26), so the raw query's first page was the wallet's OLDEST.
+  async getTokenTransactions({ tokenIdentifier, limit = 20, ...rest } = {}) {
+    rejectUnknownOptions("getTokenTransactions", rest);
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > TOKEN_TX_MAX_LIMIT) {
+      throw new RangeError(`SparkAgent.getTokenTransactions: limit must be a whole number from 1 to ${TOKEN_TX_MAX_LIMIT}, got ${JSON.stringify(limit)}.`);
+    }
+    const res = await this.#wallet.queryTokenTransactionsWithFilters({
       sparkAddresses: [await this.#wallet.getSparkAddress()],
       ...(tokenIdentifier !== undefined ? { tokenIdentifiers: [canonicalTokenId(tokenIdentifier, this.#network, "getTokenTransactions")] } : {}),
       pageSize: limit,
+      direction: "PREVIOUS",
     });
+    const me = await this.#wallet.getIdentityPublicKey();
+    return [...(res?.tokenTransactionsWithStatus ?? [])].reverse().map((t) => readableTokenTransaction(t, this.#network, me));
+  }
+
+  // One token transaction by the hash a successful transferTokens or
+  // batchTransferTokens returned, readable; null when the operators have none.
+  async getTokenTransaction(hash) {
+    if (typeof hash !== "string" || !/^[0-9a-fA-F]{64}$/.test(hash)) {
+      throw new TypeError(`SparkAgent.getTokenTransaction: pass the 64-character hex hash a token send returned, got ${JSON.stringify(hash)}.`);
+    }
+    const res = await this.#wallet.queryTokenTransactionsByTxHashes([hash.toLowerCase()]);
+    const found = res?.tokenTransactionsWithStatus?.[0];
+    return found ? readableTokenTransaction(found, this.#network, await this.#wallet.getIdentityPublicKey()) : null;
   }
 
   // --- Lightning ---
@@ -846,8 +965,12 @@ export class SparkAgent {
   // whether it was paid.
   async createTrackedInvoice(amountSats, memo, { expirySeconds = 3600, ...rest } = {}) {
     rejectUnknownOptions("createTrackedInvoice", rest);
+    const sats = toSats(amountSats, "createTrackedInvoice");
+    // An amountless invoice lets the payer pick the amount, and `paid` would
+    // then mark a priced order paid for 1 sat.
+    if (!(sats >= 1)) throw new RangeError(`SparkAgent.createTrackedInvoice: amountSats must be at least 1, got ${JSON.stringify(amountSats)}.`);
     const request = await this.#wallet.createLightningInvoice({
-      amountSats: toSats(amountSats, "createTrackedInvoice"),
+      amountSats: sats,
       memo,
       expirySeconds,
       includeSparkAddress: false,
@@ -860,20 +983,35 @@ export class SparkAgent {
     };
   }
 
-  // Whether an invoice from createTrackedInvoice was paid: `paid` once the
-  // sats are in this wallet (TRANSFER_COMPLETED); `status` is the SSP's own
-  // word for anything earlier. null when there is no such invoice.
+  // Where an invoice from createTrackedInvoice stands, as `state` (see
+  // RECEIVE_STATES): unpaid, in_progress, received (the customer has paid; the
+  // sats arrive when this wallet claims them), paid, failed (the customer
+  // wasn't charged), failed_after_payment (charged, but the sats didn't reach
+  // this wallet: take it up with Spark), or unknown (a status this SDK can't
+  // name: treat it as in progress). `canReinvoice` is true only once the
+  // invoice has expired, plus a grace period, while unpaid or failed: an early
+  // failure may not be final (the SSP may retry, the payer may pay again), and
+  // a new invoice before then could charge the customer twice. `status` is the
+  // SSP's own word. null when there is no such invoice.
   async getInvoiceStatus(id) {
     if (typeof id !== "string" || !id) throw new TypeError("SparkAgent.getInvoiceStatus: pass the id createTrackedInvoice returned.");
     const request = await this.#wallet.getLightningReceiveRequest(id);
     if (!request) return null;
+    const state = RECEIVE_STATES[request.status] ?? "unknown";
+    const expiresAt = request.invoice?.expiresAt ?? null;
+    const expiresMs = expiresAt ? Date.parse(expiresAt) : NaN;
+    const now = Date.now();
     return {
       id: request.id,
+      state,
+      paid: state === "paid",
+      customerCharged: state === "paid" || state === "received" || state === "failed_after_payment" ? true : state === "unpaid" || state === "failed" ? false : null,
+      expired: Number.isFinite(expiresMs) ? now >= expiresMs : null,
+      canReinvoice: (state === "unpaid" || state === "failed") && Number.isFinite(expiresMs) && now >= expiresMs + REINVOICE_GRACE_MS,
       status: request.status,
-      paid: request.status === "TRANSFER_COMPLETED",
       paymentHash: request.invoice?.paymentHash ?? null,
       amountSats: wholeSats(request.invoice?.amount),
-      expiresAt: request.invoice?.expiresAt ?? null,
+      expiresAt,
     };
   }
 
@@ -961,6 +1099,21 @@ export class SparkAgent {
     // check would then pass anything (ToB review of 375e6fb..HEAD).
     if (hashCount === 1 && !invoicePaymentHash(bolt11)) {
       throw new Error("Payment blocked: the invoice's payment hash is not a 32-byte hash, so no preimage could prove this payment.");
+    }
+    // An expired invoice can't be paid, but the SDK locks the coins before the
+    // SSP says so: on hosted REGTEST (2026-10-26) paying one tied up 303 sats
+    // in a pending transfer that expires 16 days later, with no way to cancel
+    // it. Refuse before any I/O, with a margin for the seconds a send takes to
+    // reach the SSP. An undecodable invoice has no expiry to read; the SDK
+    // refuses it.
+    const secondsLeft = invoiceSecondsRemaining(bolt11);
+    if (secondsLeft !== null && secondsLeft < LIGHTNING_MIN_INVOICE_SECONDS) {
+      const e = new Error(
+        `Payment blocked: the invoice ${secondsLeft <= 0 ? `expired ${Math.ceil(-secondsLeft)} s ago` : `expires in ${Math.floor(secondsLeft)} s`}. ` +
+          `Paying it would lock the amount in a transfer the SSP refuses, for days. Ask the payee for a new invoice. Nothing was sent.`,
+      );
+      e.code = "INVOICE_EXPIRED";
+      throw e;
     }
     const sparkDirect = !hashBound && preferSpark !== false;
     // Validate BEFORE any I/O: a garbage ceiling must throw here, not degrade
@@ -1857,7 +2010,7 @@ export class SparkAgent {
       err.macaroon = macaroon; // not a working pass without the preimage
       throw err;
     }
-    return this.#deliverL402(url, key, { macaroon, preimage, amountSats }, request, { recovered: false });
+    return this.#deliverL402(url, key, { macaroon, preimage, amountSats, invoiceHash: invoicePaymentHash(invoice) ?? undefined }, request, { recovered: false });
   }
 
   // Lets this agent buy `url` again after fetchL402 stopped doing so: the
@@ -1914,10 +2067,13 @@ export class SparkAgent {
           reason: "L402_PASS_REFUSED",
           settled: true,
           status: res.status,
+          invoiceHash: pass.invoiceHash ?? (pass.invoice ? invoicePaymentHash(pass.invoice) ?? undefined : undefined),
+          amountSats: pass.amountSats ?? null,
           message:
             `L402: ${host}${path} refused the pass this agent paid ${pass.amountSats ?? "?"} sats for (HTTP ${res.status}). ` +
-            `Do NOT pay its new challenge: that buys the resource a second time. Take it up with the service. ` +
-            `This agent won't buy ${host}${path} again on its own; agent.forgetL402(url) allows it, on the user's say-so.`,
+            `Do NOT pay its new challenge: that buys the resource a second time. Take it up with the service; the ` +
+            `error's invoiceHash identifies the payment. This agent won't buy ${host}${path} again on its own; ` +
+            `${forgetHint(method)} allows it, on the user's say-so.`,
         };
         this.#holdL402(key, { blocked });
         throw l402BlockedError(blocked);
@@ -1934,7 +2090,13 @@ export class SparkAgent {
         data,
       };
     }
-    this.#holdL402(key, { macaroon: pass.macaroon, preimage: pass.preimage, amountSats: pass.amountSats, sentOnce: !repeatable });
+    this.#holdL402(key, {
+      macaroon: pass.macaroon,
+      preimage: pass.preimage,
+      amountSats: pass.amountSats,
+      invoiceHash: pass.invoiceHash ?? (pass.invoice ? invoicePaymentHash(pass.invoice) ?? undefined : undefined),
+      ...(repeatable ? {} : { sentOnce: true, reqBody }),
+    });
     const e = new PaymentCommittedError(
       `L402: paid ${pass.amountSats ?? "?"} sats for ${host}${path} but the resource was not delivered ` +
       `after ${tried} attempt${tried === 1 ? "" : "s"} (${failure}). The pass is kept in this process. ` +
@@ -1956,7 +2118,7 @@ export class SparkAgent {
   async #resumeL402(url, key, held, request) {
     const { host, path } = l402Target(url);
     if (held.blocked) throw l402BlockedError(held.blocked);
-    const invoiceHash = held.invoice ? invoicePaymentHash(held.invoice) ?? undefined : undefined;
+    const invoiceHash = held.invoiceHash ?? (held.invoice ? invoicePaymentHash(held.invoice) ?? undefined : undefined);
     const pending = (detail, extra = {}) =>
       Object.assign(
         new PaymentCommittedError(
@@ -1991,7 +2153,9 @@ export class SparkAgent {
             `L402: the earlier payment for ${host}${path} may have gone through, but the service's pass ` +
             `expires at ${new Date(tokenExpiry * 1000).toISOString()}, so settling it now could buy a dead pass. ` +
             `Nothing new was paid; check agent.getTransfers(). This agent won't buy ${host}${path} again on its own; ` +
-            `agent.forgetL402(url) allows it, on the user's say-so (a second purchase if the first payment went through).`,
+            `${forgetHint(request.method)} allows it, on the user's say-so (a second purchase if the first payment went through).`,
+          invoiceHash,
+          amountSats: held.amountSats ?? null,
         });
       }
       let settled;
@@ -2035,7 +2199,10 @@ export class SparkAgent {
             message:
               `L402: the earlier payment for ${host}${path} came back with a preimage that does NOT prove THIS invoice ` +
               `(sha256(preimage) = ${got}, invoice = ${invoiceHash ?? "unreadable"}), so there is no pass to present. ` +
-              `Check agent.getTransfers(). This agent won't buy ${host}${path} again on its own; agent.forgetL402(url) allows it, on the user's say-so.`,
+              `Check agent.getTransfers(). This agent won't buy ${host}${path} again on its own; ${forgetHint(request.method)} allows it, on the user's say-so.`,
+            invoiceHash,
+            sendId: held.sendId,
+            amountSats: held.amountSats ?? null,
           });
         }
         held.preimage = status.paymentPreimage;
@@ -2052,11 +2219,20 @@ export class SparkAgent {
           message:
             `L402: the earlier payment for ${host}${path} ended in ${status.status}: the service may have been paid, ` +
             `but no proof came back, so there is no pass to present. Take it up with the service; check agent.getTransfers(). ` +
-            `This agent won't buy ${host}${path} again on its own; agent.forgetL402(url) allows it, on the user's say-so.`,
+            `This agent won't buy ${host}${path} again on its own; ${forgetHint(request.method)} allows it, on the user's say-so.`,
+          invoiceHash,
+          sendId: held.sendId,
+          amountSats: held.amountSats ?? null,
         });
       } else {
         throw pending(`is still pending (status ${status?.status ?? "unknown"}). Call fetchL402 again later.`, { sendId: held.sendId });
       }
+    }
+    if (held.sentOnce && request.resend && request.reqBody !== held.reqBody) {
+      throw new TypeError(
+        `SparkAgent.fetchL402: { resend: true } sends the original ${String(request.method).toUpperCase()} again, and this ` +
+          `call's body differs from it. Pass the same body, or check with the service before buying anything new.`,
+      );
     }
     if (held.sentOnce && !request.resend) {
       const e = new PaymentCommittedError(
@@ -2073,7 +2249,17 @@ export class SparkAgent {
 
   #holdL402(key, entry) {
     this.#l402Held.delete(key);
-    if (this.#l402Held.size >= L402_MAX_HELD) this.#l402Held.delete(this.#l402Held.keys().next().value);
+    if (this.#l402Held.size >= L402_MAX_HELD) {
+      // Drop the oldest held purchase, never a block: dropping a block would
+      // let the next call buy that URL again on nobody's say-so. Blocks are
+      // tiny and only grow as fast as services refuse passes.
+      for (const [k, v] of this.#l402Held) {
+        if (!v.blocked) {
+          this.#l402Held.delete(k);
+          break;
+        }
+      }
+    }
     this.#l402Held.set(key, entry);
   }
 

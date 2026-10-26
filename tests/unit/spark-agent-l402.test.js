@@ -7,11 +7,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { inspect } from "node:util";
 import { SparkAgent } from "../../skills/sparkbtcbot/scripts/spark-agent.js";
+import { freshInvoice } from "../helpers/bolt11.js";
 
 // Amount-ful sample (2,000 sats embedded) from light-bolt11-decoder's README.
 const invoice2000 = async () => {
   const md = await readFile("node_modules/light-bolt11-decoder/README.md", "utf8");
-  return md.match(/lnbc20u[a-z0-9]+/)[0];
+  return freshInvoice(md.match(/lnbc20u[a-z0-9]+/)[0]);
 };
 
 const resp = (status, jsonBody) => ({
@@ -28,7 +29,7 @@ const TOKEN_VALID = "AgEIYXBlcnR1cmUCC2lkLXYyLXZhbGlkAAISc2VydmljZXM9d2VhdGhlcjo
 // A 2,000-sat invoice whose preimage is known (sha256(0x42 × 32) is its payment
 // hash), signed with test key 1 — so a "the preimage arrived later" path can be
 // exercised for real instead of with a preimage that hashes to nothing.
-const KNOWN_INVOICE = "lnbc20u1p4tzwuqpp5gf0dfe9rdvcw5gdepcsuwykxf85zznpfkl40dqyf6ypecmj48pxqsp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygsdp5wdcxzuntvf6xxcn0wss8getnwsazq6mwdamkugrswfjkjmtpvajsxqrrssfgmzf4e3aygc36mfrkgfj23fs5l3v4a0ztu34u5uu0ws9eycv4psq4msf75685vluz7kg7n3pvvzme375yjx63zjt2nxs9vgspgspvcp45esgz";
+const KNOWN_INVOICE = freshInvoice("lnbc20u1p4tzwuqpp5gf0dfe9rdvcw5gdepcsuwykxf85zznpfkl40dqyf6ypecmj48pxqsp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygsdp5wdcxzuntvf6xxcn0wss8getnwsazq6mwdamkugrswfjkjmtpvajsxqrrssfgmzf4e3aygc36mfrkgfj23fs5l3v4a0ztu34u5uu0ws9eycv4psq4msf75685vluz7kg7n3pvvzme375yjx63zjt2nxs9vgspgspvcp45esgz");
 const KNOWN_PREIMAGE = "42".repeat(32);
 
 // lightningfaucet-style JSON token expiring `seconds` from now.
@@ -505,6 +506,55 @@ describe("fetchL402 after payment: in-process recovery", () => {
     const fresh = await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }));
     expect(fresh.value).toMatchObject({ paid: true, data: { ok: true } });
     expect(pay).toHaveBeenCalledTimes(2);
+  });
+
+  // ToB review of 7ec89b9 (N1): the held map dropped its oldest entry when
+  // full, blocks included, so 100 other holds later the refused URL was bought
+  // again on nobody's say-so.
+  it("a full held map never drops a block", async () => {
+    const inv = await invoice2000();
+    stubFetch([resp(402, { invoice: inv, macaroon: "mac1" }), resp(401, {})]);
+    const { agent, pay } = mk();
+    const refused = await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }));
+    expect(refused.error).toMatchObject({ reason: "L402_PASS_REFUSED" });
+    // 120 other purchases whose delivery fails: each is held.
+    for (let i = 0; i < 120; i++) {
+      stubFetch([resp(402, { invoice: inv, macaroon: `m${i}` }), ...Array.from({ length: 3 }, () => new TypeError("fetch failed"))]);
+      await run(agent.fetchL402(`${URL_}/${i}`, { maxAmountSats: 3000 }));
+    }
+    stubFetch([]); // the refused URL: still blocked, no request, no payment
+    const again = await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }));
+    expect(again.error).toMatchObject({ reason: "L402_PASS_REFUSED" });
+    expect(pay).toHaveBeenCalledTimes(121);
+  });
+
+  // ToB review of 7ec89b9 (N5, N8): the hint said forgetL402(url), which is
+  // GET's, for a blocked POST; and a refused pass left no proof to show.
+  it("a block's error names the call that lifts it, and carries the invoice hash and amount", async () => {
+    const inv = await invoice2000();
+    stubFetch([resp(402, { invoice: inv, macaroon: "mac1" }), resp(402, {})]);
+    const { agent } = mk();
+    const r = await run(agent.fetchL402(URL_, { method: "POST", body: { q: 1 }, maxAmountSats: 3000 }));
+    expect(r.error.message).toContain('agent.forgetL402(url, { method: "POST" })');
+    expect(r.error).toMatchObject({ invoiceHash: expect.stringMatching(/^[0-9a-f]{64}$/), amountSats: 2000 });
+    expect(agent.forgetL402(URL_)).toBe(false); // GET: nothing held
+    expect(agent.forgetL402(URL_, { method: "POST" })).toBe(true);
+  });
+
+  // ToB review of 7ec89b9 (N6): resend sent the NEW call's body.
+  it("{ resend: true } refuses a body that differs from the request it re-sends", async () => {
+    const inv = await invoice2000();
+    stubFetch([resp(402, { invoice: inv, macaroon: "mac1" }), new TypeError("fetch failed")]);
+    const { agent, pay } = mk();
+    await run(agent.fetchL402(URL_, { method: "POST", body: { order: 7 }, maxAmountSats: 3000 }));
+    stubFetch([]);
+    const other = await run(agent.fetchL402(URL_, { method: "POST", body: { order: 8 }, maxAmountSats: 3000, resend: true }));
+    expect(other.error.message).toMatch(/body differs/);
+    const seen = stubFetch([resp(200, { placed: true })]);
+    const same = await run(agent.fetchL402(URL_, { method: "POST", body: { order: 7 }, maxAmountSats: 3000, resend: true }));
+    expect(same.value).toMatchObject({ recovered: true });
+    expect(seen[0].body).toBe(JSON.stringify({ order: 7 }));
+    expect(pay).toHaveBeenCalledTimes(1);
   });
 
   it("a held pass is only for the exact request: another URL or method pays normally", async () => {

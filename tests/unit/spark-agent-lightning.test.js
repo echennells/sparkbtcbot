@@ -12,17 +12,18 @@ import { UUID, SparkWallet, decodeSparkAddress } from "@buildonspark/spark-sdk";
 import { decode } from "light-bolt11-decoder";
 import { decodeInvoiceSats, invoicePaymentHash, paymentHashMatches } from "../../lib/bolt11.js";
 import { SparkAgent } from "../../skills/sparkbtcbot/scripts/spark-agent.js";
+import { freshInvoice } from "../helpers/bolt11.js";
 
 // Amount-ful sample (2,000 sats embedded) from light-bolt11-decoder's README.
 const INVOICE_2000_SATS =
-  "lnbc20u1p3y0x3hpp5743k2g0fsqqxj7n8qzuhns5gmkk4djeejk3wkp64ppevgekvc0jsdqcve5kzar2v9nr5gpqd4hkuetesp5ez2g297jduwc20t6lmqlsg3man0vf2jfd8ar9fh8fhn2g8yttfkqxqy9gcqcqzys9qrsgqrzjqtx3k77yrrav9hye7zar2rtqlfkytl094dsp0ms5majzth6gt7ca6uhdkxl983uywgqqqqlgqqqvx5qqjqrzjqd98kxkpyw0l9tyy8r8q57k7zpy9zjmh6sez752wj6gcumqnj3yxzhdsmg6qq56utgqqqqqqqqqqqeqqjq7jd56882gtxhrjm03c93aacyfy306m4fq0tskf83c0nmet8zc2lxyyg3saz8x6vwcp26xnrlagf9semau3qm2glysp7sv95693fphvsp54l567";
+  freshInvoice("lnbc20u1p3y0x3hpp5743k2g0fsqqxj7n8qzuhns5gmkk4djeejk3wkp64ppevgekvc0jsdqcve5kzar2v9nr5gpqd4hkuetesp5ez2g297jduwc20t6lmqlsg3man0vf2jfd8ar9fh8fhn2g8yttfkqxqy9gcqcqzys9qrsgqrzjqtx3k77yrrav9hye7zar2rtqlfkytl094dsp0ms5majzth6gt7ca6uhdkxl983uywgqqqqlgqqqvx5qqjqrzjqd98kxkpyw0l9tyy8r8q57k7zpy9zjmh6sez752wj6gcumqnj3yxzhdsmg6qq56utgqqqqqqqqqqqeqqjq7jd56882gtxhrjm03c93aacyfy306m4fq0tskf83c0nmet8zc2lxyyg3saz8x6vwcp26xnrlagf9semau3qm2glysp7sv95693fphvsp54l567");
 
 const AMOUNTLESS = "lnbc1notarealinvoice"; // undecodable => treated as amountless
 
 // A 2,000-sat invoice whose preimage is known (sha256(0x42 × 32) is its payment
 // hash; the same sample as spark-agent-l402.test.js), so payAndSettle's proof
 // check passes for real.
-const KNOWN_INVOICE = "lnbc20u1p4tzwuqpp5gf0dfe9rdvcw5gdepcsuwykxf85zznpfkl40dqyf6ypecmj48pxqsp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygsdp5wdcxzuntvf6xxcn0wss8getnwsazq6mwdamkugrswfjkjmtpvajsxqrrssfgmzf4e3aygc36mfrkgfj23fs5l3v4a0ztu34u5uu0ws9eycv4psq4msf75685vluz7kg7n3pvvzme375yjx63zjt2nxs9vgspgspvcp45esgz";
+const KNOWN_INVOICE = freshInvoice("lnbc20u1p4tzwuqpp5gf0dfe9rdvcw5gdepcsuwykxf85zznpfkl40dqyf6ypecmj48pxqsp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygsdp5wdcxzuntvf6xxcn0wss8getnwsazq6mwdamkugrswfjkjmtpvajsxqrrssfgmzf4e3aygc36mfrkgfj23fs5l3v4a0ztu34u5uu0ws9eycv4psq4msf75685vluz7kg7n3pvvzme375yjx63zjt2nxs9vgspgspvcp45esgz");
 const KNOWN_PREIMAGE = "42".repeat(32);
 
 const orig = process.env.SPARK_LEAF_VAULT;
@@ -777,6 +778,22 @@ describe("payment-safety edges", () => {
     const { agent, calls } = mkAgent();
     await expect(agent.payLightningInvoice(TWO_HASHES, { maxAmountSats: 5000 })).rejects.toThrow(/carries 2 payment hashes/);
     expect(calls.pay).toBeNull();
+  });
+
+  // Hosted REGTEST, 2026-10-26: paying an expired tracked invoice locked 303
+  // sats in a PREIMAGE_SWAP transfer stuck at SENDER_KEY_TWEAK_PENDING, which
+  // expires 16 days later; the SDK checks nothing before locking the coins.
+  it("refuses an invoice that expired or has under 30 s left, before any I/O", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const at = (secondsLeft) => freshInvoice(KNOWN_INVOICE, now - 3600 + secondsLeft); // KNOWN_INVOICE: expiry 3600
+    const { agent, calls } = mkAgent();
+    for (const left of [-600, -1, 0, 29]) {
+      for (const dryRun of [true, false]) {
+        await expect(agent.payLightningInvoice(at(left), { maxAmountSats: 5000, dryRun }), `${left}s`).rejects.toMatchObject({ code: "INVOICE_EXPIRED" });
+      }
+    }
+    expect(calls.pay).toBeNull();
+    await expect(agent.payLightningInvoice(at(90), { maxAmountSats: 5000, dryRun: true })).resolves.toMatchObject({ dryRun: true });
   });
 
   // ToB review of 375e6fb..HEAD: ONE payment hash of the wrong length passed
