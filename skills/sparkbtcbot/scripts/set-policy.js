@@ -133,7 +133,15 @@ export async function main() {
   const summary = policy
     ? `BIND daily budget = ${policy.dailyBudgetSats} sats into the encrypted seed (v2)${ledgerNote}`
     : "REMOVE the seed-bound policy (seed returns to v1; env-var budget semantics apply)";
-  const confirm = (await promptStderr(`About to ${summary}.\nType 'yes' to proceed: `)).trim().toLowerCase();
+  // A running agent keeps the policy it read at boot: one started before the
+  // first bind writes the new signed ledger back unsigned on its next spend,
+  // and the bound boot then refuses it (ToB review of 375e6fb..HEAD).
+  const confirm = (await promptStderr(
+    `About to ${summary}.\n` +
+      `Stop every running agent that uses this wallet first, and start it again afterwards: ` +
+      `one still running keeps its old policy and can overwrite the new spend ledger.\n` +
+      `Type 'yes' to proceed: `,
+  )).trim().toLowerCase();
   if (confirm !== "yes") { stderr.write("Aborted — nothing changed.\n"); exit(0); }
 
   // Re-read BEFORE touching the seed: a running agent may have appended to the

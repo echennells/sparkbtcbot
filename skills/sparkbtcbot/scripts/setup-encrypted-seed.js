@@ -50,6 +50,15 @@ async function getPassphrase() {
   return a;
 }
 
+async function getCheckedPassphrase() {
+  const passphrase = await getPassphrase();
+  if (passphrase.length < MIN_PASSPHRASE_CHARS) {
+    err(`Passphrase must be at least ${MIN_PASSPHRASE_CHARS} characters.`);
+    exit(1);
+  }
+  return passphrase;
+}
+
 // Collapse any whitespace runs (spaces, tabs, newlines) into single spaces and
 // trim ends. BIP39 mnemonics are space-separated words; anything else is
 // stray formatting from copy-paste or shell-pipe weirdness.
@@ -124,6 +133,12 @@ export async function main() {
     exit(2);
   }
 
+  // A fresh mnemonic comes from SparkWallet.initialize, which connects to the
+  // operators: ask for the passphrase first, so a missing or short one fails
+  // before any network call or wallet is made.
+  const generating = !process.argv.slice(2).includes("--import") && !env.SPARK_MNEMONIC;
+  let passphrase = generating ? await getCheckedPassphrase() : null;
+
   const { mnemonic, source } = await getMnemonicSource();
   if (!mnemonic) {
     err("No mnemonic provided.");
@@ -141,11 +156,7 @@ export async function main() {
     exit(1);
   }
 
-  const passphrase = await getPassphrase();
-  if (passphrase.length < MIN_PASSPHRASE_CHARS) {
-    err(`Passphrase must be at least ${MIN_PASSPHRASE_CHARS} characters.`);
-    exit(1);
-  }
+  passphrase ??= await getCheckedPassphrase();
 
   // Verify the mnemonic by initializing a wallet from it BEFORE we write
   // anything. If the SDK rejects it (bad checksum, invalid words, etc.),
@@ -219,6 +230,7 @@ export async function main() {
   }
 
   stdout.write("\nIn your app (with sparkbtcbot-skill installed in the project):\n");
+  stdout.write("  import \"dotenv/config\"; // loads SPARK_PASSPHRASE from your .env\n");
   stdout.write("  import { loadMnemonicFromEnv } from \"sparkbtcbot-skill\";\n");
   stdout.write("  import { SparkAgent } from \"sparkbtcbot-skill/agent\";\n");
   stdout.write(`  const { agent } = await SparkAgent.create(await loadMnemonicFromEnv(), "${NETWORK}");\n`);

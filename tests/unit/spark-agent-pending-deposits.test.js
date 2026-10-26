@@ -136,6 +136,32 @@ describe("claimDeposit looks the deposit up itself", () => {
     expect(calls.asked.map((c) => c.offset)).toEqual([0, 100]);
   });
 
+  // ToB review of 375e6fb..HEAD: both address lists were fetched together, so a
+  // failing single-use query failed static claims too; and a server ignoring
+  // the offset kept the lookup paging forever.
+  it("a static claim doesn't depend on the single-use address query", async () => {
+    const broken = new SparkAgent({
+      queryStaticDepositAddresses: async () => ["bc1pSTATIC"],
+      getUnusedDepositAddresses: async () => { throw new Error("UNAVAILABLE"); },
+      getUtxosForDepositAddress: async () => [{ txid: TX, vout: 0 }],
+      getClaimStaticDepositQuote: async () => ({ creditAmountSats: 9_000 }),
+      claimStaticDepositWithMaxFee: async (p) => p,
+    }, "MAINNET");
+    await expect(broken.claimDeposit({ txid: TX, maxFeeSats: 500 })).resolves.toMatchObject({ transactionId: TX });
+  });
+
+  it("stops paging when the server returns the same page again", async () => {
+    let asked = 0;
+    const page = Array.from({ length: 100 }, (_, i) => ({ txid: "a7".repeat(32), vout: i }));
+    const agent = new SparkAgent({
+      queryStaticDepositAddresses: async () => ["bc1pSTATIC"],
+      getUnusedDepositAddresses: async () => [],
+      getUtxosForDepositAddress: async () => { asked++; return page; }, // ignores offset
+    }, "MAINNET");
+    await expect(agent.claimDeposit({ txid: TX, maxFeeSats: 500 })).rejects.toMatchObject({ code: "DEPOSIT_NOT_FOUND" });
+    expect(asked).toBe(2);
+  });
+
   it("matches a txid in any case", async () => {
     const { agent, calls } = mk({ utxos: { bc1pSTATIC: [{ txid: TX, vout: 0 }] } });
     await agent.claimDeposit({ txid: TX.toUpperCase(), maxFeeSats: 500 });

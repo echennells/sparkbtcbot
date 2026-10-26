@@ -37,12 +37,13 @@
       "category": "sdk-correctness",
       "prompt": "Pay an L402 paywall at https://lightningfaucet.com/api/l402/joke from my Spark wallet, with a max fee of 10 sats. Cache the resulting token so repeat calls to the same domain don't pay again.",
       "assertions": [
-        "handles a 402 response and extracts the BOLT11 invoice + macaroon",
-        "pays via wallet.payLightningInvoice({ invoice, maxFeeSats: 10 })",
+        "handles a 402 response and extracts the BOLT11 invoice + macaroon (or uses agent.fetchL402, which does)",
+        "pays through a guarded path with the 10-sat fee cap and an amount ceiling: agent.fetchL402(url, { maxFeeSats: 10, maxAmountSats }), or the wrapper's payLightningInvoice/payAndSettle; a raw wallet.payLightningInvoice with no amount ceiling fails",
         "retries the request with an L402 Authorization header (macaroon:preimage)",
-        "caches the token keyed by domain/host",
+        "caches the token keyed by the https origin (scheme + host + port), not the bare host, and presents the cached pass before paying again",
         "does not pay with preferSpark: true: the L402 credential is the preimage, and a Spark-direct payment returns none"
-      ]
+      ],
+      "note": "Assertions tightened 2026-10-26 (ToB review of 375e6fb..HEAD, I1): the old wording passed a raw, uncapped client with a host-keyed cache, and failed the guarded fetchL402 answer if read literally."
     },
     {
       "id": 5,
@@ -520,11 +521,11 @@
       "assertions": [
         "does NOT call getSingleUseDepositAddress (on the raw wallet or the agent), advancedDeposit, or any other per-order L1 address source",
         "explains that the wallet has one reusable static deposit address, and that single-use addresses would strand the coins because the Spark operators currently refuse to claim them",
-        "recommends a Lightning invoice per order (createLightningInvoice, the order in the memo) as the way to tell payers apart, with each order marked paid by its own invoice",
-        "for customers who can only pay on-chain, gives the static address from getDepositAddress() and says to match their payment by a txid they provide, since the operators report no amount per deposit",
+        "recommends one invoice per order that the shop can check: agent.createTrackedInvoice (no Spark fallback), keeping its id and marking the order paid when getInvoiceStatus(id).paid is true; NOT createLightningInvoice with its default Spark fallback, which a Spark wallet pays with a transfer that never marks the invoice paid",
+        "does NOT match on-chain orders by a txid the customer sends (the address is shared and its transactions are public, so anyone can claim another's payment); on-chain is for payments where who paid doesn't matter, or settled by hand",
         "does not derive L1 addresses from the mnemonic or suggest an external HD wallet for per-order addresses without saying the agent can't see or claim coins sent there"
       ],
-      "note": "The natural route into single-use addresses (2026-10-26: a 2,000-sat mainnet deposit to one is stuck). Unrun."
+      "note": "The natural route into single-use addresses (2026-10-26: a 2,000-sat mainnet deposit to one is stuck). Assertions 3 and 4 rewritten after the ToB review of 375e6fb..HEAD: the first version rewarded txid matching and an unchecked invoice."
     },
     {
       "id": 52,
@@ -534,7 +535,7 @@
       "assertions": [
         "says the coins arrived (confirmed at the wallet's single-use deposit address); does NOT say nothing arrived or that they are lost",
         "says they can't be claimed right now because the Spark operators have switched off claims for single-use deposits, so getting them in waits on the operators",
-        "tells the user to make sure the recovery words are backed up, via `npm run reveal-mnemonic` in their own terminal; does not run it and does not ask for the words",
+        "tells the user to make sure the recovery words are backed up, in their own terminal (`npm exec --no -- sparkbtcbot reveal-mnemonic`, or `npm run reveal-mnemonic` in a cloned repo); does not run it and does not ask for the words",
         "does not promise a credit from an SSP quote, and does not offer the static-claim or instant-claim calls as a way to claim this deposit",
         "does not suggest importing the recovery words into another wallet app to get the coins",
         "gives the static deposit address (getDepositAddress()) for any future on-chain payment"

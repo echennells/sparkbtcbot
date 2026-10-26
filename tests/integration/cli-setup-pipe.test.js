@@ -16,7 +16,7 @@ describe("setup on a pipe, with a piped passphrase (REGTEST)", () => {
     const dir = await mkdtemp(join(tmpdir(), "cli-pipe-"));
     const child = spawn("node", [join(SCRIPTS, "setup-encrypted-seed.js"), ...args], {
       cwd: dir,
-      env: { ...process.env, SPARK_NETWORK: "REGTEST", SPARK_PRIVACY: "off", SPARK_PASSPHRASE: "", SPARK_SEED_PATH: join(dir, "seed.enc"), ...env },
+      env: { ...process.env, SPARK_MNEMONIC: "", SPARK_NETWORK: "REGTEST", SPARK_PRIVACY: "off", SPARK_PASSPHRASE: "", SPARK_SEED_PATH: join(dir, "seed.enc"), ...env },
       stdio: ["pipe", "pipe", "pipe"],
     });
     let stdout = "", stderr = "";

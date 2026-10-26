@@ -77,14 +77,17 @@ const staticAddr = await wallet.getStaticDepositAddress();
 
 > **⚠️ Don't use single-use deposit addresses.** The operators currently refuse the step that claims them: `finalize_deposit_tree_creation` answers `UNAVAILABLE` on MAINNET and REGTEST (2026-10-26), and a real 2,000-sat mainnet deposit was refused. Coins sent to one stay at the address, visible but unclaimable until the operators switch the claim back on, and the SDK has no refund path for single-use deposits. `agent.getSingleUseDepositAddress()` refuses (`SINGLE_USE_DEPOSITS_UNAVAILABLE`); the raw `wallet.getSingleUseDepositAddress()` still hands one out, so don't call it. The SSP still answers a claim quote for a single-use deposit, then refuses the claim ("Static deposit address … not found"). That quote prices a claim the SSP won't make, so it is no proof a deposit can be claimed, and its number says nothing about what a single-use deposit will credit: never quote one to a user. `agent.claimDeposit` asks the operators where the deposit sits before it quotes, dry runs included. `tests/integration/funded/single-use-deposit.test.js` fails the day claims work again.
 
-**One address per order or per customer?** The static address is one reusable address per wallet; there is no claimable per-payer on-chain address. To tell payers apart, give each order its own Lightning invoice (`createLightningInvoice` with a memo naming the order): each has its own amount and payment hash, and any Lightning wallet pays it. A payer who can only send on-chain gets the static address, and since the operators report no amount per deposit, ask them for the txid to match their payment.
+**One address per order or per customer?** The static address is one reusable address per wallet; there is no claimable per-payer on-chain address. To tell payers apart, give each order its own invoice from `agent.createTrackedInvoice(amountSats, memo)`: keep the `id` it returns with the order, and mark the order paid when `agent.getInvoiceStatus(id)` says `paid: true` (the sats are in the wallet). Put only the order number in the memo; the payer's wallet shows it.
+
+- **Not `createLightningInvoice`.** Its invoice carries a Spark fallback by default, and a Spark wallet then pays it with a plain transfer: the money arrives, but the invoice never shows as paid (hosted REGTEST, 2026-10-26). `createTrackedInvoice` leaves the fallback out, so every payer pays over Lightning, with the routing fee on the payer.
+- **Not the on-chain address.** Everyone gets the same address, and its transactions are public on the chain, so a txid a customer sends you proves nothing: anyone can name someone else's payment. Take order payments over Lightning. Use the deposit address only where it doesn't matter who paid (topping up the wallet), or settle such payments by hand with the payer.
 
 **Coins already at a single-use address** (handed out by an older version of this skill, or by the raw SDK): `listPendingDeposits()` shows them as `type: "single-use"`, and `claimDeposit` refuses them with the reason. Tell the user they arrived and are waiting on the operators, never that nothing arrived, and two things:
 
-- **Back up the recovery words now** if they haven't: `npm run reveal-mnemonic`, in their own terminal. The address belongs to this wallet's key together with the operators', so if the operators switch the claim back on, only this wallet can claim the coins.
+- **Back up the recovery words now** if they haven't, in their own terminal: `npm exec --no -- sparkbtcbot reveal-mnemonic` (installed package) or `npm run reveal-mnemonic` (cloned repo). The address belongs to this wallet's key together with the operators', so if the operators switch the claim back on, only this wallet can claim the coins.
 - **Follow the operators' answer** at [buildonspark/spark#165](https://github.com/buildonspark/spark/issues/165).
 
-`listPendingDeposits()` finds them through the operators' list of unused deposit addresses, which dropped the funded mainnet address once in two hours of retries (the SDK then said "Deposit address has already been used"), so one empty answer about a single-use address isn't conclusive either.
+`listPendingDeposits()` finds them through the operators' list of unused deposit addresses, which dropped the funded mainnet address once in two hours of retries (the SDK then said "Deposit address has already been used"), so one empty answer about a single-use address isn't conclusive either. For the same reason `claimDeposit`'s `DEPOSIT_NOT_FOUND` means "not claimable here now", never "the coins went somewhere else".
 
 The static address is P2TR (`bc1p...` on mainnet, `bcrt1p...` on regtest) — an **L1 on-chain** address, NOT a Spark (`sp1...`) address. Deposits require 3 L1 confirmations before they can be claimed on Spark (the SSP refuses to even quote before then). **Claiming is manual — there is no auto-claim** (the funds sit unclaimed at the address until you claim them).
 
@@ -106,7 +109,8 @@ The static address is P2TR (`bc1p...` on mainnet, `bcrt1p...` on regtest) — an
 **Bound the fee** — the SSP charges a spread for sweeping the deposit UTXO on-chain, and you don't want an over-priced claim accepted blind. The SDK enforces this server-side: `claimStaticDepositWithMaxFee` rejects the claim if the fee exceeds `maxFee`. Live-measured 2026-08-04: a 10,350-sat deposit quoted a **297-sat spread**, honored exactly at claim (~150 vB at the moment's feerate — consistent with the SSP pricing its future sweep, i.e. flat-ish and feerate-tracking, not a percentage). The claim credit is **asynchronous**: the call returns a transferId and the balance lands ~30 seconds later — an unchanged balance right after claiming is not a failure, so never re-claim on sight of it.
 
 ```javascript
-// Optional preview: how much will be credited?
+// Optional preview: how much will be credited? Only for a deposit at your
+// STATIC address: the SSP also quotes a single-use deposit it won't claim.
 const quote = await wallet.getClaimStaticDepositQuote(txId, vout);
 console.log("credit:", quote.creditAmountSats, "sats");
 
@@ -118,7 +122,7 @@ const result = await wallet.claimStaticDepositWithMaxFee({
 });
 ```
 
-Note: `getUtxosForDepositAddress` returns only `{ txid, vout }` (no amount) and the quote carries only `creditAmountSats`, so there is **no** reliable client-side gross deposit amount to compute a percentage fee against — use the SDK's absolute `maxFee` ceiling above, not a client-side check. The `SparkAgent` wrapper bundles this: `agent.claimDeposit({ txid, vout, maxFeeSats, dryRun })`.
+Note: `getUtxosForDepositAddress` returns only `{ txid, vout }` (no amount) and the quote carries only `creditAmountSats`, so there is **no** reliable client-side gross deposit amount to compute a percentage fee against — use the SDK's absolute `maxFee` ceiling above, not a client-side check. The `SparkAgent` wrapper bundles this: `agent.claimDeposit({ txid, vout, maxFeeSats, dryRun })` checks with the operators that the deposit sits at the static address, then claims with a ceiling of `maxFeeSats`, or by default the lower of `maxFeePct` (10%) of the quoted credit and 25,000 sats.
 
 ### "Did my deposit arrive?" — check status, don't trust the balance
 
@@ -136,10 +140,13 @@ for (const d of pending.filter((d) => d.type === "static")) {
 Under the hood it's the two raw-SDK calls (use these directly if you're not on the wrapper):
 
 ```javascript
-const addrs = await wallet.queryStaticDepositAddresses();
-for (const addr of addrs) {
+const statics = await wallet.queryStaticDepositAddresses();
+// Unclaimed single-use addresses too: coins an older version sent there have arrived.
+const singles = (await wallet.getUnusedDepositAddresses()).filter((a) => !statics.includes(a));
+for (const addr of [...statics, ...singles]) {
   const utxos = await wallet.getUtxosForDepositAddress(addr, 100, 0, true); // excludeClaimed=true
-  // utxos[i] has { txid, vout } only (no amount/value field) — dry-run a claim for the credit
+  // utxos[i] has { txid, vout } only (no amount/value field). Claim only the static
+  // ones (claimStaticDepositWithMaxFee); a single-use one can't be claimed now.
 }
 ```
 

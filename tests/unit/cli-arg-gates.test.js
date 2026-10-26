@@ -174,7 +174,7 @@ describe("setup on a pipe (no TTY) fails loud, never silently", () => {
     const dir = await mkdtemp(join(tmpdir(), "cli-pipe-"));
     const child = spawn("node", [join(SCRIPTS, "setup-encrypted-seed.js"), ...args], {
       cwd: dir,
-      env: { ...process.env, SPARK_NETWORK: "REGTEST", SPARK_PRIVACY: "off", SPARK_PASSPHRASE: "", SPARK_SEED_PATH: join(dir, "seed.enc"), ...env },
+      env: { ...process.env, SPARK_MNEMONIC: "", SPARK_NETWORK: "REGTEST", SPARK_PRIVACY: "off", SPARK_PASSPHRASE: "", SPARK_SEED_PATH: join(dir, "seed.enc"), ...env },
       stdio: ["pipe", "pipe", "pipe"],
     });
     let stdout = "", stderr = "";
@@ -195,6 +195,7 @@ describe("setup on a pipe (no TTY) fails loud, never silently", () => {
     expect(r.code).toBe(1);
     expect(r.stderr).toMatch(/stdin is not a terminal and closed \(EOF\)/);
     expect(r.stderr).toMatch(/SPARK_PASSPHRASE/);
+    expect(r.stderr).not.toMatch(/Generating a fresh/); // failed before any wallet or network call
     expect(r.files).toEqual([]);
   }, 30_000);
 
@@ -202,6 +203,7 @@ describe("setup on a pipe (no TTY) fails loud, never silently", () => {
     const r = await spawnSetup([], { stdinLines: [], env: { SPARK_PROMPT_TIMEOUT_MS: "500" } });
     expect(r.code).toBe(1);
     expect(r.stderr).toMatch(/sent nothing for 1 s/);
+    expect(r.stderr).not.toMatch(/Generating a fresh/);
     expect(r.files).toEqual([]);
   }, 30_000);
 

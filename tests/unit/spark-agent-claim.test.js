@@ -63,6 +63,27 @@ describe("claimDeposit size-aware fee ceiling", () => {
     expect(calls.claim).toBeNull();
   });
 
+  // ToB review of 375e6fb..HEAD: 10% of a 0.49 BTC deposit allowed a
+  // 4,900,000-sat fee against a few-hundred-sat spread, and maxFeePct: 1000
+  // was accepted.
+  it("caps the default ceiling at 25,000 sats; an explicit maxFeeSats goes past it", async () => {
+    const big = mkAgent({ credit: 49_000_000 });
+    await big.agent.claimDeposit({ txid: TX });
+    expect(big.calls.claim.maxFee).toBe(25_000);
+    const explicit = mkAgent({ credit: 49_000_000 });
+    await explicit.agent.claimDeposit({ txid: TX, maxFeeSats: 40_000 });
+    expect(explicit.calls.claim.maxFee).toBe(40_000);
+  });
+
+  it("refuses a maxFeePct outside 0–100 and a negative maxFeeSats, before any I/O", async () => {
+    const { agent, calls } = mkAgent();
+    await expect(agent.claimDeposit({ txid: TX, maxFeePct: 1000 })).rejects.toThrow(/between 0 and 100/);
+    await expect(agent.claimDeposit({ txid: TX, maxFeePct: -1 })).rejects.toThrow(/between 0 and 100/);
+    await expect(agent.claimDeposit({ txid: TX, maxFeeSats: -5 })).rejects.toThrow(/must not be negative/);
+    expect(calls.quotes).toBe(0);
+    await expect(new SparkAgent({}, "MAINNET").withdraw({ to: "bc1qx", amount: 30_000, maxFeePct: 500 })).rejects.toThrow(/between 0 and 100/);
+  });
+
   it("still rejects unknown options", async () => {
     const { agent, calls } = mkAgent();
     await expect(agent.claimDeposit({ txid: TX, maxFeeSat: 100 })).rejects.toThrow(/unknown option/i);

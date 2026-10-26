@@ -779,6 +779,29 @@ describe("payment-safety edges", () => {
     expect(calls.pay).toBeNull();
   });
 
+  // ToB review of 375e6fb..HEAD: ONE payment hash of the wrong length passed
+  // the count check, read as no hash, and the preimage check then passed any
+  // preimage. Built from KNOWN_INVOICE by padding its p field to 35 bytes (the
+  // decoder checks neither the length nor the signature).
+  it("refuses to pay an invoice whose one payment hash is not 32 bytes, before the SDK", async () => {
+    const { bech32 } = await import("@scure/base");
+    const { prefix, words } = bech32.decode(KNOWN_INVOICE, 10_000);
+    const out = words.slice(0, 7);
+    const sigStart = words.length - 104;
+    for (let i = 7; i < sigStart; ) {
+      const type = words[i], len = words[i + 1] * 32 + words[i + 2];
+      const data = type === 1 ? [...words.slice(i + 3, i + 3 + len), 0, 0, 0, 0] : words.slice(i + 3, i + 3 + len);
+      out.push(type, data.length >> 5, data.length & 31, ...data);
+      i += 3 + len;
+    }
+    const SHORT = bech32.encode(prefix, [...out, ...words.slice(sigStart)], 10_000);
+    const { agent, calls } = mkAgent();
+    for (const dryRun of [true, false]) {
+      await expect(agent.payLightningInvoice(SHORT, { maxAmountSats: 5000, dryRun })).rejects.toThrow(/not a 32-byte hash/);
+    }
+    expect(calls.pay).toBeNull();
+  });
+
   it("a status after the Lightning payment succeeded is not a failure: the payee has the money", async () => {
     const { isTerminalLightningFailure } = await import("../../skills/sparkbtcbot/scripts/spark-agent.js");
     for (const s of ["PREIMAGE_PROVIDING_FAILED", "TRANSFER_FAILED", "LIGHTNING_PAYMENT_SUCCEEDED", "SOMETHING_NEW_FAILED", undefined]) {

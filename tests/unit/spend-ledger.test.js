@@ -128,6 +128,25 @@ describe("createSpendLedger persistence", () => {
   });
 });
 
+// ToB review of 375e6fb..HEAD: record() wrote a fractional amount that every
+// later read rejected, so one 150.5-sat fee made the ledger unreadable
+// (unsigned) or "tampered" (signed), and every send after it failed.
+describe("record() writes whole sats the reader accepts", () => {
+  it("rounds a fractional amount up, and the ledger still reads, unsigned and signed", async () => {
+    const plain = createSpendLedger({ path, budgetSats: 1_000, clock: () => T0 });
+    expect((await plain.record(150.5, "l1_withdraw")).sats).toBe(151);
+    expect(await plain.status()).toMatchObject({ spentSats: 151 });
+    await plain.assertCanSpend(849, "next");
+
+    const key = randomBytes(32);
+    const signedPath = path + ".signed";
+    await initSignedLedger({ path: signedPath, hmacKey: key });
+    const sealed = createSpendLedger({ path: signedPath, budgetSats: 1_000, hmacKey: key, bound: true, clock: () => T0 });
+    await sealed.record(0.2, "lightning_pay");
+    expect(await sealed.status()).toMatchObject({ spentSats: 1 });
+  });
+});
+
 // set-policy keeps the spend window: it signs or keeps the ledger it finds
 // instead of writing an empty one, which freed headroom when a budget tightened.
 describe("inspectLedgerForBinding + initSignedLedger({ entries })", () => {

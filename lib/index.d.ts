@@ -529,8 +529,11 @@ export function listReferences(): Promise<string[]>;
  * paid but the resource did not arrive (`settled: true`, the pass held in
  * memory for the next call to the same URL) or the payment is still open
  * (`settled: null`). Never pay again with a new invoice, address or method;
- * check agent.getTransfers() first. Never a preimage on it; `cause` is the
- * SDK's own error, whose message can quote the invoice.
+ * check agent.getTransfers() first (token sends: agent.getTokenTransactions()).
+ * A fetchL402 error may carry `reason`: L402_PASS_REFUSED, L402_PASS_EXPIRED or
+ * L402_NO_PROOF, after which that agent won't buy the URL again on its own.
+ * Never a preimage on it; `cause` is the SDK's own error, whose message can
+ * quote the invoice.
  */
 export class PaymentCommittedError extends Error {
   code: "PAYMENT_COMMITTED";
@@ -538,8 +541,12 @@ export class PaymentCommittedError extends Error {
   op?: string;
   invoiceHash?: string;
   sendId?: string;
-  /** Set on fetchL402's pending-payment error, for callers of the earlier shape. */
+  /** Set on fetchL402's errors, for callers of the earlier shape. */
   paid?: true;
+  /** fetchL402 only: why this agent stopped buying the URL (forgetL402 lifts it). */
+  reason?: "L402_PASS_REFUSED" | "L402_PASS_EXPIRED" | "L402_NO_PROOF";
+  /** fetchL402 with reason L402_PASS_REFUSED: the HTTP status that refused the pass. */
+  status?: number;
 }
 /** True only when a failed SDK call proves no funds left (an allowlisted pre-send SparkValidationError). */
 export function provesNothingSent(err: unknown): boolean;
