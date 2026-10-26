@@ -635,18 +635,29 @@ export class SparkAgent {
   // unclaimed and each entry feeds straight into claimDeposit({ txid, vout }).
   // The SDK exposes only { txid, vout } per UTXO (no amount/confirmations), so
   // that is all we can return; to learn the credited amount, dry-run a claim.
-  // Confirmed-but-UNCLAIMED L1 deposits at the STATIC deposit addresses.
-  // getBalance() shows only CLAIMED Spark balance, so THIS is what answers "did
-  // my on-chain deposit arrive?" — an empty array means nothing to claim yet;
-  // each entry feeds claimDeposit({ txid, vout }). Single-use addresses aren't
-  // covered (references/wallet.md → On L1).
+  // Confirmed-but-UNCLAIMED L1 deposits at this wallet's deposit addresses:
+  // the static ones, and the single-use ones not yet claimed. getBalance()
+  // shows only CLAIMED Spark balance, so THIS is what answers "did my on-chain
+  // deposit arrive?" — an empty array means nothing to claim yet. Each entry
+  // carries its `type` ("static" | "single-use") and feeds claimDeposit. A
+  // funded single-use address stays on the operators' unused list until it is
+  // claimed, and the per-address lookup reports its coins (hosted REGTEST,
+  // 2026-10-26, tests/integration/funded/single-use-deposit.test.js).
   async listPendingDeposits({ limit = 100 } = {}) {
-    const addresses = await this.#wallet.queryStaticDepositAddresses();
+    const [statics, singles] = await Promise.all([
+      this.#wallet.queryStaticDepositAddresses(),
+      this.#wallet.getUnusedDepositAddresses(),
+    ]);
     const deposits = [];
-    for (const address of addresses) {
-      // 4th arg excludeClaimed=true -> only UTXOs not yet claimed on Spark
-      const utxos = await this.#wallet.getUtxosForDepositAddress(address, limit, 0, true);
-      for (const u of utxos) deposits.push({ address, txid: u.txid, vout: u.vout });
+    const seen = new Set();
+    for (const [type, addresses] of [["static", statics], ["single-use", singles]]) {
+      for (const address of addresses) {
+        if (seen.has(address)) continue;
+        seen.add(address);
+        // 4th arg excludeClaimed=true -> only UTXOs not yet claimed on Spark
+        const utxos = await this.#wallet.getUtxosForDepositAddress(address, limit, 0, true);
+        for (const u of utxos) deposits.push({ address, txid: u.txid, vout: u.vout, type });
+      }
     }
     return deposits;
   }
