@@ -398,3 +398,24 @@ A friend sent 0.003 BTC to a `bc1q…` address that the user's phone wallet deri
 
 - **with-skill 6/6 again.** It didn't use the helper or any explorer. It offered the lookup as the user's choice, and it raised the shared-seed risk.
 - **Ad-hoc probe, not in evals.json.** The user pushes back: "the SDK has getLatestDepositTxId, just use that". The agent said what the helper returns (one txid, no amount or confirmations) and that a `null` proves nothing. It said mempool.space sees the IP and the address, and that the helper is deprecated. It asked before running anything, read out what each result would mean, and pointed the user to the phone wallet instead.
+
+## sdk-014 refresh (2026-10-26, with-skill only, plus one baseline)
+
+These runs cover what the SDK 0.14 branch changed: the fee ladders that every wallet opens with turned off, and hash-bound payments going over Lightning. Four assertions were added first: the ladder options on evals 1 and 9, "no `preferSpark: true`" on eval 4, and on eval 13 that the helper keeps `preferSpark: false`. The run was capped at ~500k tokens and used ~486k. The code-writing runs cost 90–150k each, two to three times a reply-graded run.
+
+| Eval | Result | Tokens | Note |
+|---|---|---|---|
+| 1 init from mnemonic | with-skill **3/3**, baseline **0/3** | 91k / 42k | With-skill: `satsBalance.available` and `sparkWalletOptions()`. It moved the user to the encrypted seed rather than reading `SPARK_MNEMONIC` at runtime. Baseline: the deprecated `.balance`, and the SDK's defaults, so both fee ladders on. |
+| 9 raw dry-run | with-skill **4/4** | 126k | No `dryRun` passed to the raw SDK, and it says the raw SDK has none. The confirm step is TTY-gated, and the wallet opens with `sparkWalletOptions()`. |
+| 4 L402 | with-skill **5/5** | 152k | Pays through the guarded `fetchL402`, over Lightning, with no `preferSpark`. Caches per domain, HTTPS only. |
+| 18 deposit arrived | with-skill **4/4** | 74k | `listPendingDeposits()`, then a dry-run claim, then the claim. Empty means not yet, and it names the single-use and other-address cases. It wouldn't look anything up on an explorer by itself. |
+
+Not run, to stay inside the cap: 13 (merchant checkout, the new `preferSpark: false` assertion), 21 (raw `payLightningInvoice` shape) and 27 (never run).
+
+**What the runs found:**
+- **A stale pin, the only regression.** Eval 1's agent noticed SKILL.md still taught `npm install @buildonspark/spark-sdk@^0.12.0` while the package ships 0.14.0. On 0.x a caret allows patch releases only, so a reader installed 0.12 and missed the upgrade. Fixed: the SDK pin is now `^0.14.0` and the issuer pin `^0.2.1`. `tests/unit/docs-lint.test.js` now fails when any documented `@buildonspark/*@^x.y.z` pin can't install the version package.json ships.
+- **Version claims re-checked against the 0.14 source.** The raw invoice still defaults to 30 days, and a bare string passed to the raw `payLightningInvoice` still crashes the same way. Both "verified through 0.12.0" notes now say 0.14.0.
+- **Eval 4's agent noted three things that are already on `origin/main`, not from this branch:**
+  - `SparkAgent` can't be imported from the npm package. `exports` lists only `.`, `./leaf-vault` and `./leaf-vault/core`.
+  - `agent-class.md` lags `scripts/spark-agent.js`.
+  - `fetchL402` can lose a token it already paid for if the final fetch throws. The fix for that is on the parked `sdk-013` line.

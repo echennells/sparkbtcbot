@@ -8,7 +8,8 @@
       "prompt": "Show me how to set up a Spark wallet from an existing 12-word mnemonic stored in the SPARK_MNEMONIC env var, then print the wallet's Spark address and available balance.",
       "assertions": [
         "reads the sats balance from satsBalance.available",
-        "does NOT use the deprecated top-level `.balance` field"
+        "does NOT use the deprecated top-level `.balance` field",
+        "opens the wallet with the SDK's fee ladders off: options built by sparkWalletOptions() (lib/wallet-options.js) or the same two flags set explicitly (enableCpfpRefundLadder: false, enableDirectNodeFeeLadder: false), never the bare SDK defaults, which turn both on"
       ]
     },
     {
@@ -39,7 +40,8 @@
         "handles a 402 response and extracts the BOLT11 invoice + macaroon",
         "pays via wallet.payLightningInvoice({ invoice, maxFeeSats: 10 })",
         "retries the request with an L402 Authorization header (macaroon:preimage)",
-        "caches the token keyed by domain/host"
+        "caches the token keyed by domain/host",
+        "does not pay with preferSpark: true: the L402 credential is the preimage, and a Spark-direct payment returns none"
       ]
     },
     {
@@ -90,7 +92,8 @@
       "assertions": [
         "does NOT pass dryRun (or any preview/simulate flag) to raw wallet.transfer — the SDK has no such option, unknown keys are silently dropped, and the call would sign and SEND",
         "either uses the SparkAgent wrapper (copied per agent-class.md) for the dry-run preview, or explicitly states that the raw SDK has no dry-run mode and structures the confirm step without a fake preview call",
-        "never claims a preview happened when wallet.transfer was actually invoked"
+        "never claims a preview happened when wallet.transfer was actually invoked",
+        "opens the wallet with the SDK's fee ladders off: options built by sparkWalletOptions() (lib/wallet-options.js) or the same two flags set explicitly (enableCpfpRefundLadder: false, enableDirectNodeFeeLadder: false), never the bare SDK defaults, which turn both on"
       ]
     },
     {
@@ -132,7 +135,8 @@
         "bounds the payable amount (maxAmountSats-style ceiling), not just the routing fee",
         "pays via the SparkAgent wrapper (fee cap auto-sized) or sizes maxFeeSats to the amount — NOT a flat maxFeeSats: 10",
         "does NOT pass dryRun to a raw wallet.* call (raw SDK silently drops it and sends real sats)",
-        "treats the redemption code as a secret: hands it to the user once, does NOT log it or store it in plaintext output"
+        "treats the redemption code as a secret: hands it to the user once, does NOT log it or store it in plaintext output",
+        "pays over Lightning, never Spark-direct: the copied payMerchantCheckout keeps preferSpark: false, and passes expectedPaymentHash (the checkout's echoed hash, or an explicit null when the merchant offers none)"
       ]
     },
     {

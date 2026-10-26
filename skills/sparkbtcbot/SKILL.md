@@ -112,12 +112,12 @@ The full trust model (moment-in-time / forward-security detail, what operators c
 ## Required Libraries
 
 ```bash
-npm install @buildonspark/spark-sdk@^0.12.0 dotenv
+npm install @buildonspark/spark-sdk@^0.14.0 dotenv
 ```
 
 For token issuance (minting new tokens), additionally:
 ```bash
-npm install @buildonspark/issuer-sdk@^0.1.48
+npm install @buildonspark/issuer-sdk@^0.2.1
 ```
 
 ### Optional: supply-chain hardening — ONLY when *you* run the install

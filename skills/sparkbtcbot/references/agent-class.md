@@ -467,7 +467,7 @@ export class SparkAgent {
     // The raw SDK takes ONE object ({ invoice, ... }); this wrapper takes a bare
     // BOLT11 string + options. The raw layer crashes opaquely on the mix-up
     // ("Cannot read properties of undefined (reading 'toLowerCase')" — no
-    // validation in spark-sdk through at least 0.12.0), so the wrapper
+    // validation in spark-sdk through at least 0.14.0), so the wrapper
     // direction at least must fail loud and name both shapes.
     if (typeof bolt11 !== "string") {
       throw new TypeError(

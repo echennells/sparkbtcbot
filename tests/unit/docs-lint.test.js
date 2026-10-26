@@ -83,6 +83,33 @@ describe("docs lint", () => {
     }
   });
 
+  it("every SDK install pin in the docs admits the version package.json ships", async () => {
+    // The SDK bump to 0.14 left SKILL.md teaching `spark-sdk@^0.12.0`, and a
+    // caret on 0.x allows patch releases only, so a reader got 0.12 and none
+    // of the upgrade. Found by an eval, not a review.
+    const pkg = JSON.parse(await readFile(join(ROOT, "package.json"), "utf8"));
+    const caretAdmits = (range, version) => {
+      const [a, b, c] = range.split(".").map(Number);
+      const [x, y, z] = version.split(".").map(Number);
+      if (a > 0) return x === a && (y > b || (y === b && z >= c));
+      if (b > 0) return x === 0 && y === b && z >= c;
+      return x === 0 && y === 0 && z === c;
+    };
+    const refDir = join(ROOT, "skills/sparkbtcbot/references");
+    const refs = (await readdir(refDir)).filter((f) => f.endsWith(".md")).map((f) => join("skills/sparkbtcbot/references", f));
+    let pins = 0;
+    for (const rel of [...DOCS, ...refs]) {
+      const text = await readFile(join(ROOT, rel), "utf8");
+      for (const [, name, range] of text.matchAll(/(@buildonspark\/[a-z-]+)@\^(\d+\.\d+\.\d+)/g)) {
+        pins++;
+        const shipped = pkg.dependencies[name];
+        expect(shipped, `${rel} pins ${name}, which package.json doesn't depend on`).toBeTruthy();
+        expect(caretAdmits(range, shipped), `${rel} teaches ${name}@^${range}, which can't install the ${shipped} that package.json ships`).toBe(true);
+      }
+    }
+    expect(pins).toBeGreaterThan(0);
+  });
+
   it("README's listReferences() example names every shipped reference", async () => {
     // The example drifted to 12 names while 16 shipped — the four missing ones
     // were the merchant-purchase docs for a headline capability.
