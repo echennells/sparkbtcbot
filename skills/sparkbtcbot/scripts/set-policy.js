@@ -108,6 +108,19 @@ export async function main() {
       );
       exit(1);
     }
+    // A seed that ALREADY carries a sealed budget had its ledger signed when it
+    // was bound. Missing or unsigned now means it was deleted or replaced, and
+    // signing what is there would let whoever replaced it choose the window
+    // (the running agent refuses that same file as tampered). Only a first
+    // bind adopts an unsigned env-budget ledger or creates a missing one.
+    if (current != null && ledger.state !== "signed") {
+      stderr.write(
+        `set-policy: this seed already has a sealed budget, but the spend ledger at ${ledgerPath} is ` +
+          `${ledger.state === "missing" ? "missing" : "unsigned"} — it was deleted or replaced.\nNothing changed. ` +
+          "Start a fresh window deliberately with `sparkbtcbot reset-ledger`, then run set-policy again.\n",
+      );
+      exit(1);
+    }
   }
   const n = ledger?.entries.length ?? 0;
   const ledgerNote = !ledger
@@ -123,18 +136,26 @@ export async function main() {
   const confirm = (await promptStderr(`About to ${summary}.\nType 'yes' to proceed: `)).trim().toLowerCase();
   if (confirm !== "yes") { stderr.write("Aborted — nothing changed.\n"); exit(0); }
 
+  // Re-read BEFORE touching the seed: a running agent may have appended to the
+  // unsigned ledger while the operator was typing, and a file that no longer
+  // validates must stop the ceremony with nothing changed, not after the seed
+  // is already rewritten.
+  let latest = ledger;
+  if (policy && ledger.state !== "signed") {
+    try {
+      latest = await inspectLedgerForBinding({ path: ledgerPath, hmacKey });
+    } catch (err) {
+      stderr.write(`set-policy: ${err.message}\nNothing changed.\n`);
+      exit(1);
+    }
+  }
+
   // Atomic swap: the new blob replaces seed.enc in one rename — a crash leaves
   // either the old seed or the new one, never a partial file.
   await saveEncryptedMnemonic({ mnemonic: payload.mnemonic, passphrase, path: seedPath, policy, allowOverwrite: true });
   if (policy) {
-    let carried = ledger.entries.length;
-    if (ledger.state !== "signed") {
-      // Re-read: a running agent may have appended to the unsigned ledger
-      // while the operator was typing.
-      const latest = await inspectLedgerForBinding({ path: ledgerPath, hmacKey });
-      if (latest.state !== "signed") await initSignedLedger({ path: ledgerPath, hmacKey, entries: latest.entries });
-      carried = latest.entries.length;
-    }
+    const carried = latest.entries.length;
+    if (latest.state !== "signed") await initSignedLedger({ path: ledgerPath, hmacKey, entries: latest.entries });
     stderr.write(`Bound. seed.enc rewritten (v2, budget ${policy.dailyBudgetSats} sats); signed spend ledger at ${ledgerPath} (${carried} entr${carried === 1 ? "y" : "ies"} kept).\n`);
     stderr.write("Deleting or editing the ledger now fails closed; empty the window deliberately with `sparkbtcbot reset-ledger`.\n");
   } else {

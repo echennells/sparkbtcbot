@@ -62,7 +62,9 @@ describeL1("single-use deposit address (REGTEST, real L1)", () => {
 
   it("listPendingDeposits reports it as single-use; the operators refuse the claim", async () => {
     const agent = new SparkAgent(receiver, "REGTEST");
-    const address = await agent.getSingleUseDepositAddress();
+    // The wrapper refuses to hand one out; the raw SDK still does.
+    await expect(agent.getSingleUseDepositAddress()).rejects.toMatchObject({ code: "SINGLE_USE_DEPOSITS_UNAVAILABLE" });
+    const address = await receiver.getSingleUseDepositAddress();
     const exit = await new SparkAgent(funder, "REGTEST").withdraw({ to: address, amount: AMOUNT, maxFeePct: MAX_FEE_PCT });
     const txid = exit.coopExitTxid;
     expect(txid).toMatch(/^[0-9a-f]{64}$/);
@@ -77,6 +79,8 @@ describeL1("single-use deposit address (REGTEST, real L1)", () => {
     console.log("pending:", JSON.stringify(pending), "after", Math.round((Date.now() - t0) / 1000), "s");
     expect(pending).toEqual([{ address, txid, vout: expect.any(Number), type: "single-use" }]);
 
+    await expect(agent.claimDeposit({ txid, vout: pending[0].vout, type: pending[0].type }))
+      .rejects.toMatchObject({ code: "SINGLE_USE_DEPOSITS_UNAVAILABLE" });
     const claim = await receiver.claimDeposit(txid).then(() => "claimed", (e) => e);
     console.log("claimDeposit(txid):", claim === "claimed" ? claim : String(claim?.message).slice(0, 300));
     expect(claim, "the operators accept single-use claims again — see the header").not.toBe("claimed");

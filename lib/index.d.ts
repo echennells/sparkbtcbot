@@ -523,11 +523,14 @@ export function getReference(name: string): Promise<string>;
 export function listReferences(): Promise<string[]>;
 
 /**
- * Money has left, or may have. fetchL402 throws it when it paid but the
- * resource did not arrive: `settled: true` with the pass held in memory for
- * the next call to the same URL, or `settled: null` while the payment is still
- * pending. Never pay again with a new invoice, address or method. Carries no
- * secret: never a preimage or a raw invoice.
+ * Money has left, or may have. SparkAgent's money-moving methods throw it when
+ * an SDK error doesn't prove nothing was sent (transfer, payLightningInvoice,
+ * fulfillInvoice, withdraw, the token sends), and fetchL402 throws it when it
+ * paid but the resource did not arrive (`settled: true`, the pass held in
+ * memory for the next call to the same URL) or the payment is still open
+ * (`settled: null`). Never pay again with a new invoice, address or method;
+ * check agent.getTransfers() first. Never a preimage on it; `cause` is the
+ * SDK's own error, whose message can quote the invoice.
  */
 export class PaymentCommittedError extends Error {
   code: "PAYMENT_COMMITTED";

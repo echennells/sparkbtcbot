@@ -83,12 +83,11 @@ describe("fulfillInvoice allowlist gate", () => {
     expect(calls.fulfill).toBeNull();
   });
 
-  it("permits when the receiver's bare address is listed, forwarding entries untouched", async () => {
+  it("permits when the receiver's bare address is listed; an amount-bearing invoice goes out with its own amount", async () => {
     const { agent, calls } = mkAgent();
     mockAllowlist = [bareAddress(RECEIVER_PK)];
-    const entries = [{ invoice: INVOICE, amount: 1500n }];
-    await agent.fulfillInvoice(entries);
-    expect(calls.fulfill).toBe(entries);
+    await agent.fulfillInvoice([{ invoice: INVOICE, amount: 1500n }]);
+    expect(calls.fulfill).toEqual([{ invoice: INVOICE }]); // the invoice's own 1,500 is what the SDK pays
   });
 
   it("permits when the allowlist entry is a DIFFERENT encoding of the same receiver (identity-key match)", async () => {
@@ -223,3 +222,56 @@ describe("fulfillInvoice reads the SDK's result", () => {
     expect((await agent.spendStatus()).spentSats).toBe(1_500);
   });
 });
+
+// ToB review 2026-10-26: amounts reached the SDK raw (a token "100" string was
+// read as hex), and a tokens-plus-sats batch could send the tokens, then fail
+// the sats leg with a "nothing was sent" message.
+describe("fulfillInvoice hands the SDK checked amounts, and a mixed batch never claims nothing left", () => {
+  const amountlessSats = encodeSparkAddress({
+    identityPublicKey: RECEIVER_PK, network: "MAINNET",
+    sparkInvoiceFields: { version: 1, id: new Uint8Array(16).fill(3), paymentType: { $case: "satsPayment", satsPayment: {} } },
+  });
+  const tokenInvoice = (amount) => encodeSparkAddress({
+    identityPublicKey: RECEIVER_PK, network: "MAINNET",
+    sparkInvoiceFields: {
+      version: 1, id: new Uint8Array(16).fill(4),
+      paymentType: { $case: "tokensPayment", tokensPayment: { tokenIdentifier: new Uint8Array(32).fill(5), ...(amount === undefined ? {} : { amount: Uint8Array.of(Number(amount)) }) } }, // amount: big-endian bytes
+    },
+  });
+  const mk = (fulfill) => {
+    process.env.SPARK_LEAF_VAULT = "off";
+    const calls = [];
+    const wallet = { getSparkAddress: async () => "sp1from", fulfillSparkInvoice: async (x) => { calls.push(x); return fulfill(x); } };
+    return { agent: new SparkAgent(wallet, "MAINNET"), calls };
+  };
+  const empty = { satsTransactionSuccess: [], satsTransactionErrors: [], tokenTransactionSuccess: [], tokenTransactionErrors: [], invalidInvoices: [] };
+
+  it("an amountless sats invoice gets the caller's amount as bigint", async () => {
+    const { agent, calls } = mk(() => empty);
+    await agent.fulfillInvoice([{ invoice: amountlessSats, amount: 700 }]);
+    expect(calls[0]).toEqual([{ invoice: amountlessSats, amount: 700n }]);
+  });
+
+  it("a token amount must be bigint or a safe integer: a string is refused before the SDK", async () => {
+    const { agent, calls } = mk(() => empty);
+    await expect(agent.fulfillInvoice([{ invoice: tokenInvoice(), amount: "100" }])).rejects.toThrow(/positive integer of the token's base units/);
+    expect(calls).toHaveLength(0);
+    await agent.fulfillInvoice([{ invoice: tokenInvoice(), amount: 100 }]);
+    expect(calls[0]).toEqual([{ invoice: tokenInvoice(), amount: 100n }]);
+  });
+
+  it("a tokens-plus-sats batch whose SDK call throws a 'pre-send' message is reported as PAYMENT_COMMITTED", async () => {
+    const { SparkValidationError } = await import("@buildonspark/spark-sdk");
+    const { agent } = mk(() => { throw new SparkValidationError("Total target amount exceeds available balance", { field: "amount" }); });
+    await expect(agent.fulfillInvoice([{ invoice: tokenInvoice(10n) }, { invoice: INVOICE }]))
+      .rejects.toMatchObject({ code: "PAYMENT_COMMITTED", settled: null });
+  });
+
+  it("a failed token transaction names its invoices", async () => {
+    const inv = tokenInvoice(10n);
+    const { agent } = mk(() => ({ ...empty, tokenTransactionErrors: [{ tokenIdentifier: "btkn1x", invoices: [inv], error: new Error("boom") }] }));
+    const err = await agent.fulfillInvoice([{ invoice: inv }]).catch((e) => e);
+    expect(err).toMatchObject({ code: "PAYMENT_COMMITTED", failed: [{ invoice: inv, reason: "boom" }] });
+  });
+});
+

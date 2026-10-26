@@ -105,3 +105,20 @@ describe("batchTransferTokens", () => {
     expect(calls.batchTransferTokens).toHaveLength(0);
   });
 });
+
+describe("token dry runs refuse what the send refuses (ToB review 2026-10-26)", () => {
+  it("transferTokens({ dryRun }) refuses a Spark invoice: the SDK's send does", async () => {
+    const { testSparkInvoice } = await import("../helpers/spark-address.js");
+    const { agent, calls } = mk();
+    await expect(agent.transferTokens({ tokenIdentifier: tokenOn("MAINNET"), amount: 5n, to: testSparkInvoice("MAINNET"), dryRun: true }))
+      .rejects.toThrow(/Spark invoice.*fulfillInvoice/);
+    expect(calls.transferTokens).toHaveLength(0);
+  });
+
+  it("a batch entry naming two different recipients is refused, not silently resolved", async () => {
+    const { agent } = mk();
+    await expect(agent.batchTransferTokens([{ tokenIdentifier: tokenOn("MAINNET"), tokenAmount: 5n, receiverSparkAddress: TO, to: testSparkAddress("MAINNET", "02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5") }]))
+      .rejects.toThrow(/two different recipients/);
+  });
+});
+

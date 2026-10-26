@@ -54,9 +54,11 @@ Even on the direct path, the wrapper exposes three opt-in safety knobs. They are
 - **Cumulative spend budget via `SPARK_DAILY_BUDGET_SATS`.** Every other guard is per-call, so none of them stops a *loop* of individually-valid sends. Set this env var and the wrapper enforces a rolling 24-hour sats budget across Spark transfers, Lightning pays, Spark-invoice fulfillment, and L1 withdrawals, persisted in a ledger at `~/.spark/spend-ledger.json` (`SPARK_SPEND_LEDGER_PATH` to relocate; `agent.spendStatus()` to inspect). Over-budget sends throw before reaching the SDK. Unset = not enforced; a malformed value refuses to boot rather than being silently ignored.
   **Stronger, opt-in: bind the budget INTO the seed.** The user runs `npm exec --no -- sparkbtcbot set-policy` (their own terminal — it's TTY-gated like reveal-mnemonic; you do not run it) to seal the budget inside the encrypted seed payload and switch the ledger to HMAC-signed. A seed-bound budget wins over the env var absolutely, and deleting/truncating/editing the ledger then **fails closed** instead of silently restoring the budget — legitimate resets go through `npm exec --no -- sparkbtcbot reset-ledger` (passphrase-gated). Detail: `references/encrypted-seed.md` → Seed-bound policy.
 
-When you (Claude) help a user set up a production-leaning agent, recommend they populate `recipients.allow` with their known destinations (own addresses, exchange deposit addresses, paid services). Cheap, opt-in, and stops the most common "agent paid the wrong address" failure mode.
+When you (Claude) help a user set up a production-leaning agent, recommend they populate `recipients.allow` with their known destinations (own addresses, exchange deposit addresses, paid services). Cheap, opt-in, and stops the commonest "paid the wrong address" failure.
 
-**The allowlist does not bound Lightning or L402 spend.** Both pay a node pubkey embedded in a BOLT11 invoice, not an address, so `recipients.allow` cannot gate them. Populating `recipients.allow` does **not** make outbound spend safe. What does bound Lightning/L402 through the wrapper is the per-call amount ceiling (`maxAmountSats`) plus the cumulative `SPARK_DAILY_BUDGET_SATS` budget above — but both live in the agent's own process, so they bound *mistakes and runaway loops*, not a compromised process calling the raw SDK. No control shipped here survives full process compromise — which is why the funded balance itself is the ultimate cap.
+**The allowlist does not bound Lightning or L402 spend.** Both pay a node pubkey embedded in a BOLT11 invoice, not an address, so `recipients.allow` cannot gate them. What does bound Lightning/L402 through the wrapper is the per-call amount ceiling (`maxAmountSats`) plus the cumulative `SPARK_DAILY_BUDGET_SATS` budget above — but both live in the agent's own process, so they bound *mistakes and runaway loops*, not a compromised process calling the raw SDK. No control shipped here survives full process compromise — which is why the funded balance itself is the ultimate cap.
+
+- **`PAYMENT_COMMITTED` = the money may have left.** Never pay again with a new invoice, address or method; check `agent.getTransfers()`. Retrying the same invoice, or `fetchL402` on the same URL, is deduped.
 
 ## Rules for Claude when operating this skill
 
@@ -93,7 +95,7 @@ Rules:
 - Attach ONE compact alternatives line to whatever you hand out (e.g. "any Lightning wallet can pay this; if the payer is on Spark they can instead send free to your address, and I can give an L1 address for on-chain"). No menu dumps, no interrogation.
 - **Lightning invoice expiry: default 1 hour** (`expirySeconds: 3600`, the wrapper's default). Don't mention the expiry unprompted — but when the user's ask implies a different lifetime ("for my tip page", "valid for a week") or they ask directly, set `expirySeconds` accordingly.
 - **Funding an empty wallet from L1 to make a payment? Size the deposit for ALL fee legs — do not quote "invoice + fee".** This is the recurring on-ramp mistake: when a deposit is meant to cover a downstream payment (pay a Lightning invoice, a merchant), the amount that lands on Spark is `deposited − claim spread` (the SSP's cut at claim, hundreds of sats, feerate-dependent). Quoting invoice + Lightning fee under-funds every time and forces a second deposit. Use `estimateOnrampDeposit({ invoiceSats, lightningFeeSats })` (from `sparkbtcbot-skill` / `lib/fee-guards.js`), tell the user to send **at least** its `depositSats`, and pay from the **actual credited balance** after claiming — not the number you quoted. Full flow: `references/wallet.md` → Generate Deposit Address, and `references/lightning.md` → L1 → Lightning On-Ramp (which also has the invoice-expiry precheck).
-- **"Did the L1 deposit arrive yet?" → `agent.listPendingDeposits()`, NOT `getBalance()`.** `getBalance()` shows only *claimed* Spark balance, so a confirmed but unclaimed deposit reads as 0 — the classic false "no". `listPendingDeposits()` returns the confirmed-unclaimed UTXOs at the static deposit addresses (`{ address, txid, vout }`): empty means "not landed yet", and each entry feeds straight into `claimDeposit({ txid, vout, maxFeeSats })`. Claiming is manual — nothing lands in the balance until you claim it.
+- **"Did the L1 deposit arrive yet?" → `agent.listPendingDeposits()`, NOT `getBalance()`.** `getBalance()` shows only *claimed* Spark balance, so a confirmed but unclaimed deposit reads as 0 — the classic false "no". `listPendingDeposits()` returns the confirmed-unclaimed UTXOs at the deposit addresses (`{ address, txid, vout, type }`): empty means "not landed yet"; pass each entry's `txid`, `vout` and `type` to `claimDeposit({ …, maxFeeSats })`. Claiming is manual. Hand out only `getDepositAddress()`: single-use claims are refused by the operators (`references/wallet.md`).
 - **Not an L1 wallet.** On-chain it sees only its own deposit addresses, through the operators. It can't read any other address (even one from this mnemonic) or spend L1 coins outside Spark, so hand out only the deposit address, and never say "nothing arrived" about an address it can't see. Scope: `references/wallet.md` → On L1.
 
 ## What is Spark
@@ -191,9 +193,9 @@ import { loadMnemonicFromEnv } from "sparkbtcbot-skill";
 import { SparkAgent } from "sparkbtcbot-skill/agent";
 
 const mnemonic = await loadMnemonicFromEnv(); // reads SPARK_PASSPHRASE, decrypts seed.enc
-// The wrapper carries every guard (allowlist, caps, budget, dedup, backup) and opens
-// the wallet with the SDK's fee ladders OFF, so the exit backup stays exitable.
-const { agent } = await SparkAgent.create(mnemonic, process.env.SPARK_NETWORK || "MAINNET");
+// The wrapper carries the guards (allowlist; sats caps and budget, not tokens; dedup;
+// backup), fee ladders OFF. A one-shot script, so optimizeLeaves: false.
+const { agent } = await SparkAgent.create(mnemonic, process.env.SPARK_NETWORK || "MAINNET", { optimizeLeaves: false });
 
 const { address, publicKey } = await agent.getIdentity();
 const { sats } = await agent.getBalance();

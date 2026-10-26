@@ -1,6 +1,5 @@
 // The code listing in references/agent-class.md is scripts/spark-agent.js with
-// three edits, so a reader can drop it into a project that has lib/ next to it:
-//   - the dotenv import becomes a comment (a library shouldn't read .env),
+// two edits, so a reader can drop it into a project that has lib/ next to it:
 //   - lib imports point at ./lib/ instead of ../../../lib/,
 //   - the runnable demo at the bottom (from "// --- Demo ---") is cut, along
 //     with the pathToFileURL import only the demo uses.
@@ -15,18 +14,15 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "../..");
 export const SCRIPT_PATH = join(ROOT, "skills/sparkbtcbot/scripts/spark-agent.js");
 export const DOC_PATH = join(ROOT, "skills/sparkbtcbot/references/agent-class.md");
 
-const DOTENV = 'import "dotenv/config";\n';
-const DOTENV_NOTE = '// (the runnable scripts/spark-agent.js also does `import "dotenv/config"` here)\n';
 const URL_IMPORT = 'import { pathToFileURL } from "node:url";\n';
 const DEMO = "\n// --- Demo ---\n";
 
 export function listingFromScript(script) {
-  for (const marker of [DOTENV, URL_IMPORT, DEMO]) {
+  for (const marker of [URL_IMPORT, DEMO]) {
     if (!script.includes(marker)) throw new Error(`spark-agent.js no longer contains ${JSON.stringify(marker.trim())}; update tests/helpers/agent-class-listing.js`);
   }
   return script
     .slice(0, script.indexOf(DEMO))
-    .replace(DOTENV, DOTENV_NOTE)
     .replace(URL_IMPORT, "")
     .replaceAll('"../../../lib/', '"./lib/')
     .replace(/\s+$/, "\n");

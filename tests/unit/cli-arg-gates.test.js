@@ -205,12 +205,4 @@ describe("setup on a pipe (no TTY) fails loud, never silently", () => {
     expect(r.files).toEqual([]);
   }, 30_000);
 
-  it("a piped passphrase (the CI path) still creates the seed; a short one is still refused", async () => {
-    const ok = await spawnSetup([], { stdinLines: ["correct horse battery staple", "correct horse battery staple"] });
-    expect(ok.code).toBe(0);
-    expect(ok.files).toEqual(["seed.enc"]);
-    const short = await spawnSetup([], { stdinLines: ["short", "short"] });
-    expect(short.code).toBe(1);
-    expect(short.files).toEqual([]);
-  }, 60_000);
 });

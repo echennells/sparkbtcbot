@@ -78,4 +78,23 @@ describe("listPendingDeposits", () => {
     expect(await agent.listPendingDeposits()).toEqual([{ address: "bc1pONCE", txid: "t9", vout: 1, type: "single-use" }]);
     expect(asked).toEqual(["bc1pSTATIC", "bc1pONCE"]);
   });
+
+  it("claimDeposit refuses a single-use entry with the reason, before any SDK call", async () => {
+    let called = false;
+    const wallet = { getClaimStaticDepositQuote: async () => { called = true; return {}; } };
+    const agent = new SparkAgent(wallet, "MAINNET");
+    await expect(agent.claimDeposit({ txid: "t9", vout: 1, type: "single-use" }))
+      .rejects.toMatchObject({ code: "SINGLE_USE_DEPOSITS_UNAVAILABLE" });
+    await expect(agent.claimDeposit({ txid: "t9", vout: 1, type: "weird" })).rejects.toThrow(/unknown deposit type/);
+    expect(called).toBe(false);
+  });
+});
+
+describe("getSingleUseDepositAddress", () => {
+  it("refuses: the operators currently refuse single-use claims, so the address would trap coins", async () => {
+    let asked = false;
+    const agent = new SparkAgent({ getSingleUseDepositAddress: async () => { asked = true; return "bc1pX"; } }, "MAINNET");
+    await expect(agent.getSingleUseDepositAddress()).rejects.toMatchObject({ code: "SINGLE_USE_DEPOSITS_UNAVAILABLE", message: expect.stringMatching(/getDepositAddress\(\)/) });
+    expect(asked).toBe(false);
+  });
 });

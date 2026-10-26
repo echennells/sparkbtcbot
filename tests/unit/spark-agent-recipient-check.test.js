@@ -78,6 +78,6 @@ describe("withdraw with no SSP record", () => {
     const err = await agent.withdraw({ to: "bc1qexampledestination", amount: 100000 }).catch((e) => e);
     expect(err).toBeInstanceOf(Error);
     expect(err.message).toMatch(/exit was sent.*Do NOT retry/);
-    expect(err.paid).toBe(true);
+    expect(err).toMatchObject({ code: "PAYMENT_COMMITTED", settled: null, op: "l1_withdraw", paid: true });
   });
 });

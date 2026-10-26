@@ -163,3 +163,28 @@ describe("inspectLedgerForBinding + initSignedLedger({ entries })", () => {
     await expect(initSignedLedger({ path, hmacKey: key, entries: [{ sats: "much" }] })).rejects.toThrow(/well-formed/);
   });
 });
+
+// ToB review 2026-10-26: set-policy signed an unsigned, agent-writable ledger
+// as it stood, and the validator accepted a negative entry, so one planted
+// { sats: -1e9 } became a trusted hole in a sealed budget.
+describe("a negative or fractional entry is never a valid ledger entry", () => {
+  const key = randomBytes(32);
+  const forged = (sats) => JSON.stringify({ version: 1, entries: [{ id: "x", ts: T0, sats, operation: "spark_transfer" }] });
+
+  it("set-policy's inspection refuses an unsigned ledger holding one", async () => {
+    for (const sats of [-15_000_000, 1.5]) {
+      await writeFile(path, forged(sats));
+      await expect(inspectLedgerForBinding({ path, hmacKey: key })).rejects.toMatchObject({ code: "SPEND_LEDGER_UNREADABLE" });
+    }
+  });
+
+  it("initSignedLedger refuses to sign one", async () => {
+    await expect(initSignedLedger({ path, hmacKey: key, entries: [{ id: "x", ts: T0, sats: -1 }] })).rejects.toThrow(/well-formed/);
+  });
+
+  it("an env-budget ledger holding one fails closed instead of granting headroom", async () => {
+    await writeFile(path, forged(-15_000_000));
+    const ledger = createSpendLedger({ path, budgetSats: 20_000, clock: () => T0 });
+    await expect(ledger.assertCanSpend(1_000)).rejects.toThrow();
+  });
+});

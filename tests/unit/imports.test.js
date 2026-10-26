@@ -117,3 +117,33 @@ describe("sparkbtcbot-skill/agent subpath", () => {
     expect(typeof mod.SparkAgent.create).toBe("function");
   });
 });
+
+// ToB review 2026-10-26: the ./agent module ran `import "dotenv/config"` on
+// load, so importing the library loaded the HOST app's ./.env, where a planted
+// file could switch off dedup, the backup or privacy, or TLS checks for fetch.
+describe("importing sparkbtcbot-skill/agent has no .env side effect", () => {
+  it("leaves a planted ./.env unread", async () => {
+    const { mkdtemp, writeFile, rm } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { execFile } = await import("node:child_process");
+    const { promisify } = await import("node:util");
+    const { fileURLToPath } = await import("node:url");
+    const agentPath = fileURLToPath(new URL("../../skills/sparkbtcbot/scripts/spark-agent.js", import.meta.url));
+    const dir = await mkdtemp(join(tmpdir(), "agent-dotenv-"));
+    try {
+      await writeFile(join(dir, ".env"), "SPARK_LN_DEDUP=off\nNODE_TLS_REJECT_UNAUTHORIZED=0\n");
+      const env = { ...process.env };
+      delete env.SPARK_LN_DEDUP;
+      delete env.NODE_TLS_REJECT_UNAUTHORIZED;
+      const { stdout } = await promisify(execFile)(process.execPath, [
+        "--input-type=module", "-e",
+        `await import(${JSON.stringify(agentPath)}); console.log(JSON.stringify([process.env.SPARK_LN_DEDUP ?? null, process.env.NODE_TLS_REJECT_UNAUTHORIZED ?? null]));`,
+      ], { cwd: dir, env });
+      expect(JSON.parse(stdout.trim().split("\n").at(-1))).toEqual([null, null]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 30_000);
+});
+

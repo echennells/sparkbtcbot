@@ -33,16 +33,15 @@ async function main() {
     console.log("\nNo token balances.");
   }
 
-  // Generate deposit addresses
-  console.log("\n=== Deposit Addresses ===");
+  // The deposit address. Only the static one: the operators currently refuse
+  // to claim single-use deposits (references/wallet.md → On L1), so coins sent
+  // to a single-use address would be stuck.
+  console.log("\n=== Deposit Address ===");
 
   const staticAddr = await wallet.getStaticDepositAddress();
   console.log("Static (reusable):", staticAddr);
 
-  const singleAddr = await wallet.getSingleUseDepositAddress();
-  console.log("Single-use:       ", singleAddr);
-
-  console.log("\nSend BTC to either address. Deposits need 3 L1 confirmations.");
+  console.log("\nSend BTC to this address. Deposits need 3 L1 confirmations.");
 
   // "Did my deposit arrive?" — getBalance() shows CLAIMED balance only, so a
   // confirmed-but-unclaimed deposit is INVISIBLE there. Check the deposit

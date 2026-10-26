@@ -310,6 +310,15 @@ describe("payAndSettle", () => {
     expect(polls).toBe(0);
   });
 
+  it("a status read that throws is no news: polling goes on and the payment still settles", async () => {
+    const { agent } = mk((n) => {
+      if (n === 0) throw new Error("UNAVAILABLE: try again");
+      return n < 2 ? { status: "LIGHTNING_PAYMENT_INITIATED" } : { paymentPreimage: "aa".repeat(32) };
+    });
+    const r = await agent.payAndSettle(AMOUNTLESS, { amountSats: 500, pollMs: 1 });
+    expect(r).toMatchObject({ settled: true, paymentPreimage: "aa".repeat(32) });
+  });
+
   it("throws on LIGHTNING_PAYMENT_FAILED", async () => {
     const { agent } = mk(() => ({ status: "LIGHTNING_PAYMENT_FAILED" }));
     await expect(agent.payAndSettle(AMOUNTLESS, { amountSats: 500, pollMs: 1 })).rejects.toThrow(/failed/i);
@@ -380,14 +389,20 @@ describe("payAndSettle terminal statuses", () => {
   // A refunded/failed payment that merely "times out" collides with the
   // never-retry-on-timeout rule and deadlocks the caller forever.
   it.each([
-    "TRANSFER_FAILED",
     "USER_TRANSFER_VALIDATION_FAILED",
-    "PREIMAGE_PROVIDING_FAILED",
     "USER_SWAP_RETURN_FAILED",
     "USER_SWAP_RETURNED",
   ])("throws on %s instead of reporting a pending timeout", async (status) => {
     const agent = mkStatus(status);
-    await expect(agent.payAndSettle(AMOUNTLESS, { amountSats: 500, pollMs: 1 })).rejects.toThrow(/failed/i);
+    await expect(agent.payAndSettle(AMOUNTLESS, { amountSats: 500, pollMs: 1 })).rejects.toThrow(/Lightning payment failed/);
+  });
+
+  // These come AFTER the Lightning payment succeeded (enum order): the payee
+  // may have the money, so they throw PAYMENT_COMMITTED at once, not "failed".
+  it.each(["TRANSFER_FAILED", "PREIMAGE_PROVIDING_FAILED"])("throws PAYMENT_COMMITTED on %s, promptly", async (status) => {
+    const agent = mkStatus(status);
+    await expect(agent.payAndSettle(AMOUNTLESS, { amountSats: 500, pollMs: 1 }))
+      .rejects.toMatchObject({ code: "PAYMENT_COMMITTED", settled: null, op: "lightning_pay", message: expect.stringMatching(new RegExp(status)) });
   });
 
   it("reports lastStatus so a genuine pending is legible", async () => {
@@ -753,3 +768,37 @@ describe("the reported Lightning fee", () => {
     expect(await agent.payAndSettle(KNOWN_INVOICE, { dryRun: true, maxFeeSats: 30 })).not.toHaveProperty("feeSats");
   });
 });
+
+// ToB review 2026-10-26.
+describe("payment-safety edges", () => {
+  const TWO_HASHES = "lnbc10u1p54twgqpp5424242424242424242424242424242424242424242424242424qpp5hwamhwamhwamhwamhwamhwamhwamhwamhwamhwamhwamhwamhwassp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygsctsqx6xtn594jaehtkrgmjfzdaymv0tn5punzgw907zta6k5p8l8apveqx3q5uj58avd8xnnjylgndlk9sk36ar3e4j769aghj6cm4cppd49ag";
+
+  it("refuses to pay an invoice with two payment hashes, before the SDK", async () => {
+    const { agent, calls } = mkAgent();
+    await expect(agent.payLightningInvoice(TWO_HASHES, { maxAmountSats: 5000 })).rejects.toThrow(/carries 2 payment hashes/);
+    expect(calls.pay).toBeNull();
+  });
+
+  it("a status after the Lightning payment succeeded is not a failure: the payee has the money", async () => {
+    const { isTerminalLightningFailure } = await import("../../skills/sparkbtcbot/scripts/spark-agent.js");
+    for (const s of ["PREIMAGE_PROVIDING_FAILED", "TRANSFER_FAILED", "LIGHTNING_PAYMENT_SUCCEEDED", "SOMETHING_NEW_FAILED", undefined]) {
+      expect(isTerminalLightningFailure(s), String(s)).toBe(false);
+    }
+    for (const s of ["USER_TRANSFER_VALIDATION_FAILED", "LIGHTNING_PAYMENT_FAILED", "PENDING_USER_SWAP_RETURN", "USER_SWAP_RETURNED", "USER_SWAP_RETURN_FAILED"]) {
+      expect(isTerminalLightningFailure(s), s).toBe(true);
+    }
+  });
+
+  it("payAndSettle on PREIMAGE_PROVIDING_FAILED throws PAYMENT_COMMITTED instead of 'failed'", async () => {
+    process.env.SPARK_LEAF_VAULT = "off";
+    const wallet = {
+      getSparkAddress: async () => "sp1from",
+      getLightningSendFeeEstimate: async () => 5,
+      payLightningInvoice: async () => ({ id: "pay-1", encodedInvoice: AMOUNTLESS }),
+      getLightningSendRequest: async () => ({ status: "PREIMAGE_PROVIDING_FAILED" }),
+    };
+    await expect(new SparkAgent(wallet, "MAINNET").payAndSettle(AMOUNTLESS, { amountSats: 500, pollMs: 1, maxPolls: 3 }))
+      .rejects.toMatchObject({ code: "PAYMENT_COMMITTED", sendId: "pay-1" });
+  });
+});
+

@@ -29,9 +29,9 @@ This is a Spark wallet, not an L1 Bitcoin wallet. It doesn't scan or watch the b
 
 | On L1 | Call | What actually happens |
 |---|---|---|
-| Receive on-chain bitcoin | `agent.getDepositAddress()` (static, reusable); `agent.getSingleUseDepositAddress()` | The operators issue a taproot address for your key combined with theirs. It is not an ordinary address from the mnemonic. |
-| See a deposit | `agent.listPendingDeposits()` | Asks the operators which unclaimed UTXOs sit at your **static** deposit addresses. They answer only for deposit addresses they issued; any other address returns an error. Single-use addresses aren't included. |
-| Move a deposit into Spark | `agent.claimDeposit({ txid, vout, maxFeeSats })` | After 3 confirmations, with the SSP's spread taken (below). Nothing shows in `getBalance()` until it's claimed. A single-use deposit is claimed with the raw `wallet.claimDeposit(txid)`, given its txid. The raw SDK also has SSP-priced instant claims (`getInstantStaticDepositQuote` / `claimInstantStaticDeposit`, 0–1 confirmations). Neither is wrapped or tested here. |
+| Receive on-chain bitcoin | `agent.getDepositAddress()` (static, reusable) | The operators issue a taproot address for your key combined with theirs. It is not an ordinary address from the mnemonic. Not a single-use address: see below. |
+| See a deposit | `agent.listPendingDeposits()` | Asks the operators which unclaimed UTXOs sit at your deposit addresses, static and single-use, each entry tagged with its `type`. They answer only for deposit addresses they issued; any other address returns an error. |
+| Move a deposit into Spark | `agent.claimDeposit({ txid, vout, maxFeeSats })` | After 3 confirmations, with the SSP's spread taken (below). Nothing shows in `getBalance()` until it's claimed. A single-use deposit can't be claimed right now (below). The raw SDK also has SSP-priced instant claims (`getInstantStaticDepositQuote` / `claimInstantStaticDeposit`, 0–1 confirmations). Neither is wrapped or tested here. |
 | Return an unclaimed static deposit to L1 | raw `wallet.refundStaticDeposit({ depositTransactionId, destinationAddress, satsPerVbyteFee })` | The operators co-sign and you get the transaction hex; `refundAndBroadcastStaticDeposit` also broadcasts it. Not wrapped. |
 | Send to an L1 address | `agent.withdraw({ to, amount })` | A cooperative exit from the Spark balance to any address, including silent payment addresses (below). Flat fee, deducted from the amount. |
 | Follow a withdrawal | `result.coopExitTxid`; raw `wallet.getCoopExitRequest(id)` | The txid, and the SSP's record of the request. That's what the operators report, not a chain lookup. |
@@ -73,12 +73,11 @@ Balance, transfers, Lightning, withdrawals and `listPendingDeposits()` don't tou
 ```javascript
 // Static (reusable) — receives multiple deposits to the same address
 const staticAddr = await wallet.getStaticDepositAddress();
-
-// Single-use — one-time deposit address
-const singleAddr = await wallet.getSingleUseDepositAddress();
 ```
 
-Both are P2TR (`bc1p...` on mainnet, `bcrt1p...` on regtest) — an **L1 on-chain** address, NOT a Spark (`sp1...`) address. Deposits require 3 L1 confirmations before they can be claimed on Spark (the SSP refuses to even quote before then). **Claiming is manual — there is no auto-claim** (the funds sit unclaimed at the address until you claim them).
+> **⚠️ Don't use single-use deposit addresses.** The operators currently refuse the step that claims them: `finalize_deposit_tree_creation` answers `UNAVAILABLE` on MAINNET and REGTEST (2026-10-26), and a real 2,000-sat mainnet deposit was refused. Coins sent to one stay at the address, visible but unclaimable, and the SDK has no refund path for single-use deposits. `agent.getSingleUseDepositAddress()` refuses (`SINGLE_USE_DEPOSITS_UNAVAILABLE`); the raw `wallet.getSingleUseDepositAddress()` still hands one out, so don't call it. If someone already sent coins to one, `listPendingDeposits()` shows them as `type: "single-use"`: say they arrived and are waiting on the operators, never that nothing arrived. `tests/integration/funded/single-use-deposit.test.js` fails the day claims work again.
+
+The static address is P2TR (`bc1p...` on mainnet, `bcrt1p...` on regtest) — an **L1 on-chain** address, NOT a Spark (`sp1...`) address. Deposits require 3 L1 confirmations before they can be claimed on Spark (the SSP refuses to even quote before then). **Claiming is manual — there is no auto-claim** (the funds sit unclaimed at the address until you claim them).
 
 > **⚠️ Sizing the deposit when it's funding a payment — the #1 on-ramp mistake.** If you are depositing to then pay something (a Lightning invoice, a merchant), **the amount you deposit is NOT the amount that lands on Spark.** Claiming takes an SSP spread, so `credited = deposited − spread` (live: 297 sats on 10,350; ~396 on ~10,100 — feerate-dependent, hundreds of sats). Telling the user to send "invoice + Lightning fee" **under-funds every time** and forces a second deposit. Use the helper — it sums all three legs (invoice + Lightning routing + claim-spread buffer + slack):
 >
@@ -118,9 +117,10 @@ Note: `getUtxosForDepositAddress` returns only `{ txid, vout }` (no amount) and 
 
 ```javascript
 const pending = await agent.listPendingDeposits();
-// -> [{ address, txid, vout }, ...]  (empty array = nothing landed yet)
+// -> [{ address, txid, vout, type }, ...]  (empty array = nothing landed yet)
 for (const d of pending) {
-  await agent.claimDeposit({ txid: d.txid, vout: d.vout, maxFeeSats });
+  // type "single-use" is refused with the reason (the operators refuse those claims)
+  await agent.claimDeposit({ txid: d.txid, vout: d.vout, type: d.type, maxFeeSats });
 }
 ```
 

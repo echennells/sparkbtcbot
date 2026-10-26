@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  invoicePaymentHashCount,
   decodeInvoiceSats,
   invoicePaymentHash,
   paymentHashMatches,
@@ -56,6 +57,8 @@ describe("invoicePaymentHash / paymentHashMatches", () => {
     expect(invoicePaymentHash(TWO_HASHES)).toBe(null);
     expect(paymentHashMatches(TWO_HASHES, "aa".repeat(32))).toBe(false);
     expect(paymentHashMatches(TWO_HASHES, "bb".repeat(32))).toBe(false);
+    expect(invoicePaymentHashCount(TWO_HASHES)).toBe(2);
+    expect(invoicePaymentHashCount("lnbc1notarealinvoice")).toBe(null);
   });
 });
 

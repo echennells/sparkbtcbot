@@ -292,6 +292,84 @@ describe("fetchL402 after payment: in-process recovery", () => {
     expect(pay).toHaveBeenCalledTimes(2);
   });
 
+  // ToB review 2026-10-26: a pay call that failed ambiguously held nothing, so
+  // the documented "call again" fetched a NEW challenge and bought twice.
+  it("a pay call that may have paid is held: the next call settles THE SAME invoice, no new challenge", async () => {
+    const inv = await invoice2000();
+    stubFetch([resp(402, { invoice: inv, macaroon: "mac1" })]);
+    const { agent, pay } = mk();
+    const committed = Object.assign(new Error("outcome unknown"), { code: "PAYMENT_COMMITTED", settled: null });
+    pay.mockRejectedValueOnce(committed);
+    const first = await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }));
+    expect(first.error).toMatchObject({ code: "PAYMENT_COMMITTED", settled: null, op: "l402", paid: true });
+    expect(first.error.message).toMatch(/settles THIS invoice/);
+
+    const seen = stubFetch([resp(200, { ok: true })]); // no 402 fetch: straight to delivery
+    const second = await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }));
+    expect(second.value).toMatchObject({ paid: false, recovered: true, data: { ok: true } });
+    expect(pay.mock.calls.map((c) => c[0])).toEqual([inv, inv]); // the same invoice, both times
+    expect(pay.mock.calls[1][1]).toMatchObject({ maxAmountSats: 3000, preferSpark: false });
+    expect(seen.map(auth)).toEqual(["L402 mac1:abc123preimage"]);
+  });
+
+  it("with the dedup store off, a held ambiguous payment is not paid again", async () => {
+    process.env.SPARK_LN_DEDUP = "off";
+    try {
+      const inv = await invoice2000();
+      stubFetch([resp(402, { invoice: inv, macaroon: "mac1" })]);
+      const { agent, pay } = mk();
+      pay.mockRejectedValueOnce(Object.assign(new Error("outcome unknown"), { code: "PAYMENT_COMMITTED" }));
+      await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }));
+      stubFetch([]);
+      const again = await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }));
+      expect(again.error).toMatchObject({ code: "PAYMENT_COMMITTED" });
+      expect(again.error.message).toMatch(/SPARK_LN_DEDUP is off/);
+      expect(pay).toHaveBeenCalledTimes(1);
+    } finally {
+      delete process.env.SPARK_LN_DEDUP;
+    }
+  });
+
+  it("a refusal before paying holds nothing (it is rethrown as is)", async () => {
+    const inv = await invoice2000();
+    stubFetch([resp(402, { invoice: inv, macaroon: "mac1" })]);
+    const { agent, pay } = mk();
+    pay.mockRejectedValueOnce(new Error("Lightning send blocked: fee over cap"));
+    const r = await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }));
+    expect(r.error.message).toMatch(/send blocked/);
+    stubFetch([resp(402, { invoice: inv, macaroon: "mac2" }), resp(200, { ok: true })]);
+    await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }));
+    expect(pay).toHaveBeenCalledTimes(2); // a fresh purchase was right: nothing had left
+  });
+
+  it("a 429 or 408 on delivery is retried with the same pass", async () => {
+    const inv = await invoice2000();
+    stubFetch([resp(402, { invoice: inv, macaroon: "mac1" }), resp(429, {}), resp(408, {}), resp(200, { ok: true })]);
+    const { agent, pay } = mk();
+    const { value } = await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }));
+    expect(value).toMatchObject({ paid: true, data: { ok: true } });
+    expect(pay).toHaveBeenCalledTimes(1);
+  });
+
+  it("a POST is presented once: a failed delivery holds the pass instead of re-sending it", async () => {
+    const inv = await invoice2000();
+    const seen = stubFetch([resp(402, { invoice: inv, macaroon: "mac1" }), resp(503, {})]);
+    const { agent } = mk();
+    const r = await run(agent.fetchL402(URL_, { method: "POST", body: { q: 1 }, maxAmountSats: 3000 }));
+    expect(r.error).toMatchObject({ code: "PAYMENT_COMMITTED", settled: true });
+    expect(r.error.message).toMatch(/after 1 attempt \(HTTP 503\)/);
+    expect(seen).toHaveLength(2); // the challenge and ONE paid attempt
+  });
+
+  it("a 401 or 402 after paying throws L402_PASS_REFUSED rather than returning the new challenge as data", async () => {
+    const inv = await invoice2000();
+    stubFetch([resp(402, { invoice: inv, macaroon: "mac1" }), resp(402, { invoice: "lnbc-new", macaroon: "mac2" })]);
+    const { agent, pay } = mk();
+    const r = await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }));
+    expect(r.error).toMatchObject({ code: "L402_PASS_REFUSED", paid: true, status: 402 });
+    expect(pay).toHaveBeenCalledTimes(1);
+  });
+
   it("a held pass is only for the exact request: another URL or method pays normally", async () => {
     const inv = await invoice2000();
     stubFetch([resp(402, { invoice: inv, macaroon: "mac1" }), ...Array.from({ length: 3 }, () => new TypeError("fetch failed"))]);
