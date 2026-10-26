@@ -273,6 +273,10 @@ export function createTransferIdStore(options?: {
     mint: () => string,
     options?: { explicitId?: string },
   ): Promise<{ transferId: string; reused: boolean }>;
+  /** The transferId recorded for this invoice, or null when no attempt was recorded. Never mints. */
+  peek(bolt11: string): Promise<{ transferId: string; createdAt: string | null } | null>;
+  /** Remove the entry for an invoice whose payment terminally failed. Returns whether one was removed. */
+  forget(bolt11: string): Promise<boolean>;
   /** Remove entries whose recorded expiry has passed. Best-effort; returns the count removed. */
   prune(): Promise<number>;
 };
@@ -543,8 +547,12 @@ export class PaymentCommittedError extends Error {
   sendId?: string;
   /** Set on fetchL402's errors, for callers of the earlier shape. */
   paid?: true;
-  /** fetchL402 only: why this agent stopped buying the URL (forgetL402 lifts it). */
-  reason?: "L402_PASS_REFUSED" | "L402_PASS_EXPIRED" | "L402_NO_PROOF";
+  /**
+   * fetchL402: why this agent stopped buying the URL (forgetL402 lifts it).
+   * payLightningInvoice: INVOICE_EXPIRED when it refused an expired invoice
+   * that an earlier attempt, on record in the dedup store, may already have paid.
+   */
+  reason?: "L402_PASS_REFUSED" | "L402_PASS_EXPIRED" | "L402_INVOICE_EXPIRED" | "L402_NO_PROOF" | "INVOICE_EXPIRED";
   /** fetchL402 with reason L402_PASS_REFUSED: the HTTP status that refused the pass. */
   status?: number;
 }

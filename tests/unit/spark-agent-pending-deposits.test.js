@@ -186,3 +186,17 @@ describe("getSingleUseDepositAddress", () => {
     expect(asked).toBe(false);
   });
 });
+
+// Coins locked in an outgoing transfer that hasn't completed stay in `owned`
+// but leave `available` (Spark's docs). After a refused Lightning send they
+// can be locked for days; without lockedSats the user just sees sats missing.
+describe("getBalance lockedSats", () => {
+  const agentWith = (satsBalance) => new SparkAgent({ getBalance: async () => ({ satsBalance, tokenBalances: new Map() }) }, "MAINNET");
+  it("reports owned minus available, as a string", async () => {
+    expect(await agentWith({ available: 4422n, owned: 4725n, incoming: 0n }).getBalance()).toEqual({ sats: "4422", lockedSats: "303", tokens: {} });
+  });
+  it("is 0 when nothing is locked or owned is missing", async () => {
+    expect(await agentWith({ available: 100n, owned: 100n, incoming: 0n }).getBalance()).toMatchObject({ lockedSats: "0" });
+    expect(await agentWith({ available: 100n }).getBalance()).toMatchObject({ lockedSats: "0" });
+  });
+});

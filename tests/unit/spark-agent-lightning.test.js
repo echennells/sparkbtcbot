@@ -5,6 +5,7 @@
 // payment failed because the wrapper estimated with the amount, then dropped it
 // on the actual send.
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { mkdtempSync } from "node:fs";
 import { mkdtemp, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -783,7 +784,20 @@ describe("payment-safety edges", () => {
   // Hosted REGTEST, 2026-10-26: paying an expired tracked invoice locked 303
   // sats in a PREIMAGE_SWAP transfer stuck at SENDER_KEY_TWEAK_PENDING, which
   // expires 16 days later; the SDK checks nothing before locking the coins.
-  it("refuses an invoice that expired or has under 30 s left, before any I/O", async () => {
+  // Each expiry test gets its own empty dedup store: the store is keyed by
+  // payment hash, and other tests here have attempted KNOWN_INVOICE's.
+  const withFreshDedup = async (fn) => {
+    const prev = process.env.SPARK_LN_DEDUP_PATH;
+    process.env.SPARK_LN_DEDUP_PATH = mkdtempSync(join(tmpdir(), "ln-dedup-expiry-"));
+    try {
+      await fn();
+    } finally {
+      if (prev === undefined) delete process.env.SPARK_LN_DEDUP_PATH;
+      else process.env.SPARK_LN_DEDUP_PATH = prev;
+    }
+  };
+
+  it("refuses an invoice that expired or has under 30 s left, before any I/O", () => withFreshDedup(async () => {
     const now = Math.floor(Date.now() / 1000);
     const at = (secondsLeft) => freshInvoice(KNOWN_INVOICE, now - 3600 + secondsLeft); // KNOWN_INVOICE: expiry 3600
     const { agent, calls } = mkAgent();
@@ -794,7 +808,34 @@ describe("payment-safety edges", () => {
     }
     expect(calls.pay).toBeNull();
     await expect(agent.payLightningInvoice(at(90), { maxAmountSats: 5000, dryRun: true })).resolves.toMatchObject({ dryRun: true });
-  });
+  }));
+
+  // The retry an unclear outcome invites ("retrying THIS invoice is safe")
+  // can come after the invoice expired. "Nothing was sent" is then true of the
+  // retry only: the first attempt may have paid, and the payee's new invoice
+  // would be a second payment.
+  it("an expired invoice with an earlier attempt on record is PAYMENT_COMMITTED, not 'ask for a new one'", () => withFreshDedup(async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const inv = freshInvoice(KNOWN_INVOICE, now - 3600 + 90); // 90 s left
+    let attempts = 0;
+    process.env.SPARK_LEAF_VAULT = "off";
+    const wallet = {
+      getSparkAddress: async () => "sp1from",
+      getLightningSendFeeEstimate: async () => 5,
+      payLightningInvoice: async () => { attempts++; throw new Error("deadline exceeded"); }, // proves nothing
+    };
+    const agent = new SparkAgent(wallet, "MAINNET");
+    await expect(agent.payLightningInvoice(inv, { maxAmountSats: 5000 })).rejects.toMatchObject({ code: "PAYMENT_COMMITTED" });
+    const clock = vi.spyOn(Date, "now").mockReturnValue((now + 180) * 1000); // the invoice has expired
+    try {
+      await expect(agent.payLightningInvoice(inv, { maxAmountSats: 5000 })).rejects.toMatchObject({
+        code: "PAYMENT_COMMITTED", reason: "INVOICE_EXPIRED", settled: null, message: expect.stringMatching(/earlier attempt.*getTransfers/s),
+      });
+    } finally {
+      clock.mockRestore();
+    }
+    expect(attempts).toBe(1);
+  }));
 
   // ToB review of 375e6fb..HEAD: ONE payment hash of the wrong length passed
   // the count check, read as no hash, and the preimage check then passed any

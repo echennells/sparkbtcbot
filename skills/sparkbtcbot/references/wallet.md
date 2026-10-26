@@ -21,7 +21,7 @@ for (const [id, token] of tokenBalances) {
 
 `tokenBalances` is a `Map<Bech32mTokenIdentifier, { ownedBalance, availableToSendBalance, tokenMetadata }>`.
 
-> **⚠️ The `SparkAgent` wrapper's `getBalance()` returns a DIFFERENT shape** — normalized `{ sats, tokens }`, where `sats` is `satsBalance.available` **as a string** (the three raw sats figures flattened to the spendable one) and `tokens` is a plain object, not the raw `{ satsBalance, tokenBalances }` (bigint + Map) above. Same method name, not interchangeable — the same wrapper-vs-raw divergence family as `payLightningInvoice` (`references/lightning.md` → Pay). Destructure `{ satsBalance }` from the raw wallet and `{ sats }` from the agent; crossing them yields `undefined`, which reads as a zero balance.
+> **⚠️ The `SparkAgent` wrapper's `getBalance()` returns a DIFFERENT shape** — normalized `{ sats, lockedSats, tokens }`, where `sats` is `satsBalance.available` **as a string** (the spendable figure), `lockedSats` is `owned` minus `available` (sats still this wallet's but locked in an outgoing transfer that hasn't completed, such as a Lightning send the SSP refused: say so instead of reporting them missing), and `tokens` is a plain object, not the raw `{ satsBalance, tokenBalances }` (bigint + Map) above. Same method name, not interchangeable — the same wrapper-vs-raw divergence family as `payLightningInvoice` (`references/lightning.md` → Pay). Destructure `{ satsBalance }` from the raw wallet and `{ sats }` from the agent; crossing them yields `undefined`, which reads as a zero balance.
 
 ## On L1: what this skill can and can't do
 

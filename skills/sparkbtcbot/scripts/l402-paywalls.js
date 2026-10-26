@@ -9,6 +9,7 @@ import { SparkWallet } from "@buildonspark/spark-sdk";
 // funds. Re-audit on version bump.
 import { decode } from "light-bolt11-decoder";
 import { checkL402Amount, lightningFeeCap } from "../../../lib/fee-guards.js";
+import { invoiceSecondsRemaining } from "../../../lib/bolt11.js";
 import { loadMnemonicFromEnv } from "../../../lib/encrypted-seed.js";
 import { sparkWalletOptions } from "../../../lib/wallet-options.js";
 
@@ -127,6 +128,12 @@ async function fetchWithL402(wallet, url, options = {}) {
   // 25-sat estimate that an inlined max(10, 0.5%) under-capped and the SDK
   // refused. Copy-pasting this script must inherit that lesson, not re-lose it.
   const feeCap = maxFeeSats ?? lightningFeeCap({ amountSats });
+  // Never pay an expired invoice through the raw SDK: it locks the coins in a
+  // transfer the SSP then refuses, with no set time to come back (Spark's docs,
+  // "Check expiry before paying"; reproduced on hosted REGTEST). 30 s covers
+  // the seconds the send takes to reach the SSP.
+  const secondsLeft = invoiceSecondsRemaining(invoice);
+  if (secondsLeft !== null && secondsLeft < 30) throw new Error("L402 payment blocked: the invoice has expired or is about to. Request the resource again.");
   console.log(`Paying invoice (max fee ${feeCap} sats)...`);
   const payResult = await wallet.payLightningInvoice({
     invoice,

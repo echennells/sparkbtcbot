@@ -97,6 +97,24 @@ describeFunded("tracked invoices (REGTEST, real Lightning payments)", () => {
     expect(await shop.agent.getInvoiceStatus(order.id)).toMatchObject({ state: "unpaid", paid: false });
   }, 120_000);
 
+  // A retry after an unclear outcome can arrive once the invoice has expired;
+  // the first attempt is on record in the dedup store, and here it really did
+  // pay. The refusal must say so, not "ask the payee for a new invoice".
+  it("paying an invoice again after it expired is PAYMENT_COMMITTED when an earlier attempt is on record; nothing is locked", async () => {
+    const shop = await newShop();
+    const order = await shop.agent.createTrackedInvoice(PRICE, "order-again", { expirySeconds: 40 });
+    expect(await payer.payAndSettle(order.invoice, { maxAmountSats: PRICE + 10 })).toMatchObject({ settled: true });
+    while (Date.parse(order.expiresAt) - Date.now() > 25_000) await sleep(1_000); // inside the 30 s margin
+    const before = (await payerWallet.getBalance()).satsBalance;
+    await expect(payer.payLightningInvoice(order.invoice, { maxAmountSats: PRICE + 10 })).rejects.toMatchObject({
+      code: "PAYMENT_COMMITTED", reason: "INVOICE_EXPIRED", settled: null,
+    });
+    await sleep(3_000);
+    const after = (await payerWallet.getBalance()).satsBalance;
+    expect({ available: after.available, owned: after.owned }).toEqual({ available: before.available, owned: before.owned });
+    expect(await shop.agent.getInvoiceStatus(order.id)).toMatchObject({ state: "paid" }); // paid once
+  }, 120_000);
+
   it("paid while the shop wallet was closed: reopened, it reads received or paid, then paid", async () => {
     const shop = await newShop();
     const order = await shop.agent.createTrackedInvoice(PRICE, "order-offline", { expirySeconds: 600 });

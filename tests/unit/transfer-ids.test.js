@@ -200,3 +200,14 @@ describe("entry file", () => {
     expect(typeof entry.expiresAt).toBe("number");
   });
 });
+
+describe("peek", () => {
+  it("returns the recorded id without minting, and null when nothing is recorded", async () => {
+    const store = createTransferIdStore({ dir: await tmp() });
+    expect(await store.peek(DECODABLE)).toBeNull();
+    expect(await readdir(store.dir).catch(() => [])).toEqual([]); // peeking wrote nothing
+    const { transferId } = await store.idForInvoice(DECODABLE, mint);
+    expect(await store.peek(DECODABLE)).toMatchObject({ transferId });
+    expect(await store.peek("")).toBeNull();
+  });
+});

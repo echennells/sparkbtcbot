@@ -741,7 +741,14 @@ export class SparkAgent {
         },
       ])
     );
-    return { sats: satsBalance.available.toString(), tokens };
+    // Sats this wallet still owns but can't spend: coins locked in an
+    // outgoing transfer that hasn't completed, such as a Lightning payment the
+    // SSP refused after the SDK had locked the coins (an expired invoice on
+    // hosted REGTEST: 303 sats, with no set time to come back). Spark's docs:
+    // "Funds locked in an outgoing transfer can remain in owned while being
+    // excluded from available."
+    const locked = (satsBalance.owned ?? satsBalance.available) - satsBalance.available;
+    return { sats: satsBalance.available.toString(), lockedSats: (locked > 0n ? locked : 0n).toString(), tokens };
   }
 
   // --- Deposits ---
@@ -1090,9 +1097,26 @@ export class SparkAgent {
     // refuses it.
     const secondsLeft = invoiceSecondsRemaining(bolt11);
     if (secondsLeft !== null && secondsLeft < LIGHTNING_MIN_INVOICE_SECONDS) {
+      const when = secondsLeft <= 0 ? `expired ${Math.ceil(-secondsLeft)} s ago` : `expires in ${Math.floor(secondsLeft)} s`;
+      // A retry of a payment whose outcome was unknown lands here once the
+      // invoice has expired. "Nothing was sent" is then true of THIS call
+      // only: the earlier attempt may have paid, and a new invoice from the
+      // payee would be a second payment. The dedup store knows.
+      const earlier = this.#lnDedup ? await this.#lnDedup.peek(bolt11).catch(() => ({ unreadable: true })) : null;
+      if (earlier) {
+        const e = new PaymentCommittedError(
+          `SparkAgent.payLightningInvoice: the invoice ${when}, so it can't be paid now, and an earlier attempt to pay ` +
+            `it is on record (transferId ${earlier.transferId ?? "unreadable"}) that may have gone through. Check ` +
+            `agent.getTransfers() before paying a new invoice for the same thing: that would be a second payment. ` +
+            `Nothing was sent by this call.`,
+          { settled: null, op: "lightning_pay", invoiceHash: invoicePaymentHash(bolt11) ?? undefined },
+        );
+        e.reason = "INVOICE_EXPIRED";
+        throw e;
+      }
       const e = new Error(
-        `Payment blocked: the invoice ${secondsLeft <= 0 ? `expired ${Math.ceil(-secondsLeft)} s ago` : `expires in ${Math.floor(secondsLeft)} s`}. ` +
-          `Paying it would lock the amount in a transfer the SSP refuses, for days. Ask the payee for a new invoice. Nothing was sent.`,
+        `Payment blocked: the invoice ${when}. Paying it would lock the amount in a transfer the SSP refuses, ` +
+          `with no set time for it to come back. Ask the payee for a new invoice. Nothing was sent.`,
       );
       e.code = "INVOICE_EXPIRED";
       throw e;
@@ -2149,6 +2173,21 @@ export class SparkAgent {
           // The operators' record of this payment ended in failure: no money left.
           this.#l402Held.delete(key);
           return null;
+        }
+        if (err?.reason === "INVOICE_EXPIRED" || err?.code === "INVOICE_EXPIRED") {
+          // The invoice died before the doubtful payment could be settled
+          // again, so settling it can't tell us whether it went through.
+          throw block({
+            reason: "L402_INVOICE_EXPIRED",
+            settled: null,
+            message:
+              `L402: the earlier payment for ${host}${path} may have gone through, but its invoice has expired, so ` +
+              `it can't be settled again to find out. Nothing new was paid; check agent.getTransfers(). This agent ` +
+              `won't buy ${host}${path} again on its own; ${forgetHint(request.method)} allows it, on the user's say-so ` +
+              `(a second purchase if the first payment went through).`,
+            invoiceHash,
+            amountSats: held.amountSats ?? null,
+          });
         }
         if (err?.sendId) held.sendId = err.sendId;
         throw pending(

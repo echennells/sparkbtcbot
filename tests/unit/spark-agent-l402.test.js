@@ -508,6 +508,24 @@ describe("fetchL402 after payment: in-process recovery", () => {
     expect(pay).toHaveBeenCalledTimes(2);
   });
 
+  // The held invoice can expire before a doubtful payment is settled again.
+  // Settling it then can't tell whether the first payment went through, so it
+  // becomes a block, not "still pending" forever.
+  it("a held payment whose invoice expired is blocked (L402_INVOICE_EXPIRED), not pending forever", async () => {
+    const inv = await invoice2000();
+    stubFetch([resp(402, { invoice: inv, macaroon: "mac1" })]);
+    const { agent, pay } = mk();
+    pay.mockRejectedValueOnce(Object.assign(new Error("outcome unknown"), { code: "PAYMENT_COMMITTED", settled: null }));
+    await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }));
+    pay.mockRejectedValueOnce(Object.assign(new Error("invoice expired; an earlier attempt is on record"), { code: "PAYMENT_COMMITTED", reason: "INVOICE_EXPIRED" }));
+    stubFetch([]);
+    const r = await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }));
+    expect(r.error).toMatchObject({ code: "PAYMENT_COMMITTED", reason: "L402_INVOICE_EXPIRED", settled: null, invoiceHash: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    const again = await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }));
+    expect(again.error).toMatchObject({ reason: "L402_INVOICE_EXPIRED" });
+    expect(pay).toHaveBeenCalledTimes(2); // the block doesn't try again
+  });
+
   // ToB review of 7ec89b9 (N1): the held map dropped its oldest entry when
   // full, blocks included, so 100 other holds later the refused URL was bought
   // again on nobody's say-so.
