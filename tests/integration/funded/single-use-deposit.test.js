@@ -3,7 +3,9 @@
 // address. What it pins:
 //   - SparkAgent.listPendingDeposits() reports the deposit, typed
 //     "single-use" (a funded single-use address stays on the operators'
-//     unused list until it is claimed, and the per-address lookup sees it);
+//     unused list until it is claimed, and the per-address lookup sees it),
+//     and SparkAgent.claimDeposit finds it there and refuses it, dry run
+//     included, before the SSP can quote it;
 //   - the claim step is switched off by the operators: the SDK's
 //     claimDeposit(txid) fails in finalize_deposit_tree_creation with
 //     UNAVAILABLE "the method is currently unavailable". The same method
@@ -79,7 +81,8 @@ describeL1("single-use deposit address (REGTEST, real L1)", () => {
     console.log("pending:", JSON.stringify(pending), "after", Math.round((Date.now() - t0) / 1000), "s");
     expect(pending).toEqual([{ address, txid, vout: expect.any(Number), type: "single-use" }]);
 
-    await expect(agent.claimDeposit({ txid, vout: pending[0].vout, type: pending[0].type }))
+    // The wrapper finds it at the single-use address itself; nobody passes a type.
+    await expect(agent.claimDeposit({ txid, vout: pending[0].vout, dryRun: true }))
       .rejects.toMatchObject({ code: "SINGLE_USE_DEPOSITS_UNAVAILABLE" });
     const claim = await receiver.claimDeposit(txid).then(() => "claimed", (e) => e);
     console.log("claimDeposit(txid):", claim === "claimed" ? claim : String(claim?.message).slice(0, 300));

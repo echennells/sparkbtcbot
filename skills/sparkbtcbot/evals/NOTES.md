@@ -462,3 +462,7 @@ Two evals were re-run against the docs those fixes changed, ~250k tokens:
 
 - **18, deposit arrived: 4/4** (84k). It used `listPendingDeposits()`, previewed the claim before claiming, and treated an empty result as "not yet". It read `type: "single-use"` correctly: the coins arrived, the operators refuse the claim for now, use the static address.
 - **4, L402: 5/5** (165k). It paid through the guarded `fetchL402`. Its cache keys by https origin, and a recovered pass is kept. It explained `PAYMENT_COMMITTED` as "call again in the same run to finish this payment; a new run would buy again".
+
+## Evals 51 and 52 added (2026-10-26, not yet run)
+
+Both come from the stuck single-use deposit. **51** asks for "a fresh deposit address per order": the pass is static address plus a Lightning invoice per order, with no single-use address. **52** is a user whose $2 sits at a single-use address an older version handed out: the pass is "it arrived, it's waiting on the operators, back up your recovery words", with no promise of a credit from a quote. Both are reply-graded, about 65–75k tokens per run.

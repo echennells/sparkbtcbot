@@ -144,6 +144,10 @@ const LN_SETTLING = Symbol("sparkagent.lightningSettling");
 // waiting to be presented, and it reports no fee.
 const LN_NO_FEE_READS = Symbol("sparkagent.noFeeReads");
 
+// claimDeposit's lookup reads a deposit address's unclaimed UTXOs this many
+// at a time, until it finds the deposit or runs out.
+const DEPOSIT_UTXO_PAGE = 100;
+
 
 // Cumulative-budget guardrail (lib/spend-ledger.js): every other guard is
 // per-call, so none of them stops a LOOP of individually-valid sends. Active
@@ -631,41 +635,60 @@ export class SparkAgent {
     return await this.#wallet.getStaticDepositAddress();
   }
 
-  // Confirmed-but-UNCLAIMED L1 deposits waiting at your static deposit
-  // address(es). getBalance() reflects only CLAIMED Spark balance, so THIS is
-  // the method that answers "did my on-chain deposit arrive yet?" — an empty
-  // array means nothing is claimable; a non-empty one means funds are sitting
-  // unclaimed and each entry feeds straight into claimDeposit({ txid, vout }).
-  // The SDK exposes only { txid, vout } per UTXO (no amount/confirmations), so
-  // that is all we can return; to learn the credited amount, dry-run a claim.
   // Confirmed-but-UNCLAIMED L1 deposits at this wallet's deposit addresses:
   // the static ones, and the single-use ones not yet claimed. getBalance()
   // shows only CLAIMED Spark balance, so THIS is what answers "did my on-chain
   // deposit arrive?" — an empty array means nothing to claim yet. Each entry
-  // carries its `type` ("static" | "single-use"). Pass it to claimDeposit with
-  // txid and vout: a static one is claimed; a single-use one is refused with
-  // the reason, because the operators currently refuse those claims. Listing
-  // them still matters: coins sent to an old single-use address are there, and
-  // "nothing arrived" would be wrong. A funded single-use address stays on the
-  // operators' unused list until it is claimed (hosted REGTEST, 2026-10-26,
-  // tests/integration/funded/single-use-deposit.test.js).
+  // carries its `type` ("static" | "single-use"); claimDeposit({ txid, vout })
+  // claims a static one and refuses a single-use one with the reason, because
+  // the operators currently refuse those claims. Listing them still matters:
+  // coins sent to an old single-use address are there, and "nothing arrived"
+  // would be wrong. A funded single-use address stays on the operators' unused
+  // list until it is claimed (hosted REGTEST, 2026-10-26,
+  // tests/integration/funded/single-use-deposit.test.js). The SDK gives only
+  // { txid, vout } per UTXO (no amount or confirmations); to learn the credit,
+  // dry-run a claim.
   async listPendingDeposits({ limit = 100 } = {}) {
+    const deposits = [];
+    for (const [type, address] of await this.#depositAddresses()) {
+      // 4th arg excludeClaimed=true -> only UTXOs not yet claimed on Spark
+      const utxos = await this.#wallet.getUtxosForDepositAddress(address, limit, 0, true);
+      for (const u of utxos) deposits.push({ address, txid: u.txid, vout: u.vout, type });
+    }
+    return deposits;
+  }
+
+  // [type, address] for each of this wallet's deposit addresses, static first,
+  // each address once.
+  async #depositAddresses() {
     const [statics, singles] = await Promise.all([
       this.#wallet.queryStaticDepositAddresses(),
       this.#wallet.getUnusedDepositAddresses(),
     ]);
-    const deposits = [];
     const seen = new Set();
+    const out = [];
     for (const [type, addresses] of [["static", statics], ["single-use", singles]]) {
       for (const address of addresses) {
         if (seen.has(address)) continue;
         seen.add(address);
-        // 4th arg excludeClaimed=true -> only UTXOs not yet claimed on Spark
-        const utxos = await this.#wallet.getUtxosForDepositAddress(address, limit, 0, true);
-        for (const u of utxos) deposits.push({ address, txid: u.txid, vout: u.vout, type });
+        out.push([type, address]);
       }
     }
-    return deposits;
+    return out;
+  }
+
+  // Which of this wallet's deposit addresses holds txid:vout, unclaimed:
+  // "static", "single-use", or null. Asked of the operators, every page.
+  async #depositType(txid, vout) {
+    const want = txid.toLowerCase();
+    for (const [type, address] of await this.#depositAddresses()) {
+      for (let offset = 0; ; offset += DEPOSIT_UTXO_PAGE) {
+        const utxos = await this.#wallet.getUtxosForDepositAddress(address, DEPOSIT_UTXO_PAGE, offset, true);
+        if (utxos.some((u) => String(u.txid).toLowerCase() === want && Number(u.vout) === vout)) return type;
+        if (utxos.length < DEPOSIT_UTXO_PAGE) break;
+      }
+    }
+    return null;
   }
 
   // Refused: the operators have switched off the step that claims a
@@ -678,7 +701,8 @@ export class SparkAgent {
     const e = new Error(
       "SparkAgent.getSingleUseDepositAddress: refused — the Spark operators currently refuse to claim single-use " +
         "deposits (finalize_deposit_tree_creation UNAVAILABLE), so coins sent to one would be stuck. " +
-        "Use getDepositAddress() (the static, reusable address) instead.",
+        "Use getDepositAddress() (the static, reusable address) instead. To tell payers apart, give each order " +
+        "its own Lightning invoice (createLightningInvoice).",
     );
     e.code = "SINGLE_USE_DEPOSITS_UNAVAILABLE";
     throw e;
@@ -1403,26 +1427,46 @@ export class SparkAgent {
   // quote nor an explicit cap the claim FAILS CLOSED rather than picking a
   // number for a deposit whose size it cannot see. dryRun previews the quoted
   // credit and the ceiling that would be enforced, without claiming.
-  async claimDeposit({ txid, vout = 0, maxFeeSats, maxFeePct = 10, dryRun = false, type, ...rest }) {
+  //
+  // It claims only a deposit the operators list, unclaimed, at this wallet's
+  // STATIC address, and looks that up itself rather than trusting the caller.
+  // The SSP claims static deposits only, yet it quotes a single-use one as if
+  // it would claim it (a 2,000-sat mainnet single-use deposit quoted a
+  // 1,703-sat credit, 2026-10-26), so without the lookup a dry run promised
+  // money and the claim then failed with "Static deposit address … not found".
+  async claimDeposit({ txid, vout = 0, maxFeeSats, maxFeePct = 10, dryRun = false, ...rest }) {
     rejectUnknownOptions("claimDeposit", rest);
-    // `type` comes from a listPendingDeposits() entry. This claims STATIC
-    // deposits through the SSP; a single-use one needs the operators' own claim
-    // step, which they currently refuse (see getSingleUseDepositAddress).
-    if (type === "single-use") {
-      const e = new Error(
-        `SparkAgent.claimDeposit: ${txid} is a single-use deposit. The operators currently refuse to claim those ` +
-          "(finalize_deposit_tree_creation UNAVAILABLE), so it stays at its address until they switch the step back on. " +
-          "Nothing was spent or changed.",
-      );
-      e.code = "SINGLE_USE_DEPOSITS_UNAVAILABLE";
-      throw e;
+    if (typeof txid !== "string" || !/^[0-9a-fA-F]{64}$/.test(txid)) {
+      throw new TypeError(`SparkAgent.claimDeposit: txid must be a 64-character hex transaction id, got ${JSON.stringify(txid)}.`);
     }
-    if (type !== undefined && type !== "static") throw new Error(`SparkAgent.claimDeposit: unknown deposit type ${JSON.stringify(type)}.`);
+    if (!Number.isSafeInteger(vout) || vout < 0) {
+      throw new TypeError(`SparkAgent.claimDeposit: vout must be a non-negative integer, got ${JSON.stringify(vout)}.`);
+    }
     // Garbage ceiling values throw here (requireNumericOption): a NaN maxFee
     // passed to the SDK never trips its `feeCharged > maxFee` check, which
     // would silently remove the ceiling entirely.
     const explicit = requireNumericOption("claimDeposit", "maxFeeSats", maxFeeSats) ?? null;
     const pct = requireNumericOption("claimDeposit", "maxFeePct", maxFeePct) ?? 10;
+    const type = await this.#depositType(txid, vout);
+    if (type === "single-use") {
+      const e = new Error(
+        `SparkAgent.claimDeposit: ${txid}:${vout} is a single-use deposit. The operators currently refuse to claim ` +
+          "those (finalize_deposit_tree_creation UNAVAILABLE), so it stays at its address until they switch the step " +
+          "back on, and only this wallet's keys can claim it then: keep the recovery words backed up. " +
+          "Nothing was spent or changed.",
+      );
+      e.code = "SINGLE_USE_DEPOSITS_UNAVAILABLE";
+      throw e;
+    }
+    if (type === null) {
+      const e = new Error(
+        `SparkAgent.claimDeposit: ${txid}:${vout} isn't an unclaimed deposit at this wallet's deposit address. ` +
+          "It may need more confirmations (the claim needs 3), be claimed already, have another vout, or have gone " +
+          "to another address. listPendingDeposits() lists what can be claimed. Nothing was spent or changed.",
+      );
+      e.code = "DEPOSIT_NOT_FOUND";
+      throw e;
+    }
     let cap = explicit;
     let credit = null;
     if (cap === null || dryRun) {

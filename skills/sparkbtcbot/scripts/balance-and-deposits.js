@@ -46,17 +46,24 @@ async function main() {
   // "Did my deposit arrive?" — getBalance() shows CLAIMED balance only, so a
   // confirmed-but-unclaimed deposit is INVISIBLE there. Check the deposit
   // addresses directly. (The SparkAgent wrapper bundles this whole loop as
-  // `agent.listPendingDeposits()` -> [{ address, txid, vout }].)
+  // `agent.listPendingDeposits()` -> [{ address, txid, vout, type }].)
+  // Single-use addresses an older version handed out are checked too, so
+  // coins already sent to one don't read as "nothing arrived".
   console.log("\n=== Unclaimed deposits (confirmed, waiting to be claimed) ===");
-  const depositAddrs = await wallet.queryStaticDepositAddresses();
+  const staticAddrs = await wallet.queryStaticDepositAddresses();
+  const singleUseAddrs = (await wallet.getUnusedDepositAddresses()).filter((a) => !staticAddrs.includes(a));
   let anyPending = false;
-  for (const addr of depositAddrs) {
+  for (const addr of [...staticAddrs, ...singleUseAddrs]) {
     const utxos = await wallet.getUtxosForDepositAddress(addr, 100, 0, true); // excludeClaimed=true
     for (const u of utxos) {
       anyPending = true;
-      console.log(
-        `  ${u.txid}:${u.vout}  ->  claimStaticDeposit({ transactionId: "${u.txid}", outputIndex: ${u.vout}, maxFee: <sats> })`,
-      );
+      if (singleUseAddrs.includes(addr)) {
+        console.log(`  ${u.txid}:${u.vout}  arrived at single-use address ${addr}: can't be claimed now (references/wallet.md)`);
+      } else {
+        console.log(
+          `  ${u.txid}:${u.vout}  ->  claimStaticDepositWithMaxFee({ transactionId: "${u.txid}", maxFee: <sats>, outputIndex: ${u.vout} })`,
+        );
+      }
     }
   }
   if (!anyPending) {

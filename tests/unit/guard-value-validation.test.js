@@ -15,33 +15,42 @@ afterEach(() => { if (origVault === undefined) delete process.env.SPARK_LEAF_VAU
 const mkAgent = (wallet) => new SparkAgent(wallet, "MAINNET");
 
 describe("claimDeposit guard-value validation", () => {
+  const TX = "c1".repeat(32);
+  const atStatic = {
+    queryStaticDepositAddresses: async () => ["bc1pSTATIC"],
+    getUnusedDepositAddresses: async () => [],
+    getUtxosForDepositAddress: async () => [{ txid: TX, vout: 0 }],
+  };
   const wallet = () => ({
+    queryStaticDepositAddresses: async () => { throw new Error("I/O must not happen"); },
+    getUnusedDepositAddresses: async () => { throw new Error("I/O must not happen"); },
     getClaimStaticDepositQuote: async () => { throw new Error("I/O must not happen"); },
     claimStaticDepositWithMaxFee: async () => { throw new Error("I/O must not happen"); },
   });
 
   it("throws on garbage maxFeePct (was: NaN cap -> SDK never trips -> unlimited haircut)", async () => {
-    await expect(mkAgent(wallet()).claimDeposit({ txid: "t1", maxFeePct: "10%" }))
+    await expect(mkAgent(wallet()).claimDeposit({ txid: TX, maxFeePct: "10%" }))
       .rejects.toThrow(/maxFeePct must be a number/);
   });
 
   it("throws on garbage maxFeeSats", async () => {
-    await expect(mkAgent(wallet()).claimDeposit({ txid: "t1", maxFeeSats: "lots" }))
+    await expect(mkAgent(wallet()).claimDeposit({ txid: TX, maxFeeSats: "lots" }))
       .rejects.toThrow(/maxFeeSats must be a number/);
   });
 
   it("throws on NaN maxFeePct", async () => {
-    await expect(mkAgent(wallet()).claimDeposit({ txid: "t1", maxFeePct: NaN }))
+    await expect(mkAgent(wallet()).claimDeposit({ txid: TX, maxFeePct: NaN }))
       .rejects.toThrow(/maxFeePct must be a number/);
   });
 
   it("still accepts a valid explicit maxFeeSats (and a numeric string)", async () => {
     const calls = { claim: null };
     const w = {
+      ...atStatic,
       getClaimStaticDepositQuote: async () => { throw new Error("quote must be skipped for explicit cap"); },
       claimStaticDepositWithMaxFee: async (p) => { calls.claim = p; return { claimed: true }; },
     };
-    await mkAgent(w).claimDeposit({ txid: "t1", maxFeeSats: "500" });
+    await mkAgent(w).claimDeposit({ txid: TX, maxFeeSats: "500" });
     expect(calls.claim.maxFee).toBe(500);
   });
 });

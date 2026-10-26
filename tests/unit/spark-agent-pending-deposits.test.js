@@ -79,14 +79,75 @@ describe("listPendingDeposits", () => {
     expect(asked).toEqual(["bc1pSTATIC", "bc1pONCE"]);
   });
 
-  it("claimDeposit refuses a single-use entry with the reason, before any SDK call", async () => {
-    let called = false;
-    const wallet = { getClaimStaticDepositQuote: async () => { called = true; return {}; } };
-    const agent = new SparkAgent(wallet, "MAINNET");
-    await expect(agent.claimDeposit({ txid: "t9", vout: 1, type: "single-use" }))
-      .rejects.toMatchObject({ code: "SINGLE_USE_DEPOSITS_UNAVAILABLE" });
-    await expect(agent.claimDeposit({ txid: "t9", vout: 1, type: "weird" })).rejects.toThrow(/unknown deposit type/);
-    expect(called).toBe(false);
+});
+
+// claimDeposit used to trust a `type` the caller passed. Called without one on
+// a single-use deposit, its dry run showed the SSP's quote (1,703 sats credit
+// on a 2,000-sat mainnet single-use deposit, 2026-10-26) and the claim then
+// failed with "Static deposit address … not found". It now asks the operators
+// where the deposit sits, and only a static deposit reaches the quote.
+describe("claimDeposit looks the deposit up itself", () => {
+  const TX = "d4".repeat(32);
+  const mk = ({ statics = ["bc1pSTATIC"], singles = [], utxos = {} } = {}) => {
+    const calls = { quotes: 0, claim: null, asked: [] };
+    const wallet = {
+      queryStaticDepositAddresses: async () => statics,
+      getUnusedDepositAddresses: async () => singles,
+      getUtxosForDepositAddress: async (addr, limit, offset, excludeClaimed) => {
+        calls.asked.push({ addr, offset, excludeClaimed });
+        return (utxos[addr] ?? []).slice(offset, offset + limit);
+      },
+      getClaimStaticDepositQuote: async () => { calls.quotes++; return { creditAmountSats: 9_000 }; },
+      claimStaticDepositWithMaxFee: async (p) => { calls.claim = p; return { claimed: true }; },
+    };
+    return { agent: new SparkAgent(wallet, "MAINNET"), calls };
+  };
+
+  it("claims a deposit the operators list at the static address", async () => {
+    const { agent, calls } = mk({ utxos: { bc1pSTATIC: [{ txid: TX, vout: 2 }] } });
+    await agent.claimDeposit({ txid: TX, vout: 2 });
+    expect(calls.claim).toEqual({ transactionId: TX, maxFee: 900, outputIndex: 2 });
+    expect(calls.asked.every((c) => c.excludeClaimed === true)).toBe(true);
+  });
+
+  it("refuses a single-use deposit, dry run included, before any quote", async () => {
+    const { agent, calls } = mk({ singles: ["bc1pONCE"], utxos: { bc1pONCE: [{ txid: TX, vout: 0 }] } });
+    for (const dryRun of [true, false]) {
+      await expect(agent.claimDeposit({ txid: TX, vout: 0, dryRun }))
+        .rejects.toMatchObject({ code: "SINGLE_USE_DEPOSITS_UNAVAILABLE", message: expect.stringMatching(/recovery words/) });
+    }
+    expect(calls.quotes).toBe(0);
+    expect(calls.claim).toBeNull();
+  });
+
+  it("refuses a deposit it can't find (another vout, claimed, unconfirmed, elsewhere), before any quote", async () => {
+    const { agent, calls } = mk({ utxos: { bc1pSTATIC: [{ txid: TX, vout: 0 }] } });
+    for (const args of [{ txid: TX, vout: 1 }, { txid: "e5".repeat(32) }, { txid: "e5".repeat(32), dryRun: true }]) {
+      await expect(agent.claimDeposit(args)).rejects.toMatchObject({ code: "DEPOSIT_NOT_FOUND" });
+    }
+    expect(calls.quotes).toBe(0);
+  });
+
+  it("pages through a busy static address", async () => {
+    const many = Array.from({ length: 150 }, (_, i) => ({ txid: "f6".repeat(32), vout: i }));
+    const { agent, calls } = mk({ utxos: { bc1pSTATIC: many } });
+    await agent.claimDeposit({ txid: "f6".repeat(32), vout: 120, maxFeeSats: 500 });
+    expect(calls.claim).toMatchObject({ outputIndex: 120 });
+    expect(calls.asked.map((c) => c.offset)).toEqual([0, 100]);
+  });
+
+  it("matches a txid in any case", async () => {
+    const { agent, calls } = mk({ utxos: { bc1pSTATIC: [{ txid: TX, vout: 0 }] } });
+    await agent.claimDeposit({ txid: TX.toUpperCase(), maxFeeSats: 500 });
+    expect(calls.claim).not.toBeNull();
+  });
+
+  it("checks txid and vout before asking anyone, and no longer takes a `type`", async () => {
+    const { agent, calls } = mk();
+    await expect(agent.claimDeposit({ txid: "t9" })).rejects.toThrow(/64-character hex/);
+    await expect(agent.claimDeposit({ txid: TX, vout: -1 })).rejects.toThrow(/vout must be a non-negative integer/);
+    await expect(agent.claimDeposit({ txid: TX, type: "static" })).rejects.toThrow(/unknown option.*type/i);
+    expect(calls.asked).toEqual([]);
   });
 });
 
@@ -94,7 +155,7 @@ describe("getSingleUseDepositAddress", () => {
   it("refuses: the operators currently refuse single-use claims, so the address would trap coins", async () => {
     let asked = false;
     const agent = new SparkAgent({ getSingleUseDepositAddress: async () => { asked = true; return "bc1pX"; } }, "MAINNET");
-    await expect(agent.getSingleUseDepositAddress()).rejects.toMatchObject({ code: "SINGLE_USE_DEPOSITS_UNAVAILABLE", message: expect.stringMatching(/getDepositAddress\(\)/) });
+    await expect(agent.getSingleUseDepositAddress()).rejects.toMatchObject({ code: "SINGLE_USE_DEPOSITS_UNAVAILABLE", message: expect.stringMatching(/getDepositAddress\(\).*Lightning invoice/s) });
     expect(asked).toBe(false);
   });
 });

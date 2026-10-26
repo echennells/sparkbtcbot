@@ -75,7 +75,16 @@ Balance, transfers, Lightning, withdrawals and `listPendingDeposits()` don't tou
 const staticAddr = await wallet.getStaticDepositAddress();
 ```
 
-> **⚠️ Don't use single-use deposit addresses.** The operators currently refuse the step that claims them: `finalize_deposit_tree_creation` answers `UNAVAILABLE` on MAINNET and REGTEST (2026-10-26), and a real 2,000-sat mainnet deposit was refused. Coins sent to one stay at the address, visible but unclaimable, and the SDK has no refund path for single-use deposits. `agent.getSingleUseDepositAddress()` refuses (`SINGLE_USE_DEPOSITS_UNAVAILABLE`); the raw `wallet.getSingleUseDepositAddress()` still hands one out, so don't call it. If someone already sent coins to one, `listPendingDeposits()` shows them as `type: "single-use"`: say they arrived and are waiting on the operators, never that nothing arrived. It finds them through the operators' list of unused deposit addresses, which dropped the funded mainnet address once in two hours of retries (the SDK then said "Deposit address has already been used"), so one empty answer about a single-use address isn't conclusive either. `tests/integration/funded/single-use-deposit.test.js` fails the day claims work again.
+> **⚠️ Don't use single-use deposit addresses.** The operators currently refuse the step that claims them: `finalize_deposit_tree_creation` answers `UNAVAILABLE` on MAINNET and REGTEST (2026-10-26), and a real 2,000-sat mainnet deposit was refused. Coins sent to one stay at the address, visible but unclaimable, and the SDK has no refund path for single-use deposits. `agent.getSingleUseDepositAddress()` refuses (`SINGLE_USE_DEPOSITS_UNAVAILABLE`); the raw `wallet.getSingleUseDepositAddress()` still hands one out, so don't call it. The SSP still *quotes* a claim of a single-use deposit (1,703 sats credit on that 2,000-sat deposit) and then refuses the claim ("Static deposit address … not found"), so a raw quote is no proof a deposit can be claimed. `agent.claimDeposit` asks the operators where the deposit sits before it quotes, dry runs included. `tests/integration/funded/single-use-deposit.test.js` fails the day claims work again.
+
+**One address per order or per customer?** The static address is one reusable address per wallet; there is no claimable per-payer on-chain address. To tell payers apart, give each order its own Lightning invoice (`createLightningInvoice` with a memo naming the order): each has its own amount and payment hash, and any Lightning wallet pays it. A payer who can only send on-chain gets the static address, and since the operators report no amount per deposit, ask them for the txid to match their payment.
+
+**Coins already at a single-use address** (handed out by an older version of this skill, or by the raw SDK): `listPendingDeposits()` shows them as `type: "single-use"`, and `claimDeposit` refuses them with the reason. Tell the user they arrived and are waiting on the operators, never that nothing arrived, and two things:
+
+- **Back up the recovery words now** if they haven't: `npm run reveal-mnemonic`, in their own terminal. The address belongs to this wallet's key together with the operators', so if the operators switch the claim back on, only this wallet can claim the coins.
+- **Follow the operators' answer** at [buildonspark/spark#165](https://github.com/buildonspark/spark/issues/165).
+
+`listPendingDeposits()` finds them through the operators' list of unused deposit addresses, which dropped the funded mainnet address once in two hours of retries (the SDK then said "Deposit address has already been used"), so one empty answer about a single-use address isn't conclusive either.
 
 The static address is P2TR (`bc1p...` on mainnet, `bcrt1p...` on regtest) — an **L1 on-chain** address, NOT a Spark (`sp1...`) address. Deposits require 3 L1 confirmations before they can be claimed on Spark (the SSP refuses to even quote before then). **Claiming is manual — there is no auto-claim** (the funds sit unclaimed at the address until you claim them).
 
@@ -118,9 +127,9 @@ Note: `getUtxosForDepositAddress` returns only `{ txid, vout }` (no amount) and 
 ```javascript
 const pending = await agent.listPendingDeposits();
 // -> [{ address, txid, vout, type }, ...]  (empty array = nothing landed yet)
-for (const d of pending) {
-  // type "single-use" is refused with the reason (the operators refuse those claims)
-  await agent.claimDeposit({ txid: d.txid, vout: d.vout, type: d.type, maxFeeSats });
+for (const d of pending.filter((d) => d.type === "static")) {
+  // claimDeposit checks with the operators itself and refuses a single-use one
+  await agent.claimDeposit({ txid: d.txid, vout: d.vout, maxFeeSats });
 }
 ```
 
