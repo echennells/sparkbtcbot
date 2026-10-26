@@ -5,6 +5,7 @@
 // back empty has already moved the leaves, so it must not look retryable.
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { SparkAgent } from "../../skills/sparkbtcbot/scripts/spark-agent.js";
+import { encodeBech32mTokenIdentifier } from "@buildonspark/spark-sdk";
 import { testSparkAddress, testSparkInvoice } from "../helpers/spark-address.js";
 import { createSilentPaymentReceiver } from "../helpers/silent-payment.js";
 
@@ -52,14 +53,15 @@ describe("transfer({ dryRun }) checks the recipient like the send does", () => {
 });
 
 describe("transferTokens({ dryRun }) checks the recipient too", () => {
+  const TOKEN = encodeBech32mTokenIdentifier({ tokenIdentifier: new Uint8Array(32).fill(7), network: "REGTEST" });
   it("previews a valid address", async () => {
-    const preview = await agentOn("REGTEST").transferTokens({ tokenIdentifier: "btknrt1x", amount: 5n, to: testSparkAddress("REGTEST"), dryRun: true });
+    const preview = await agentOn("REGTEST").transferTokens({ tokenIdentifier: TOKEN, amount: 5n, to: testSparkAddress("REGTEST"), dryRun: true });
     expect(preview).toMatchObject({ dryRun: true, operation: "token_transfer" });
   });
 
   it("refuses a malformed or wrong-network address", async () => {
     for (const to of ["sprt1nope", testSparkAddress("MAINNET")]) {
-      await expect(agentOn("REGTEST").transferTokens({ tokenIdentifier: "btknrt1x", amount: 5n, to, dryRun: true }))
+      await expect(agentOn("REGTEST").transferTokens({ tokenIdentifier: TOKEN, amount: 5n, to, dryRun: true }))
         .rejects.toThrow(/is not a REGTEST Spark address/);
     }
   });

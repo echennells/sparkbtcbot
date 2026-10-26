@@ -3,7 +3,9 @@ import { pathToFileURL } from "node:url";
 import {
   SparkWallet,
   UUID,
+  decodeBech32mTokenIdentifier,
   decodeSparkAddress,
+  encodeBech32mTokenIdentifier,
   encodeSparkAddress,
   generateTransferId,
   getNetworkFromSparkAddress,
@@ -29,7 +31,7 @@ import { ensureWalletPrivacy, privacyPreferenceFromEnv } from "../../../lib/wall
 import { enableLeafVault } from "./leaf-vault.js";
 import { sparkWalletOptions } from "../../../lib/wallet-options.js";
 import { l402TokenExpiry } from "../../../lib/l402-token.js";
-import { PaymentCommittedError } from "../../../lib/payment-outcome.js";
+import { PaymentCommittedError, provesNothingSent } from "../../../lib/payment-outcome.js";
 
 // Best-effort BOLT11 amount in sats (undefined for amountless invoices or on a
 // decode error) — used to size the amount-aware Lightning fee cap. Delegates to
@@ -239,6 +241,48 @@ function assertHttpsUrl(method, url) {
   }
 }
 
+// Token amounts are base units, which the SDK takes as bigint. Normalize a
+// bigint or a safe-integer number to bigint and refuse the rest: a float, a
+// negative, a "1.5" string, or 0 (the SDK refuses 0 too, but only after a
+// network sync). An amount past 2^53 must arrive as bigint — a number that
+// large lost precision before it got here.
+function toTokenAmount(value, method, field = "amount") {
+  if (typeof value === "bigint" && value > 0n) return value;
+  if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) return BigInt(value);
+  throw new Error(
+    `SparkAgent.${method}: ${field} must be a positive integer of the token's base units (bigint, or a number below 2^53), got ${
+      typeof value === "bigint" || typeof value === "number" ? String(value) : typeof value
+    }.`,
+  );
+}
+
+// The canonical bech32m token identifier on this wallet's network. Another
+// network's identifier (btknrt1… on a mainnet wallet) or a bad checksum is
+// refused here, before the SDK sees it.
+function canonicalTokenId(value, network, method) {
+  try {
+    const { tokenIdentifier } = decodeBech32mTokenIdentifier(String(value).trim(), network);
+    return encodeBech32mTokenIdentifier({ tokenIdentifier, network });
+  } catch {
+    throw new Error(
+      `SparkAgent.${method}: tokenIdentifier ${JSON.stringify(value)} is not a ${network} token identifier ` +
+        "(btkn1… on mainnet, btknrt1… on regtest).",
+    );
+  }
+}
+
+// Per-token totals for one batch, as [{ tokenIdentifier, amount }] with amount
+// a decimal string: the batch is one transaction, so a preview shows each
+// token's total, not only each entry.
+function tokenTotals(items) {
+  const totals = new Map();
+  for (const { tokenIdentifier, amount } of items) totals.set(tokenIdentifier, (totals.get(tokenIdentifier) ?? 0n) + amount);
+  return [...totals].map(([tokenIdentifier, amount]) => ({ tokenIdentifier, amount: String(amount) }));
+}
+
+// A send with no spend to record (tokens: the sats ledger doesn't count them).
+const NO_SPEND = Object.freeze({ undo: async () => {} });
+
 // fetchL402 refuses to pay for an L402 token the server says dies within this
 // many seconds: payAndSettle can take up to ~60 s (30 polls x 2 s), and a pass
 // that expires mid-payment is paid for and then refused.
@@ -433,14 +477,31 @@ export class SparkAgent {
     }
   }
 
+  // One rule for every send whose SDK call throws. An error that PROVES
+  // nothing left (lib/payment-outcome.js: a pre-send SparkValidationError on
+  // an audited list) undoes the spend and is returned to be rethrown as is.
+  // Anything else may have moved money: the spend stays counted, since
+  // over-counting is the safe direction for a runaway-loop guardrail, and the
+  // caller gets a PaymentCommittedError instead of an error that invites a
+  // retry with a fresh invoice. Before, every SDK error undid the spend, so a
+  // loop of timeouts that each may have paid was never counted at all.
+  async #spendFailed(err, spend, { method, op, next, invoiceHash }) {
+    if (provesNothingSent(err)) {
+      await spend.undo().catch(() => {});
+      return err;
+    }
+    return new PaymentCommittedError(
+      `SparkAgent.${method}: the outcome is UNKNOWN — the payment may have been sent ` +
+      `(${String(err?.message ?? err).slice(0, 200)}). The spend stays counted against the budget. ` +
+      `Do NOT pay again with a new invoice, address or method. ${next}`,
+      { settled: null, op, invoiceHash, cause: err },
+    );
+  }
+
   // Budget gate + PRE-commit record for a sats spend. Recording before the
   // SDK call is the safe direction: a crash mid-send overcounts (and rolls
-  // off with the window) rather than undercounts. The returned undo() is the
-  // best-effort refund for an SDK call that threw — almost always a
-  // synchronous rejection where no money moved. (The pathological case, a
-  // transport timeout AFTER the operator accepted the send, would undercount
-  // by one payment; the ledger is a runaway-loop guardrail, not an
-  // accounting system, so that trade is taken knowingly.)
+  // off with the window) rather than undercounts. The returned undo() is
+  // called only when the SDK's error proves nothing was sent (#spendFailed).
   async #recordSpend(sats, operation) {
     if (!this.#ledger) return { undo: async () => {} };
     // Serialize check-then-record: without this, N concurrent sends
@@ -569,8 +630,11 @@ export class SparkAgent {
         amountSats: sats,
       });
     } catch (err) {
-      await spend.undo().catch(() => {});
-      throw err;
+      throw await this.#spendFailed(err, spend, {
+        method: "transfer",
+        op: "spark_transfer",
+        next: "Check agent.getTransfers() before sending again: a new transfer is a second payment.",
+      });
     }
   }
 
@@ -760,16 +824,17 @@ export class SparkAgent {
         ...(invoiceAmt === undefined && amtSats !== undefined ? { amountSatsToSend: amtSats } : {}),
       });
     } catch (err) {
-      await spend.undo().catch(() => {});
       // AlreadyExists on a KNOWN retry (the store proved this id was already
       // used for THIS invoice) is proof of settlement, not failure — the
       // Spark-fallback rail dedupes via a DB uniqueness constraint and
       // surfaces it as a raw gRPC error that reads as the opposite of what
       // happened (2026-08-31 live QA + ToB sharp-edges F1). Translate it
-      // HERE, where the wrapper holds the proof; a non-reused AlreadyExists
-      // (store deleted between attempts?) passes through raw — don't mask a
-      // state we can't vouch for.
+      // HERE, where the wrapper holds the proof. This attempt's spend entry
+      // is a duplicate — the attempt that paid recorded it — so it is undone.
+      // A non-reused AlreadyExists (store deleted between attempts?) is a
+      // state we can't vouch for, so it falls through to "outcome unknown".
       if (resolved?.reused && /already\s?exists/i.test(String(err?.message ?? ""))) {
+        await spend.undo().catch(() => {});
         const settled = new Error(
           `SparkAgent.payLightningInvoice: this invoice's payment ALREADY SETTLED — the operators ` +
           `refused a second transfer under the recorded transferId (${resolved.transferId}). This is ` +
@@ -781,7 +846,14 @@ export class SparkAgent {
         settled.cause = err;
         throw settled;
       }
-      throw err;
+      throw await this.#spendFailed(err, spend, {
+        method: "payLightningInvoice",
+        op: "lightning_pay",
+        invoiceHash: invoicePaymentHash(bolt11) ?? undefined,
+        next: this.#lnDedup
+          ? "Retrying THIS invoice through payLightningInvoice is safe: the dedup store reuses its transferId, so the operators refuse a second payment. For anything else, check agent.getTransfers() first."
+          : "SPARK_LN_DEDUP is off, so even retrying this same invoice may pay twice: check agent.getTransfers() first.",
+      });
     }
     // Surface the dedup verdict: a reused id means this "success" is the
     // ORIGINAL payment's result replayed (Lightning rail), not a new debit —
@@ -943,6 +1015,20 @@ export class SparkAgent {
         type: embedded?.type ?? "unknown",
       };
     });
+    // An invoice the SDK is certain to refuse is refused HERE, before the
+    // ledger or the SDK, with one clear message: no payment type, no amount
+    // anywhere (an amountless invoice needs the caller's), or a sats amount
+    // that isn't a positive integer. Same rules the SDK applies, earlier.
+    for (const e of entries) {
+      const head = `SparkAgent.fulfillInvoice: invoice ${e.invoice.slice(0, 24)}…`;
+      if (e.type === "unknown") throw new Error(`${head} names no payment type (sats or tokens), so it can't be paid.`);
+      if (e.amount === "unknown") {
+        throw new Error(`${head} has no amount — pass { invoice, amount } (${e.type === "tokens" ? "token base units, bigint" : "sats"}).`);
+      }
+      if (e.type === "sats" && !(Number.isSafeInteger(Number(e.amount)) && Number(e.amount) > 0)) {
+        throw new Error(`${head}: the amount must be a positive integer of sats, got ${e.amount}.`);
+      }
+    }
     if (dryRun) {
       return {
         dryRun: true,
@@ -962,18 +1048,67 @@ export class SparkAgent {
       return Number.isFinite(n) ? sum + n : NaN;
     }, 0);
     const spend = await this.#recordSpend(satsTotal, "fulfill_spark_invoice");
+    let result;
     try {
-      return await this.#wallet.fulfillSparkInvoice(invoices);
+      result = await this.#wallet.fulfillSparkInvoice(invoices);
     } catch (err) {
-      await spend.undo().catch(() => {});
-      throw err;
+      throw await this.#spendFailed(err, spend, {
+        method: "fulfillInvoice",
+        op: "fulfill_spark_invoice",
+        next: "Check agent.getTransfers() before paying these invoices again.",
+      });
     }
+    // The SDK does not throw for a refused invoice: it RETURNS the failures.
+    // Treating any return as success counted refused payments as paid (seen
+    // on REGTEST: a paid-twice, an expired and a wrong-sender invoice). Read
+    // the result:
+    //   invalidInvoices — returned before ANY of the batch is sent (the SDK
+    //     validates first and returns early), so nothing left: refund, throw.
+    //   transaction errors — sending had begun; that failure doesn't prove
+    //     nothing moved: the spend stays counted, and the caller gets
+    //     PAYMENT_COMMITTED naming what did pay.
+    const reasons = (list) => list.map((f) => `${String(f.invoice ?? "").slice(0, 24)}…: ${f.error?.message ?? f.error ?? "unknown error"}`).join("; ");
+    const invalid = result?.invalidInvoices ?? [];
+    if (invalid.length) {
+      await spend.undo().catch(() => {});
+      const e = new Error(
+        `SparkAgent.fulfillInvoice: the SDK refused ${invalid.length} invoice(s) before sending anything, so nothing was paid ` +
+          `and the budget is untouched — ${reasons(invalid).slice(0, 400)}`,
+      );
+      e.code = "INVOICE_REFUSED";
+      e.invalidInvoices = invalid.map((f) => ({ invoice: f.invoice, reason: String(f.error?.message ?? f.error ?? "") }));
+      throw e;
+    }
+    const failed = [...(result?.satsTransactionErrors ?? []), ...(result?.tokenTransactionErrors ?? [])];
+    if (failed.length) {
+      const paid = [
+        ...(result?.satsTransactionSuccess ?? []).map((x) => ({ invoice: x.invoice, id: x.transferResponse?.id })),
+        ...(result?.tokenTransactionSuccess ?? []).flatMap((x) => (x.invoices ?? []).map((invoice) => ({ invoice, id: x.txid }))),
+      ];
+      const e = new PaymentCommittedError(
+        `SparkAgent.fulfillInvoice: ${failed.length} invoice(s) failed after sending began, ${paid.length} paid. ` +
+          `The failed ones' outcome is UNKNOWN — the whole spend stays counted against the budget. Do NOT pay them ` +
+          `again with a new invoice, address or method; check agent.getTransfers() first. ${reasons(failed).slice(0, 400)}`,
+        { settled: null, op: "fulfill_spark_invoice" },
+      );
+      e.paid = paid;
+      e.failed = failed.map((f) => ({ invoice: f.invoice, reason: String(f.error?.message ?? f.error ?? "") }));
+      throw e;
+    }
+    return result;
   }
 
   // --- Tokens ---
 
+  // Token sends get the same input checks and failure rule as sats sends:
+  // the token id must be this network's, the amount a positive integer of base
+  // units, and an error that doesn't prove nothing left throws
+  // PAYMENT_COMMITTED. (The sats budget doesn't count tokens.)
   async transferTokens({ tokenIdentifier, amount, to, dryRun = false, ...rest }) {
     rejectUnknownOptions("transferTokens", rest);
+    if (!to) throw new Error("SparkAgent.transferTokens: `to` (the receiver's Spark address) is required.");
+    const id = canonicalTokenId(tokenIdentifier, this.#network, "transferTokens");
+    const units = toTokenAmount(amount, "transferTokens");
     await this.#assertAllowed(to);
     if (dryRun) {
       this.#assertSparkRecipient("transferTokens", to, { allowInvoice: true });
@@ -982,36 +1117,85 @@ export class SparkAgent {
         operation: "token_transfer",
         from: await this.#wallet.getSparkAddress(),
         to,
-        tokenIdentifier,
-        amount: String(amount),
+        tokenIdentifier: id,
+        amount: String(units),
         unit: "tokens",
         estimatedFee: "0", // Spark token transfers are free
         network: this.#network,
       };
     }
-    return await this.#wallet.transferTokens({
-      tokenIdentifier,
-      tokenAmount: amount,
-      receiverSparkAddress: to,
-    });
+    try {
+      return await this.#wallet.transferTokens({
+        tokenIdentifier: id,
+        tokenAmount: units,
+        receiverSparkAddress: to,
+      });
+    } catch (err) {
+      throw await this.#spendFailed(err, NO_SPEND, {
+        method: "transferTokens",
+        op: "token_transfer",
+        next: "Check the token balance (agent.getBalance()) before sending again: a new transfer is a second payment.",
+      });
+    }
   }
 
   // Allowlist applies to every receiver in the batch. One disallowed
   // recipient blocks the whole batch — that's the safer default. An entry
   // whose receiver can't be read can't be checked: fail CLOSED like
   // fulfillInvoice, never skip the gate for that entry.
-  async batchTransferTokens(transfers) {
-    for (const t of transfers) {
-      const to = t.receiverSparkAddress ?? t.to;
-      if (!to) {
+  // Entries: { tokenIdentifier, tokenAmount (or amount), receiverSparkAddress
+  // (or to) }. They reach the SDK normalized: before, an entry written with the
+  // `to` alias passed the allowlist check, then went to the SDK with no
+  // receiverSparkAddress. Unknown entry keys throw.
+  async batchTransferTokens(transfers, { dryRun = false, ...rest } = {}) {
+    rejectUnknownOptions("batchTransferTokens", rest);
+    if (!Array.isArray(transfers) || transfers.length === 0) {
+      throw new Error(
+        "SparkAgent.batchTransferTokens: pass a non-empty array of { tokenIdentifier, tokenAmount, receiverSparkAddress } entries.",
+      );
+    }
+    const outputs = transfers.map((t, i) => {
+      const { tokenIdentifier, tokenAmount, amount, receiverSparkAddress, to, ...extra } = t ?? {};
+      const receiver = receiverSparkAddress ?? to;
+      if (!receiver) {
         throw new Error(
           "SparkAgent.batchTransferTokens: every entry needs a recipient (receiverSparkAddress) — " +
             "refusing to forward an entry whose receiver cannot be checked.",
         );
       }
-      await this.#assertAllowed(to);
+      rejectUnknownOptions(`batchTransferTokens (entry ${i})`, extra);
+      if (tokenAmount !== undefined && amount !== undefined) {
+        throw new Error(`SparkAgent.batchTransferTokens: entry ${i} sets both tokenAmount and amount — pass one.`);
+      }
+      return {
+        tokenIdentifier: canonicalTokenId(tokenIdentifier, this.#network, "batchTransferTokens"),
+        tokenAmount: toTokenAmount(tokenAmount ?? amount, "batchTransferTokens", `entry ${i} tokenAmount`),
+        receiverSparkAddress: receiver,
+      };
+    });
+    for (const o of outputs) await this.#assertAllowed(o.receiverSparkAddress);
+    if (dryRun) {
+      for (const o of outputs) this.#assertSparkRecipient("batchTransferTokens", o.receiverSparkAddress, { allowInvoice: true });
+      return {
+        dryRun: true,
+        operation: "token_transfer",
+        from: await this.#wallet.getSparkAddress(),
+        entries: outputs.map((o) => ({ to: o.receiverSparkAddress, tokenIdentifier: o.tokenIdentifier, amount: String(o.tokenAmount) })),
+        totals: tokenTotals(outputs.map((o) => ({ tokenIdentifier: o.tokenIdentifier, amount: o.tokenAmount }))),
+        unit: "tokens",
+        estimatedFee: "0", // Spark token transfers are free
+        network: this.#network,
+      };
     }
-    return await this.#wallet.batchTransferTokens(transfers);
+    try {
+      return await this.#wallet.batchTransferTokens(outputs);
+    } catch (err) {
+      throw await this.#spendFailed(err, NO_SPEND, {
+        method: "batchTransferTokens",
+        op: "token_transfer",
+        next: "Check the token balance (agent.getBalance()) before sending again: a new batch is a second payment.",
+      });
+    }
   }
 
   // --- Deposits (claim to Spark) ---
@@ -1150,8 +1334,11 @@ export class SparkAgent {
           : { feeQuote: quote }),
       });
     } catch (err) {
-      await spend.undo().catch(() => {});
-      throw err;
+      throw await this.#spendFailed(err, spend, {
+        method: "withdraw",
+        op: "l1_withdraw",
+        next: "Check agent.getTransfers() and the coop exit status before withdrawing again: a new exit is a second payment.",
+      });
     }
     // The SDK moves the leaves BEFORE it asks the SSP for the exit record, and
     // types that record as nullable. Without one the caller would crash on
