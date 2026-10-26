@@ -62,6 +62,17 @@ describeFunded("Spark-direct and the payment-hash binding (REGTEST)", () => {
     expect(await waitForSettled(wallet, BigInt(AMOUNT), { timeoutMs: 60_000 })).toEqual({ available: BigInt(AMOUNT), incoming: 0n });
   }, 120_000);
 
+  it("payAndSettle returns a Spark-direct payment at once, settled, with no preimage", async () => {
+    // It used to poll Lightning status with the transfer id for the whole
+    // maxPolls window (90 s here) and then report settled: false.
+    const { wallet, invoice } = await sparkBackedInvoice();
+    const t0 = Date.now();
+    const r = await agent.payAndSettle(invoice, { pollMs: 2_000, maxPolls: 45 });
+    expect(r).toMatchObject({ settled: true, sparkDirect: true, paymentPreimage: null });
+    expect(Date.now() - t0).toBeLessThan(30_000);
+    expect(await waitForSettled(wallet, BigInt(AMOUNT), { timeoutMs: 60_000 })).toEqual({ available: BigInt(AMOUNT), incoming: 0n });
+  }, 120_000);
+
   it("bound to its payment hash, the same kind of invoice goes over Lightning and settles", async () => {
     const { wallet, invoice } = await sparkBackedInvoice();
     const hash = invoicePaymentHash(invoice);

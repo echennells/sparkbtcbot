@@ -28,6 +28,8 @@ lib/
   encrypted-seed.js                   # scrypt + AES-256-GCM seed file helper
   leaf-vault.js                       # SDK-free recovery-bundle persistence + shape validation
   fee-guards.js                       # fee/amount ceilings for sends, claims, withdrawals
+  l402-token.js                       # SDK-free: read the expiry a server signed into an L402 token (fetchL402 refuses dead ones)
+  payment-outcome.js                  # PaymentCommittedError + the SDK's pre-send error list (pinned to the installed SDK)
   fiat-rate.js                        # BTC price from mempool.space + Coinbase, cross-checked (the number behind "$100")
   spend-ledger.js                     # rolling-window cumulative budget (bounds send LOOPS)
   transfer-ids.js                     # persisted per-invoice Lightning dedup transferId (safe retries)

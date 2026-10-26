@@ -287,6 +287,23 @@ describe("payAndSettle", () => {
     expect(r.paymentPreimage).toBe("aa".repeat(32));
   });
 
+  it("returns a Spark-direct payment at once as settled, with no preimage and no polling", async () => {
+    // The SDK paid the invoice's Spark fallback: a WalletTransfer comes back,
+    // not a LightningSendRequest. Before, the loop polled Lightning status with
+    // the transfer id for ~60 s and then reported settled: false.
+    process.env.SPARK_LEAF_VAULT = "off";
+    let polls = 0;
+    const wallet = {
+      getSparkAddress: async () => "sp1from",
+      getLightningSendFeeEstimate: async () => 0,
+      payLightningInvoice: async () => ({ id: "xfer-1", status: "TRANSFER_STATUS_SENDER_KEY_TWEAKED", transferDirection: "OUTGOING", totalValue: 500 }),
+      getLightningSendRequest: async () => { polls++; return null; },
+    };
+    const r = await new SparkAgent(wallet, "MAINNET").payAndSettle(AMOUNTLESS, { amountSats: 500, pollMs: 1 });
+    expect(r).toMatchObject({ id: "xfer-1", settled: true, sparkDirect: true, paymentPreimage: null });
+    expect(polls).toBe(0);
+  });
+
   it("throws on LIGHTNING_PAYMENT_FAILED", async () => {
     const { agent } = mk(() => ({ status: "LIGHTNING_PAYMENT_FAILED" }));
     await expect(agent.payAndSettle(AMOUNTLESS, { amountSats: 500, pollMs: 1 })).rejects.toThrow(/failed/i);

@@ -46,6 +46,8 @@ import { createTransferIdStore } from "./lib/transfer-ids.js";
 import { ensureWalletPrivacy, privacyPreferenceFromEnv } from "./lib/wallet-privacy.js";
 import { enableLeafVault } from "./leaf-vault.js";
 import { sparkWalletOptions } from "./lib/wallet-options.js";
+import { l402TokenExpiry } from "./lib/l402-token.js";
+import { PaymentCommittedError } from "./lib/payment-outcome.js";
 
 // Best-effort BOLT11 amount in sats (undefined for amountless invoices or on a
 // decode error) — used to size the amount-aware Lightning fee cap. Delegates to
@@ -255,6 +257,35 @@ function assertHttpsUrl(method, url) {
   }
 }
 
+// fetchL402 refuses to pay for an L402 token the server says dies within this
+// many seconds: payAndSettle can take up to ~60 s (30 polls x 2 s), and a pass
+// that expires mid-payment is paid for and then refused.
+const L402_MIN_TOKEN_LIFETIME_SECONDS = 60;
+
+// After paying, fetchL402 presents the pass up to this many times in one call
+// when delivery fails in transit or with a 5xx, pausing a little longer each
+// time. The money is already gone; a fresh challenge would be a new invoice.
+const L402_DELIVERY_ATTEMPTS = 3;
+const L402_DELIVERY_BACKOFF_MS = 500;
+// Undelivered L402 payments held per agent; past this the oldest is dropped.
+const L402_MAX_HELD = 100;
+
+const l402RequestKey = (method, url) => `${String(method).toUpperCase()} ${url}`;
+
+// A delivered body is data even when it is not the JSON its header claims:
+// after payment, a parse error must not become a reason to pay again.
+async function readBody(res) {
+  const text = await res.text();
+  if ((res.headers.get("content-type") || "").includes("json")) {
+    try { return JSON.parse(text); } catch { /* not JSON after all: return the text */ }
+  }
+  return text;
+}
+
+// Host and path of an L402 resource, for messages. Never the query string,
+// which can carry API keys.
+const l402Target = (url) => { const u = new URL(url); return { host: u.host, path: u.pathname }; };
+
 // Parse an L402 (a.k.a. LSAT) 402 challenge. Spec-compliant servers (aperture,
 // lightningfaucet) put the challenge in the WWW-Authenticate HEADER; others
 // return it as a JSON body. Read the header FIRST, then fall back to the body.
@@ -288,6 +319,12 @@ export class SparkAgent {
   // Serializes the ledger's check-then-record critical section across
   // concurrent sends on this instance (see #recordSpend).
   #spendChain = Promise.resolve();
+  // L402 payments this agent made whose resource has not arrived yet, keyed
+  // by method + URL: { macaroon, preimage, amountSats, invoice?, sendId? }.
+  // A later fetchL402 for the same request in this process presents the pass,
+  // or finishes the pending payment, instead of buying another. Memory only —
+  // never on disk, in a log, or on an error object — so it ends with the process.
+  #l402Held = new Map();
 
   // seedContext (tests / non-env callers only): overrides the seed-bound
   // policy context normally observed by loadMnemonicFromEnv — shape
@@ -790,7 +827,10 @@ export class SparkAgent {
   // Pay a BOLT11 and wait for the settlement preimage — the proof-of-payment
   // that merchant policy says to log. Wraps the LIGHTNING_PAYMENT_INITIATED
   // poll loop every merchant purchase otherwise re-implements. Throws on
-  // LIGHTNING_PAYMENT_FAILED. On poll exhaustion returns { settled: false }:
+  // LIGHTNING_PAYMENT_FAILED. A Spark-direct payment returns at once with
+  // { settled: true, sparkDirect: true, paymentPreimage: null }: the payee has
+  // the money, and there is no Lightning proof to wait for.
+  // On poll exhaustion returns { settled: false }:
   // do NOT reflex-retry after a timeout — the payment may still settle (hold
   // invoices legitimately stay pending for many minutes); check
   // getLightningSendRequest(result.id) first. When a retry IS warranted, the
@@ -809,6 +849,14 @@ export class SparkAgent {
   async payAndSettle(bolt11, { pollMs = 2000, maxPolls = 30, ...payOptions } = {}) {
     const result = await this.payLightningInvoice(bolt11, payOptions);
     if (payOptions.dryRun) return result;
+    // Spark-direct: the SDK paid the invoice's Spark fallback as a plain
+    // transfer (a WalletTransfer, not a LightningSendRequest). The payee has
+    // the money and no preimage will ever come, so there is nothing to poll:
+    // polling Lightning status with a transfer id used to wait ~60 s and then
+    // report settled: false for a payment that had gone through.
+    if (result && !("encodedInvoice" in result) && "transferDirection" in result) {
+      return { ...result, paymentPreimage: null, settled: true, sparkDirect: true, lastStatus: result.status ?? null };
+    }
     let preimage = result.paymentPreimage ?? null;
     let lastStatus = result.status ?? null;
     for (let i = 0; !preimage && result.id && i < maxPolls; i++) {
@@ -1164,11 +1212,23 @@ export class SparkAgent {
     // Garbage ceiling values throw BEFORE any network I/O (requireNumericOption).
     const maxFee = requireNumericOption("fetchL402", "maxFeeSats", maxFeeSats);
     const maxAmt = requireNumericOption("fetchL402", "maxAmountSats", maxAmountSats) ?? 10_000;
+    const reqBody = body ? JSON.stringify(body) : undefined;
+    const request = { method, headers, reqBody };
+
+    // An earlier call in this process already paid for exactly this request
+    // and the resource never arrived: finish that purchase, don't make another.
+    const key = l402RequestKey(method, url);
+    const held = this.#l402Held.get(key);
+    if (held) {
+      const resumed = await this.#resumeL402(url, key, held, request);
+      if (resumed) return resumed;
+      // null: that payment failed for good, so no money left — buying below is safe.
+    }
 
     const initialResponse = await fetch(url, {
       method,
       headers: { "Content-Type": "application/json", ...headers },
-      body: body ? JSON.stringify(body) : undefined,
+      body: reqBody,
     });
 
     if (initialResponse.status !== 402) {
@@ -1180,6 +1240,23 @@ export class SparkAgent {
     // Header first (spec-compliant), body fallback — see parseL402Challenge.
     const { invoice, macaroon } = await parseL402Challenge(initialResponse);
     if (!invoice || !macaroon) throw new Error("Invalid L402 challenge");
+
+    // A pass the server has already declared dead buys nothing. The invoice
+    // expires separately, so it can still be paid after the token's expiry
+    // caveat has passed — and the retry is then refused with the sats gone.
+    // Refuse up front. An undecodable token is not a reason to block: opaque
+    // tokens exist, and null means "no information".
+    const tokenExpiry = l402TokenExpiry(macaroon)?.expiresAt ?? null;
+    const nowSec = Date.now() / 1000;
+    if (tokenExpiry !== null && tokenExpiry - nowSec < L402_MIN_TOKEN_LIFETIME_SECONDS) {
+      const err = new Error(
+        `L402 payment blocked: the server's token ${tokenExpiry <= nowSec ? "expired" : "expires"} at ` +
+        `${new Date(tokenExpiry * 1000).toISOString()} — paying now would buy a pass the server itself says ` +
+        `is dead or about to be. Request the resource again for a fresh challenge.`,
+      );
+      err.code = "L402_TOKEN_EXPIRED";
+      throw err;
+    }
 
     const decoded = decode(invoice);
     const amountSection = decoded.sections.find((s) => s.name === "amount");
@@ -1202,28 +1279,106 @@ export class SparkAgent {
     const payResult = await this.payAndSettle(invoice, { maxFeeSats: maxFee, preferSpark: false });
     const preimage = payResult.paymentPreimage;
     if (!preimage) {
-      const err = new Error(
+      this.#holdL402(key, { macaroon, invoice, amountSats, sendId: payResult.id, preimage: null });
+      const err = new PaymentCommittedError(
         `L402 invoice PAID but no preimage yet (status ${payResult.lastStatus ?? "unknown"}). ` +
-        `DO NOT retry this request — that would pay again. Poll ` +
-        `agent.getLightningSendRequest("${payResult.id}") for the preimage, then retry with it.`,
+        `Do NOT buy this resource again another way. Call fetchL402 with the same URL again in this ` +
+        `process: it checks this payment and presents its proof instead of paying.`,
+        { settled: null, op: "l402", sendId: payResult.id, invoiceHash: invoicePaymentHash(invoice) ?? undefined },
       );
-      err.paid = true;
-      err.sendId = payResult.id;
-      err.macaroon = macaroon;
+      err.paid = true; // kept for callers written against the earlier error shape
+      err.macaroon = macaroon; // not a working pass without the preimage
       throw err;
     }
+    return this.#deliverL402(url, key, { macaroon, preimage, amountSats }, request, { recovered: false });
+  }
 
-    const finalResponse = await fetch(url, {
-      method,
-      // Authorization last: a caller-supplied header must not clobber the L402
-      // proof we just paid for (that would pay and then not present the proof).
-      headers: { ...headers, "Authorization": `L402 ${macaroon}:${preimage}` },
-      body: body ? JSON.stringify(body) : undefined,
-    });
+  // Present a paid pass and return the resource. The money is already gone,
+  // so a failure in transit or a 5xx is retried with the SAME pass — a fresh
+  // challenge would be a new invoice. If every attempt fails, the pass is held
+  // for the next call in this process and a PaymentCommittedError (settled:
+  // true) is thrown. Any other status is the server's answer, returned as is
+  // with `status` — a 401/402 here means the server refused a paid pass.
+  async #deliverL402(url, key, pass, { method, headers, reqBody }, { recovered }) {
+    let failure;
+    for (let attempt = 1; attempt <= L402_DELIVERY_ATTEMPTS; attempt++) {
+      if (attempt > 1) await new Promise((r) => setTimeout(r, L402_DELIVERY_BACKOFF_MS * (attempt - 1)));
+      try {
+        const res = await fetch(url, {
+          method,
+          // Authorization last: a caller-supplied header must not clobber the
+          // L402 proof we paid for (that would pay and then not present it).
+          headers: { ...headers, "Authorization": `L402 ${pass.macaroon}:${pass.preimage}` },
+          body: reqBody,
+        });
+        if (res.status >= 500) {
+          failure = `HTTP ${res.status}`;
+          await res.text().catch(() => "");
+          continue;
+        }
+        const data = await readBody(res);
+        this.#l402Held.delete(key);
+        return {
+          paid: !recovered, // false when this call delivered a pass an earlier call bought
+          ...(recovered ? { recovered: true } : {}),
+          status: res.status,
+          amountSats: pass.amountSats,
+          macaroon: pass.macaroon,
+          preimage: pass.preimage,
+          data,
+        };
+      } catch (err) {
+        failure = err?.message ?? String(err);
+      }
+    }
+    this.#holdL402(key, { macaroon: pass.macaroon, preimage: pass.preimage, amountSats: pass.amountSats });
+    const { host, path } = l402Target(url);
+    throw new PaymentCommittedError(
+      `L402: paid ${pass.amountSats ?? "?"} sats for ${host}${path} but the resource was not delivered ` +
+      `after ${L402_DELIVERY_ATTEMPTS} attempts (${failure}). The pass is kept in this process: call fetchL402 ` +
+      `with the same URL again to present it without paying. Do NOT buy this resource another way.`,
+      { settled: true, op: "l402" },
+    );
+  }
 
-    const ct = finalResponse.headers.get("content-type") || "";
-    const data = ct.includes("json") ? await finalResponse.json() : await finalResponse.text();
-    return { paid: true, amountSats, macaroon, preimage, data };
+  // A held L402 payment from an earlier call: finish it instead of buying
+  // again. Returns the delivered result, throws while the payment is still
+  // open, or returns null once it has failed for good (no money left).
+  async #resumeL402(url, key, held, request) {
+    if (!held.preimage) {
+      const status = await this.#wallet.getLightningSendRequest(held.sendId);
+      if (status?.paymentPreimage) {
+        // Same proof check as payAndSettle: a preimage settles THIS invoice
+        // only if it hashes to the invoice's payment hash.
+        const expected = invoicePaymentHash(held.invoice);
+        const got = createHash("sha256").update(Buffer.from(status.paymentPreimage, "hex")).digest("hex");
+        if (expected && got !== expected) {
+          throw new Error(
+            `SparkAgent.fetchL402: the held payment's preimage does NOT hash to its invoice's payment hash ` +
+            `(sha256(preimage) = ${got}, invoice = ${expected}) — refusing to present it.`,
+          );
+        }
+        held.preimage = status.paymentPreimage;
+      } else if (isTerminalLightningFailure(status?.status)) {
+        this.#l402Held.delete(key);
+        if (this.#lnDedup) await this.#lnDedup.forget(held.invoice);
+        return null;
+      } else {
+        const { host, path } = l402Target(url);
+        throw new PaymentCommittedError(
+          `L402: the earlier payment for ${host}${path} is still pending (status ${status?.status ?? "unknown"}); ` +
+          `nothing new was paid. Call fetchL402 again later. Do NOT buy this resource another way.`,
+          { settled: null, op: "l402", sendId: held.sendId, invoiceHash: invoicePaymentHash(held.invoice) ?? undefined },
+        );
+      }
+    }
+    return this.#deliverL402(url, key, held, request, { recovered: true });
+  }
+
+  #holdL402(key, entry) {
+    this.#l402Held.delete(key);
+    if (this.#l402Held.size >= L402_MAX_HELD) this.#l402Held.delete(this.#l402Held.keys().next().value);
+    this.#l402Held.set(key, entry);
   }
 
   async previewL402(url) {
@@ -1238,11 +1393,15 @@ export class SparkAgent {
     const amountSection = decoded.sections.find((s) => s.name === "amount");
     if (!amountSection?.value) throw new Error("L402 invoice has no amount");
 
+    const tokenExpiry = l402TokenExpiry(macaroon)?.expiresAt ?? null;
     return {
       requiresPayment: true,
       amountSats: Math.ceil(Number(amountSection.value) / 1000),
       invoice,
       macaroon,
+      // When the server says the pass dies (ISO), or null: no expiry caveat, or
+      // an opaque token. fetchL402 refuses to pay inside the last minute.
+      tokenExpiresAt: tokenExpiry === null ? null : new Date(tokenExpiry * 1000).toISOString(),
     };
   }
 

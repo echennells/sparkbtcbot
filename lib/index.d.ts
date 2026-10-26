@@ -521,3 +521,23 @@ export function getReference(name: string): Promise<string>;
  * agent picks a reference based on the user's task.
  */
 export function listReferences(): Promise<string[]>;
+
+/**
+ * Money has left, or may have. fetchL402 throws it when it paid but the
+ * resource did not arrive: `settled: true` with the pass held in memory for
+ * the next call to the same URL, or `settled: null` while the payment is still
+ * pending. Never pay again with a new invoice, address or method. Carries no
+ * secret: never a preimage or a raw invoice.
+ */
+export class PaymentCommittedError extends Error {
+  code: "PAYMENT_COMMITTED";
+  settled: true | null;
+  op?: string;
+  invoiceHash?: string;
+  sendId?: string;
+  /** Set on fetchL402's pending-payment error, for callers of the earlier shape. */
+  paid?: true;
+}
+/** True only when a failed SDK call proves no funds left (an allowlisted pre-send SparkValidationError). */
+export function provesNothingSent(err: unknown): boolean;
+export const PRE_SEND_VALIDATION_MESSAGES: readonly string[];
