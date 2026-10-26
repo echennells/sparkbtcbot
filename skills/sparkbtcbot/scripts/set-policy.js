@@ -7,8 +7,14 @@
 // passphrase, tampering fails the GCM tag, deleting it deletes the wallet.
 // Changing it therefore means decrypt -> modify -> re-encrypt -> atomic swap,
 // gated by a real terminal and an explicit confirmation. That friction is
-// intentional. Binding (or changing) a policy also writes a fresh SIGNED spend
-// ledger, since the budget window restarts under the new policy.
+// intentional. A bound budget needs a spend ledger SIGNED with this seed's
+// key: one that verifies is kept, so spends already in the window count
+// against the new budget; an unsigned env-budget ledger is signed as it
+// stands; a missing one is created. One that fails verification or can't be
+// read stops the ceremony with nothing changed. This ceremony never empties
+// the window — that is `reset-ledger`. (It used to write an empty ledger on
+// every change, so tightening 50,000 to 20,000 after 30,000 was spent freed
+// 20,000 more for the day.)
 //
 // TTY-gated on BOTH ends like reveal-mnemonic: an agent must not be able to
 // loosen the operator's sealed policy by piping answers into this script. The
@@ -20,7 +26,7 @@ import { stdin, stdout, stderr, exit, env } from "node:process";
 import { pathToFileURL } from "node:url";
 import { realpathSync } from "node:fs";
 import { loadSeedPayload, saveEncryptedMnemonic, deriveLedgerHmacKey, DEFAULT_SEED_PATH, MIN_PASSPHRASE_CHARS } from "../../../lib/encrypted-seed.js";
-import { initSignedLedger, DEFAULT_SPEND_LEDGER_PATH } from "../../../lib/spend-ledger.js";
+import { initSignedLedger, inspectLedgerForBinding, DEFAULT_SPEND_LEDGER_PATH } from "../../../lib/spend-ledger.js";
 import { promptStderr } from "./prompt.js";
 
 const USAGE =
@@ -29,8 +35,8 @@ const USAGE =
   "Decrypts seed.enc (prompts for the passphrase — never read from .env), shows\n" +
   "the current policy,\n" +
   "asks for the new budget ('none' removes the policy), confirms, then\n" +
-  "re-encrypts the seed atomically. Binding/changing a budget also writes a\n" +
-  "fresh signed spend ledger (the window restarts). Takes no arguments; refuses\n" +
+  "re-encrypts the seed atomically. Spends already in the window keep\n" +
+  "counting against a changed budget (reset-ledger empties it). Takes no arguments; refuses\n" +
   "to run without a real interactive terminal — this is an operator ceremony,\n" +
   "not an agent command.\n\nEnv: SPARK_SEED_PATH, SPARK_SPEND_LEDGER_PATH.\n";
 
@@ -84,8 +90,35 @@ export async function main() {
     policy = { dailyBudgetSats: sats };
   }
 
+  // A bound budget needs a ledger signed with this seed's key. Look BEFORE
+  // confirming, so a ledger that can't be kept stops the ceremony with
+  // nothing changed (replacing it would empty the window, which is
+  // reset-ledger's job).
+  const hmacKey = deriveLedgerHmacKey(payload.mnemonic);
+  let ledger = null;
+  if (policy) {
+    try {
+      ledger = await inspectLedgerForBinding({ path: ledgerPath, hmacKey });
+    } catch (err) {
+      stderr.write(
+        `set-policy: ${err.message}\nNothing changed. ` +
+          (err.code === "SPEND_LEDGER_BAD_SIGNATURE" || err.code === "SPEND_LEDGER_UNREADABLE"
+            ? "Start a fresh window deliberately with `sparkbtcbot reset-ledger`, then run set-policy again.\n"
+            : "\n"),
+      );
+      exit(1);
+    }
+  }
+  const n = ledger?.entries.length ?? 0;
+  const ledgerNote = !ledger
+    ? ""
+    : ledger.state === "signed"
+      ? ", keeping the signed spend ledger (spends already in the window count against the new budget)"
+      : ledger.state === "missing"
+        ? ` and creating a signed spend ledger at ${ledgerPath}`
+        : ` and signing the existing spend ledger as it stands (${n} entr${n === 1 ? "y" : "ies"}; spends already in the window count)`;
   const summary = policy
-    ? `BIND daily budget = ${policy.dailyBudgetSats} sats into the encrypted seed (v2) and reset the signed spend ledger`
+    ? `BIND daily budget = ${policy.dailyBudgetSats} sats into the encrypted seed (v2)${ledgerNote}`
     : "REMOVE the seed-bound policy (seed returns to v1; env-var budget semantics apply)";
   const confirm = (await promptStderr(`About to ${summary}.\nType 'yes' to proceed: `)).trim().toLowerCase();
   if (confirm !== "yes") { stderr.write("Aborted — nothing changed.\n"); exit(0); }
@@ -94,9 +127,16 @@ export async function main() {
   // either the old seed or the new one, never a partial file.
   await saveEncryptedMnemonic({ mnemonic: payload.mnemonic, passphrase, path: seedPath, policy, allowOverwrite: true });
   if (policy) {
-    await initSignedLedger({ path: ledgerPath, hmacKey: deriveLedgerHmacKey(payload.mnemonic) });
-    stderr.write(`Bound. seed.enc rewritten (v2, budget ${policy.dailyBudgetSats} sats); fresh signed ledger at ${ledgerPath}.\n`);
-    stderr.write("Deleting or editing the ledger now fails closed; reset legitimately with `sparkbtcbot reset-ledger`.\n");
+    let carried = ledger.entries.length;
+    if (ledger.state !== "signed") {
+      // Re-read: a running agent may have appended to the unsigned ledger
+      // while the operator was typing.
+      const latest = await inspectLedgerForBinding({ path: ledgerPath, hmacKey });
+      if (latest.state !== "signed") await initSignedLedger({ path: ledgerPath, hmacKey, entries: latest.entries });
+      carried = latest.entries.length;
+    }
+    stderr.write(`Bound. seed.enc rewritten (v2, budget ${policy.dailyBudgetSats} sats); signed spend ledger at ${ledgerPath} (${carried} entr${carried === 1 ? "y" : "ies"} kept).\n`);
+    stderr.write("Deleting or editing the ledger now fails closed; empty the window deliberately with `sparkbtcbot reset-ledger`.\n");
   } else {
     stderr.write("Removed. seed.enc rewritten (v1, no bound policy). Env-var budget (if set) applies again.\n");
   }

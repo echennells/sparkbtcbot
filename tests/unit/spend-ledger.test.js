@@ -3,6 +3,7 @@
 // rolling-window math, the fail-closed postures (corrupt ledger, unreadable
 // amount), and the persistence contract (two instances share state via disk).
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { randomBytes } from "node:crypto";
 import { mkdtemp, rm, writeFile, readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,6 +13,8 @@ import {
   spentInWindow,
   DAY_MS,
   DEFAULT_SPEND_LEDGER_PATH,
+  initSignedLedger,
+  inspectLedgerForBinding,
 } from "../../lib/spend-ledger.js";
 
 let dir, path;
@@ -122,5 +125,41 @@ describe("createSpendLedger persistence", () => {
     const s = await ledger.status();
     expect(s).toMatchObject({ spentSats: 250, budgetSats: 1_000, remainingSats: 750 });
     expect(s.entries).toHaveLength(1);
+  });
+});
+
+// set-policy keeps the spend window: it signs or keeps the ledger it finds
+// instead of writing an empty one, which freed headroom when a budget tightened.
+describe("inspectLedgerForBinding + initSignedLedger({ entries })", () => {
+  const key = randomBytes(32);
+  const bound = () => createSpendLedger({ path, budgetSats: 50_000, hmacKey: key, bound: true, clock: () => T0 });
+
+  it("missing → create; a signed ledger that verifies is kept with its spends", async () => {
+    expect(await inspectLedgerForBinding({ path, hmacKey: key })).toEqual({ state: "missing", entries: [] });
+    await initSignedLedger({ path, hmacKey: key });
+    await bound().record(49_000, "spark_transfer");
+    const found = await inspectLedgerForBinding({ path, hmacKey: key });
+    expect(found.state).toBe("signed");
+    expect(found.entries).toHaveLength(1);
+  });
+
+  it("an unsigned env-budget ledger is signed as it stands, so what was spent still counts", async () => {
+    await createSpendLedger({ path, budgetSats: 50_000, clock: () => T0 }).record(49_000, "spark_transfer");
+    const found = await inspectLedgerForBinding({ path, hmacKey: key });
+    expect(found.state).toBe("unsigned");
+    await initSignedLedger({ path, hmacKey: key, entries: found.entries });
+    await expect(bound().assertCanSpend(1_001)).rejects.toMatchObject({ code: "SPEND_BUDGET_EXCEEDED" });
+    expect((await bound().status()).spentSats).toBe(49_000);
+  });
+
+  it("a ledger that fails verification or can't be read throws instead of being replaced", async () => {
+    await initSignedLedger({ path, hmacKey: randomBytes(32) }); // another seed's key
+    await expect(inspectLedgerForBinding({ path, hmacKey: key })).rejects.toMatchObject({ code: "SPEND_LEDGER_BAD_SIGNATURE" });
+    await writeFile(path, "{ not json");
+    await expect(inspectLedgerForBinding({ path, hmacKey: key })).rejects.toMatchObject({ code: "SPEND_LEDGER_UNREADABLE" });
+  });
+
+  it("initSignedLedger refuses malformed entries", async () => {
+    await expect(initSignedLedger({ path, hmacKey: key, entries: [{ sats: "much" }] })).rejects.toThrow(/well-formed/);
   });
 });
