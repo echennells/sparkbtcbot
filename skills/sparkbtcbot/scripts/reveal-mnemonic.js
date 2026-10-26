@@ -136,7 +136,9 @@ export async function main() {
   stdout.write(
     "\n  Your seed phrase — copy it to PAPER or a hardware seed backup NOW:\n\n" +
     numbered +
-    "\n\n  This screen is wiped as soon as you continue.\n",
+    "\n\n  Backup only: don't type these words into another wallet app. It would get\n" +
+    "  full control of this wallet, and coins it receives won't reach the agent.\n" +
+    "\n  This screen is wiped as soon as you continue.\n",
   );
   await promptStderr("\nPress Enter AFTER you have copied all the words... ");
   wipe();

@@ -95,6 +95,18 @@ describe("sparkWalletOptions: both fee ladders off", () => {
     });
   });
 
+  it("refuses a network the SDK would quietly turn into REGTEST or LOCAL", () => {
+    // ToB sharp-edges SE-7: undefined -> REGTEST endpoints; lowercase or an
+    // object (the SDK-shaped call) -> LOCAL.
+    for (const bad of [undefined, "mainnet", { network: "MAINNET" }, "", "MAINNET "]) {
+      expect(() => sparkWalletOptions(bad), JSON.stringify(bad) ?? "undefined").toThrow(/network must be one of/);
+    }
+    expect(() => sparkWalletOptions(undefined, { network: "REGTEST" })).toThrow(/first argument/);
+    for (const ok of ["MAINNET", "TESTNET", "SIGNET", "REGTEST", "LOCAL"]) {
+      expect(sparkWalletOptions(ok).network).toBe(ok);
+    }
+  });
+
   it("FEE_LADDERS_OFF is frozen and exported from the package entry", () => {
     expect(Object.isFrozen(FEE_LADDERS_OFF)).toBe(true);
     expect(lib.FEE_LADDERS_OFF).toBe(FEE_LADDERS_OFF);

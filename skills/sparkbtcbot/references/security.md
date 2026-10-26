@@ -19,6 +19,16 @@ This means:
 4. **Restrict the seed file** — `~/.spark/seed.enc` is mode 0600. Don't bundle it into container images that ship alongside the passphrase.
 5. **Add `.env` to `.gitignore`** — prevent accidental commits of secrets.
 
+## Don't put the agent's recovery words into another wallet app
+
+The words are for an offline backup only. Typed into a phone or desktop wallet, they give that app the same full control:
+
+- **Either side can empty both.** Whoever compromises the agent host can take what the other app holds on that seed, and whoever gets into the app can drain the agent.
+- **Coins sent to an address the other app shows don't reach the agent.** An ordinary Bitcoin wallet derives different addresses from the same words, which this skill can't see (`references/wallet.md` → On L1). Those coins are safe in that app; to move them here, send them to the agent's deposit address.
+- **Another Spark app opens the same Spark wallet with its own settings.** Since SDK 0.13 the default turns the fee ladders on, so claims made there can leave refunds the exit backup can't use. `leaf-vault verify` reports them as `anchorless` (`references/unilateral-exit.md`).
+
+If the user wants the funds in another wallet, send them there from the agent. Don't share the seed.
+
 ## Don't accumulate large balances
 
 Even with encryption-at-rest, a compromised host with passphrase + seed file = full custody — treat it as a hot wallet.

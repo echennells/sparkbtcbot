@@ -8,6 +8,7 @@ import { mkdtemp, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SparkAgent } from "../../skills/sparkbtcbot/scripts/spark-agent.js";
+import { testSparkAddress } from "../helpers/spark-address.js";
 
 let dir;
 const ENV_KEYS = ["SPARK_LEAF_VAULT", "SPARK_DAILY_BUDGET_SATS", "SPARK_SPEND_LEDGER_PATH"];
@@ -81,7 +82,7 @@ describe("SparkAgent spend budget (SPARK_DAILY_BUDGET_SATS)", () => {
   it("dryRun spends nothing", async () => {
     const wallet = mkWallet();
     const agent = new SparkAgent(wallet, "MAINNET");
-    await agent.transfer({ to: "sp1x", amount: 1000, dryRun: true });
+    await agent.transfer({ to: testSparkAddress("MAINNET"), amount: 1000, dryRun: true });
     const status = await agent.spendStatus();
     expect(status.spentSats).toBe(0);
   });

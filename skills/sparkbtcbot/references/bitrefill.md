@@ -20,7 +20,7 @@ Bitrefill sells ~10,000 digital products (gift cards, eSIMs, phone top-ups) acro
 Bitrefill handles catalog and checkout; this wallet pays. Division of labor (each step verified end-to-end with a real mainnet purchase, 2026-07):
 
 1. **Catalog + checkout on Bitrefill's side** (their MCP, CLI, or API): search product → get details/denominations → `buy-products` with `payment_method: lightning` and `return_payment_link: false` → the response carries `payment_info.lightningInvoice` (the BOLT11), `payment_info.satoshiPrice` (their own sats quote — a useful cross-check input for the guard below), `invoice_id`, and `invoice_access_token`. The payment window is ~30 minutes. `--email` sends a receipt — but that's the user's PII going into a merchant database: ask first, per policy §3.
-2. **Pay from Spark** — `agent.payLightningInvoice` (preferred) or `wallet.payLightningInvoice`. Spark → Lightning costs ~0.25% + routing (`references/lightning.md`).
+2. **Pay from Spark** through `payMerchantCheckout` (below), which checks the invoice against the quote and pays over Lightning. Spark → Lightning costs ~0.25% + routing (`references/lightning.md`).
 3. **Poll the order** with `get-invoice-by-id` (needs BOTH `invoice_id` and `invoice_access_token`). Completion fields are `invoice_status: "complete"` and `orders_delivery_status: "all_delivered"` — there is no top-level `status` field. Delivery is fast (~30 s after payment in the live run).
 4. **Retrieve the redemption artifact** from `orders[].redemption_info` — it is a **`code`, a `link`, or both**, varying by product (Amazon.ca delivered a link only). Whichever form it takes, it's the bearer secret: hand it to the user once.
 
@@ -40,6 +40,7 @@ Use `payMerchantCheckout` from `references/merchant-spending.md` §1 — validat
 
 - `quotedSats`: use the product-details price fetched *before* checkout; the buy response's own `payment_info.satoshiPrice` is a useful cross-check but comes from the same untrusted response as the invoice, so it must not be the only source.
 - Default tolerance (2%) is right here — Bitrefill quotes in sats directly, so there's no fiat-conversion drift.
+- `expectedPaymentHash: null`. The checkout returns no payment hash: for Lightning, `payment_info` holds only `lightningInvoice` and `satoshiPrice` (Bitrefill's CLI README, 0.3.0). So there's nothing to bind, and the quote check and `maxAmountSats` carry the weight. If a response ever does include a hash, pass it.
 - Log the (`invoice_id`, preimage) pair as the proof-of-payment record (policy §4).
 
 ## Testing the pairing

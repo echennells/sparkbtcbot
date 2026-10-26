@@ -375,6 +375,27 @@ export class SparkAgent {
     assertRecipientAllowed(address, allowlist);
   }
 
+  // A dry run must refuse what the send would refuse. The SDK checks the
+  // recipient only when it sends (decodeSparkAddress, plus no Spark invoice for
+  // a sats transfer), so a typo, an address for the other network, or a silent
+  // payment address (sp1q…, an L1 destination for withdraw) used to preview
+  // fine and then fail at send time.
+  #assertSparkRecipient(method, to, { allowInvoice = false } = {}) {
+    let decoded;
+    try {
+      if (!to) throw new Error("no address given");
+      decoded = decodeSparkAddress(to, this.#network);
+    } catch (err) {
+      const hint = /^(sp|tsp|sprt)1q/i.test(String(to))
+        ? " It looks like a silent payment address, which is an L1 destination: use withdraw({ to, amount })."
+        : "";
+      throw new Error(`SparkAgent.${method}: ${JSON.stringify(to)} is not a ${this.#network} Spark address (${err.message}).${hint}`);
+    }
+    if (decoded.sparkInvoiceFields && !allowInvoice) {
+      throw new Error(`SparkAgent.${method}: that's a Spark invoice, not an address. Pay it with fulfillInvoice([invoice]).`);
+    }
+  }
+
   // Budget gate + PRE-commit record for a sats spend. Recording before the
   // SDK call is the safe direction: a crash mid-send overcounts (and rolls
   // off with the window) rather than undercounts. The returned undo() is the
@@ -455,6 +476,11 @@ export class SparkAgent {
   // unclaimed and each entry feeds straight into claimDeposit({ txid, vout }).
   // The SDK exposes only { txid, vout } per UTXO (no amount/confirmations), so
   // that is all we can return; to learn the credited amount, dry-run a claim.
+  // Confirmed-but-UNCLAIMED L1 deposits at the STATIC deposit addresses.
+  // getBalance() shows only CLAIMED Spark balance, so THIS is what answers "did
+  // my on-chain deposit arrive?" — an empty array means nothing to claim yet;
+  // each entry feeds claimDeposit({ txid, vout }). Single-use addresses aren't
+  // covered (references/wallet.md → On L1).
   async listPendingDeposits({ limit = 100 } = {}) {
     const addresses = await this.#wallet.queryStaticDepositAddresses();
     const deposits = [];
@@ -487,6 +513,7 @@ export class SparkAgent {
     await this.#assertAllowed(to);
     const sats = toSats(amount, "transfer"); // number|bigint -> safe-int Number (dry-run + live agree)
     if (dryRun) {
+      this.#assertSparkRecipient("transfer", to);
       return {
         dryRun: true,
         operation: "spark_transfer",
@@ -901,6 +928,7 @@ export class SparkAgent {
     rejectUnknownOptions("transferTokens", rest);
     await this.#assertAllowed(to);
     if (dryRun) {
+      this.#assertSparkRecipient("transferTokens", to, { allowInvoice: true });
       return {
         dryRun: true,
         operation: "token_transfer",
@@ -1058,13 +1086,14 @@ export class SparkAgent {
     }
     // Budget counts amount + the vetted fee — both leave the wallet on an exit.
     const spend = await this.#recordSpend(sats + (check.fee ?? 0), "l1_withdraw");
+    let result;
     try {
       // Bind the executed exit to the SAME quote we just vetted, so the operator
       // charges the quoted fee we checked rather than re-pricing at broadcast
       // (closes the TOCTOU gap). feeQuoteId + feeAmountSats is the current SDK
       // API; the `feeQuote` object param does the same but is @deprecated — kept
       // only as the fallback when our reader couldn't extract a scalar fee.
-      return await this.#wallet.withdraw({
+      result = await this.#wallet.withdraw({
         onchainAddress: to,
         exitSpeed: speed,
         amountSats: sats,
@@ -1076,6 +1105,19 @@ export class SparkAgent {
       await spend.undo().catch(() => {});
       throw err;
     }
+    // The SDK moves the leaves BEFORE it asks the SSP for the exit record, and
+    // types that record as nullable. Without one the caller would crash on
+    // result.coopExitTxid after the money left, and a retry would exit twice.
+    // The spend stays recorded: the sats are gone.
+    if (!result) {
+      const err = new Error(
+        `SparkAgent.withdraw: the exit was sent, but the SSP returned no record of it. ` +
+        `Do NOT retry, that would withdraw again. Find it with getTransfers().`,
+      );
+      err.paid = true;
+      throw err;
+    }
+    return result;
   }
 
   // --- Message Signing ---

@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { rm } from "node:fs/promises";
 import { EventEmitter } from "node:events";
 import { SparkAgent } from "../../skills/sparkbtcbot/scripts/spark-agent.js";
+import { testSparkAddress } from "../helpers/spark-address.js";
 import { readVault } from "../../lib/leaf-vault.js";
 import { LEAF_TXS } from "../helpers/leaf-txs.js";
 
@@ -53,7 +54,7 @@ describe("SparkAgent rejects unknown options on money-moving calls", () => {
   }
 
   it("still accepts the REAL dryRun spelling (preview returns without sending)", async () => {
-    const preview = await agent().transfer({ to: "sp1dest", amount: 1000n, dryRun: true });
+    const preview = await agent().transfer({ to: testSparkAddress("LOCAL"), amount: 1000n, dryRun: true });
     expect(preview).toMatchObject({ dryRun: true, operation: "spark_transfer", amount: "1000" });
   });
 });

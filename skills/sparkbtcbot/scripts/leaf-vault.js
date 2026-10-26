@@ -477,6 +477,9 @@ export function judgeMissingVault(sats) {
 // its shape, and rebuild every leaf's chain OFFLINE (no wallet, no operators) to a
 // genuine root with its pre-signed txs intact, and check every refund still has
 // the anchor that tool fee-bumps through. Run periodically / before trusting.
+// `ok` is the verdict. `failed` lists only leaves that don't rebuild; `anchorless`
+// lists leaves that rebuild but can't be fee-bumped. So `ok: false` with
+// `failed: []` is an anchorless backup, not a healthy one.
 export async function verifyVault(path = defaultVaultPath()) {
   const { TreeNode } = await getProto();
   let bundle;

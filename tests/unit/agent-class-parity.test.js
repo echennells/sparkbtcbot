@@ -9,6 +9,7 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { SparkAgent } from "../../skills/sparkbtcbot/scripts/spark-agent.js";
+import { listingFromScript, docListing, SCRIPT_PATH } from "../helpers/agent-class-listing.js";
 
 const MD_PATH = join(dirname(fileURLToPath(import.meta.url)), "../../skills/sparkbtcbot/references/agent-class.md");
 
@@ -40,5 +41,15 @@ describe("agent-class.md ↔ shipped SparkAgent parity", () => {
     const real = new Set([...publicMethods(), "create", "constructor"]);
     const phantom = defined.filter((name) => !real.has(name));
     expect(phantom, `defined in the doc listing but missing on SparkAgent: ${phantom}`).toEqual([]);
+  });
+
+  it("the doc's code listing IS the shipped file, minus the runnable bits", async () => {
+    // Method names alone let ~40 hunks of stale bodies through (found by an eval
+    // run on 2026-10-26: create() had lost its options argument in the doc).
+    const [script, md] = await Promise.all([readFile(SCRIPT_PATH, "utf8"), readFile(MD_PATH, "utf8")]);
+    expect(
+      docListing(md).text === listingFromScript(script),
+      "agent-class.md's listing differs from scripts/spark-agent.js; run: node tests/helpers/agent-class-listing.js --write",
+    ).toBe(true);
   });
 });

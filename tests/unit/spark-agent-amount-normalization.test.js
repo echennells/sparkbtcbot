@@ -16,6 +16,7 @@ vi.mock("../../lib/recipients-allowlist.js", async (importOriginal) => {
 });
 
 const { SparkAgent } = await import("../../skills/sparkbtcbot/scripts/spark-agent.js");
+const { testSparkAddress } = await import("../helpers/spark-address.js");
 
 const origVault = process.env.SPARK_LEAF_VAULT;
 beforeEach(() => { process.env.SPARK_LEAF_VAULT = "off"; });
@@ -50,7 +51,7 @@ describe("transfer amount normalization (bigint footgun)", () => {
 
   it("dry-run and live AGREE on a BigInt (the reported inconsistency)", async () => {
     const { agent } = mkAgent();
-    const preview = await agent.transfer({ to: "sp1to", amount: 8258n, dryRun: true });
+    const preview = await agent.transfer({ to: testSparkAddress("MAINNET"), amount: 8258n, dryRun: true });
     expect(preview.amount).toBe("8258"); // dry-run no longer silently diverges from live
   });
 

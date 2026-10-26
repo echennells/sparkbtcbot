@@ -26,6 +26,7 @@ Catalog/pricing lookups are unauthenticated GETs; rental-phone tools (only — s
 Use `payMerchantCheckout` from `references/merchant-spending.md` §1 with these nadanada inputs:
 
 - **The advertised 5% Lightning discount is applied PER PRODUCT (verified live 2026-07-27): NOT on VPN, YES on eSIM.** VPN: quote at full catalog price (the guard's first live block proved it — 782-sat invoice vs 743 discounted quote, 782 = exactly the undiscounted $0.50). eSIM: checkouts return `data.originalPrice`/`data.price` with the 5% applied — quote at `usdPrice × 0.95` (confirmed 2026-08-05: `originalPrice 2.99 → price 2.84`). Assume nothing for untested products; the guard will tell you.
+- **`expectedPaymentHash: resp.data.paymentHash`.** The checkout returns the invoice's hash next to it, so bind to it: a swapped invoice then fails even at the right amount.
 - **Fiat→sats conversion adds drift beyond the 2% default.** Use an independent rate (e.g. Coinbase spot — in one live check mempool.space and Coinbase agreed within 0.3%), `toleranceBps: 400`, and a firm `maxAmountSats` ceiling.
 
 ```javascript

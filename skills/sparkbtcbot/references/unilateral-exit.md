@@ -114,6 +114,7 @@ What to know:
 
 - **The setting belongs to the wallet object, not the seed.** Each program that opens the seed decides for itself. Your own `SparkWallet.initialize` calls should pass `sparkWalletOptions(network, extra)`.
 - **A wallet with the ladder off re-anchors whatever it claims.** Leaves claimed by another program on the SDK default (0.13 or later) stay anchorless until they next move. `npm run leaf-vault -- verify` and a snapshot both list them under `anchorless` and exit 1; `SparkAgent` warns at boot and `vaultHealth()` reports unhealthy with the same list. `SparkAgent` also warns when it's handed a wallet that was opened with the ladders on.
+- **Read `verifyVault()` by its `ok`.** `failed` lists only leaves that don't rebuild to a root; `anchorless` lists leaves that rebuild but can't be fee-bumped. So `ok: false` with `failed: []` is an anchorless backup, not a healthy one.
 - **Off has a cost.** The direct route keeps its flat fee and the dust gaps described below.
 - **Off is reversible; on isn't.** Flip the option and the next claims change, but fee steps already handed to the operators can't be recalled.
 

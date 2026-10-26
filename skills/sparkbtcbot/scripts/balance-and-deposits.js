@@ -9,9 +9,12 @@ const network = process.env.SPARK_NETWORK || "MAINNET";
 
 async function main() {
   const mnemonic = await loadMnemonicFromEnv();
+  // One-shot script: background leaf optimization off, so cleanup() at the end
+  // doesn't interrupt an optimizer started by a payment (references/wallet.md
+  // → Cleanup).
   const { wallet } = await SparkWallet.initialize({
     mnemonicOrSeed: mnemonic,
-    options: sparkWalletOptions(network),
+    options: sparkWalletOptions(network, { optimizationOptions: { auto: false } }),
   });
 
   // Check BTC balance

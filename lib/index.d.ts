@@ -482,12 +482,15 @@ export const FEE_LADDERS_OFF: Readonly<{
  * Options for SparkWallet.initialize: `extra`, the network, and FEE_LADDERS_OFF
  * (applied last, so `extra` can't turn a ladder back on). The settings belong
  * to the wallet object, so every program opening the seed must pass them.
+ * Throws a TypeError on any other network value: the SDK would quietly open
+ * REGTEST (undefined) or LOCAL (lowercase, an object) endpoints instead.
  */
+export type SparkNetworkName = "MAINNET" | "TESTNET" | "SIGNET" | "REGTEST" | "LOCAL";
 export function sparkWalletOptions<T extends Record<string, unknown> = {}>(
-  network: string,
+  network: SparkNetworkName,
   extra?: T,
 ): Omit<T, "network" | "enableCpfpRefundLadder" | "enableDirectNodeFeeLadder"> & {
-  network: string;
+  network: SparkNetworkName;
   enableCpfpRefundLadder: false;
   enableDirectNodeFeeLadder: false;
 };

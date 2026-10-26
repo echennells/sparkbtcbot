@@ -237,8 +237,9 @@ What the SDK checks: before it signs anything, it verifies the SSP's proof that 
 What to know:
 
 - **The address does not appear on chain.** The output is a taproot output derived from the address and the exit transaction's inputs. An explorer search for the `sp1q…` string finds nothing. Give the recipient `result.coopExitTxid`; their silent-payment wallet finds the output by scanning. Don't tell a user the withdrawal "isn't showing" because the address has no history.
+- **The txid is not proof of who was paid.** The SDK checks the SSP's proof that output 0 pays the address, then discards it; `withdraw` returns the exit's txid, not the proof. The recipient's wallet finds the payment by scanning, but nobody else can confirm from the chain that the output pays that address. In a dispute, the recipient's scan is the only check.
 - **The recipient's wallet must support receiving silent payments.** Only such a wallet produces these addresses, so this mostly comes up when a user pastes one.
-- **`sp1…` is also the legacy Spark address prefix.** `sp1q…` / `sprt1q…` (a `q` right after the `1`) is a silent payment address, an L1 destination for `withdraw`. `sp1p…` is a legacy Spark address, for `transfer`. Don't route by prefix alone. A Spark `transfer` to a silent payment address fails before anything moves, but its **`dryRun` preview does not check the address** and looks fine.
+- **`sp1…` is also the legacy Spark address prefix.** `sp1q…` / `sprt1q…` (a `q` right after the `1`) is a silent payment address, an L1 destination for `withdraw`. `sp1p…` is a legacy Spark address, for `transfer`. Don't route by prefix alone. A Spark `transfer` to a silent payment address fails before anything moves, and its `dryRun` preview now refuses it too, pointing to `withdraw`.
 - **Allowlist entries match exactly.** Put the whole address on one line of `~/.spark/recipients.allow`. These addresses are long (116+ characters).
 - **Not supported for `refundStaticDeposit()` or `recoverWatchtowerExitedLeaf()`.** Both throw an explicit unsupported-operation error; use a regular address there.
 
