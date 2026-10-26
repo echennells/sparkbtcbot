@@ -218,11 +218,10 @@ export async function main() {
     stdout.write("Do not put it in ~/.spark next to the seed, and not in a temp dir.\n");
   }
 
-  stdout.write("\nIn your app:\n");
-  stdout.write("  import { loadMnemonicFromEnv } from \"./lib/encrypted-seed.js\";\n");
-  stdout.write("  import { sparkWalletOptions } from \"./lib/wallet-options.js\";\n");
-  stdout.write("  const mnemonic = await loadMnemonicFromEnv();\n");
-  stdout.write(`  const { wallet } = await SparkWallet.initialize({ mnemonicOrSeed: mnemonic, options: sparkWalletOptions("${NETWORK}") });\n`);
+  stdout.write("\nIn your app (with sparkbtcbot-skill installed in the project):\n");
+  stdout.write("  import { loadMnemonicFromEnv } from \"sparkbtcbot-skill\";\n");
+  stdout.write("  import { SparkAgent } from \"sparkbtcbot-skill/agent\";\n");
+  stdout.write(`  const { agent } = await SparkAgent.create(await loadMnemonicFromEnv(), "${NETWORK}");\n`);
 }
 
 // Run main() only when executed directly (node script.js), not when this
