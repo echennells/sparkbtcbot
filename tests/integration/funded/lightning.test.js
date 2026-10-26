@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { createTestWallet, cleanupAllWallets, getFundedMnemonic } from "../../helpers/wallet.js";
+import { createTestWallet, cleanupAllWallets, getFundedMnemonic, waitForSettled, returnSats, waitForClaimed } from "../../helpers/wallet.js";
 
 const fundedMnemonic = getFundedMnemonic();
 const itFunded = fundedMnemonic ? it : it.skip;
@@ -14,9 +14,17 @@ describe("funded lightning (REGTEST)", () => {
     ({ wallet: receiver } = await createTestWallet());
   });
 
+  // Send the receiver's sats back: without this, every funded run stranded
+  // the 1,000 sats in a throwaway wallet that never claimed them.
   afterAll(async () => {
+    if (funded && receiver) {
+      const readAvailable = async () => (await funded.getBalance()).satsBalance.available;
+      const before = await readAvailable();
+      const returned = await returnSats(receiver, await funded.getSparkAddress());
+      if (returned > 0n) await waitForClaimed(readAvailable, before + returned);
+    }
     await cleanupAllWallets();
-  });
+  }, 120_000);
 
   itFunded("estimates a Lightning send fee", async () => {
     const inv = await receiver.createLightningInvoice({
@@ -43,5 +51,6 @@ describe("funded lightning (REGTEST)", () => {
       preferSpark: true,
     });
     expect(payment).toBeDefined();
-  });
+    expect(await waitForSettled(receiver, 1000n, { timeoutMs: 60_000 })).toEqual({ available: 1000n, incoming: 0n });
+  }, 90_000);
 });
