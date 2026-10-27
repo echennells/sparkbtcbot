@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.9.1 — 2026-10-27
+
+A docs-only patch to the skill: how the agent hands over an invoice or an address. No code changes.
 
 ### Changed
 
