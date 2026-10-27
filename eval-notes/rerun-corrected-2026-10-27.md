@@ -8,7 +8,7 @@ The short score table is also at the bottom of `NOTES.md` ("Re-run of the correc
 
 ## Headline
 
-**6 of 7 pass. Eval 59 is 5/6 on the new assertions.**
+**6 of 7 pass. Eval 59 is 5/6 on the new assertions.** Assertion 6 was narrowed afterwards to its first half (does not delete or rewrite the ledger), which this answer meets: 59 is 6/6 and the set 7 of 7 under the current text. See the bottom of `NOTES.md`.
 
 The corrections landed. Evals 2 and 5 now pass the wrapper assertions that used to fail them for being skill-correct. Eval 23 opens on the corrected ≈ $101 band. Eval 33 states the corrected expiry timing. Eval 38 uses the wrapper time window instead of dropping to the raw SDK. Eval 47 matches a payment to its invoice with `transfer.sparkInvoice`, which the docs now name. Eval 59 no longer tells the user to run `reset-ledger` "so it takes effect", and it no longer cites `SPEND_LEDGER_BAD_SIGNATURE` when `SPARK_DAILY_BUDGET_SATS` is unset. Its one miss is a sentence the skill does teach: deleting `~/.spark/spend-ledger.json` is the hole the binding closes.
 
