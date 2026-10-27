@@ -1119,8 +1119,9 @@ export class SparkAgent {
     }
     // An expired invoice can't be paid, but the SDK locks the coins before the
     // SSP says so: on hosted REGTEST (2026-10-26) paying one tied up 303 sats
-    // in a pending transfer that expires 16 days later, with no way to cancel
-    // it. Refuse before any I/O, with a margin for the seconds a send takes to
+    // in a pending transfer, with no way to cancel it, until the SSP returned
+    // it about an hour later (mainnet untested; Spark's docs promise no return
+    // time). Refuse before any I/O, with a margin for the seconds a send takes to
     // reach the SSP. An undecodable invoice has no expiry to read; the SDK
     // refuses it.
     const secondsLeft = invoiceSecondsRemaining(bolt11);

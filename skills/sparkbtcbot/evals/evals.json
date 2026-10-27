@@ -540,7 +540,7 @@
         "does not suggest importing the recovery words into another wallet app to get the coins",
         "gives the static deposit address (getDepositAddress()) for any future on-chain payment"
       ],
-      "note": "The stuck-coins path for users of v0.8.0, which handed out single-use addresses. Unrun."
+      "note": "The stuck-coins path for users of v0.8.0, which handed out single-use addresses."
     }
   ]
 }
