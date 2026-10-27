@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **README: what the version pins actually cover.** It said the exact pins give you "the tree we live-tested" and that upstream security patches reach you only when we cut a release. Both overstated it: only the direct dependencies, the Spark SDK among them, are pinned; the packages below them resolve within the SDK's own ranges at your install, so fixes deep in the tree (this month's `@grpc/grpc-js` one, for example) reach a fresh install without a release from us. It now says so, and that your own lockfile plus `npm ci --ignore-scripts` is what freezes the tree you deploy.
+
 ## 0.9.1 — 2026-10-27
 
 A docs-only patch to the skill: how the agent hands over an invoice or an address. No code changes.
