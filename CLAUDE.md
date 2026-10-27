@@ -59,8 +59,10 @@ skills/
       l402-paywalls.js
     evals/                            # Skill-quality evals (does the skill make Claude produce correct/safe code?)
       evals.json                      # Output evals: SDK-correctness + security-behavior + user-story (graded on the reply), with checkable assertions
-      trigger-eval.json               # Description-triggering queries (see NOTES: not measurable via claude -p here)
-      NOTES.md                        # How to run (subagent output evals, with-skill vs baseline) + last results
+      trigger-eval.json               # Description-triggering queries (see eval-notes/NOTES.md: not measurable via claude -p here)
+eval-notes/                           # Eval run notes, kept out of the package: how to run + every run's results
+  NOTES.md                            # How to run (subagent output evals, with-skill vs baseline) + results, newest at the bottom
+  findings-*.md / rerun-*.md          # Per-run reports
 tests/                                # vitest suite for the LIBRARY code (unit, integration, funded tiers)
 .env.example                          # Environment variable template
 ```
@@ -70,7 +72,8 @@ tests/                                # vitest suite for the LIBRARY code (unit,
 `skills/sparkbtcbot/evals/` verifies the **skill itself** — whether loading it
 makes Claude write correct, current-SDK, security-following code versus a no-skill
 baseline. The evals are run by subagents from a Claude Code session, not by
-`npm`; see `skills/sparkbtcbot/evals/NOTES.md`.
+`npm`; see `eval-notes/NOTES.md`. The run notes live outside the skill folder so they
+don't ship with the package: they keep old graded answers, including wrong ones.
 
 ## Trigger Phrases
 

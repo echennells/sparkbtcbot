@@ -1,6 +1,6 @@
 {
   "skill_name": "sparkbtcbot",
-  "note": "Output/behavioral evals: test what the skill PRODUCES, not whether it triggers. Run each via subagents (see NOTES.md 'How to run') — a with-skill run that reads skills/sparkbtcbot vs a no-skill baseline — then grade the produced code against `assertions`. Triggering lives in trigger-eval.json and is NOT reliably measurable via `claude -p` in this environment (see NOTES.md). Evals in the `user-story` category are graded on the agent's FINAL MESSAGE and DECISIONS (what it said and what it would do next), not on produced code — see NOTES.md 'User-story evals'.",
+  "note": "Output/behavioral evals: test what the skill PRODUCES, not whether it triggers. Run each via subagents (see eval-notes/NOTES.md 'How to run', in the repo, not the package) — a with-skill run that reads skills/sparkbtcbot vs a no-skill baseline — then grade the produced code against `assertions`. Triggering lives in trigger-eval.json and is NOT reliably measurable via `claude -p` in this environment (see eval-notes/NOTES.md). Evals in the `user-story` category are graded on the agent's FINAL MESSAGE and DECISIONS (what it said and what it would do next), not on produced code — see eval-notes/NOTES.md 'User-story evals'.",
   "evals": [
     {
       "id": 1,
