@@ -902,8 +902,19 @@ export class SparkAgent {
     }
   }
 
-  async getTransfers(limit = 10, offset = 0) {
-    return await this.#wallet.getTransfers(limit, offset);
+  // Same arguments as the raw wallet.getTransfers: the time window is passed
+  // through (it was dropped, so "received this month" needed the raw SDK).
+  async getTransfers(limit = 10, offset = 0, createdAfter, createdBefore) {
+    for (const [name, d] of [["createdAfter", createdAfter], ["createdBefore", createdBefore]]) {
+      if (d !== undefined && !(d instanceof Date && Number.isFinite(d.getTime()))) {
+        throw new TypeError(`SparkAgent.getTransfers: ${name} must be a Date, got ${JSON.stringify(d)}.`);
+      }
+    }
+    // The SDK takes one bound or the other, not both.
+    if (createdAfter !== undefined && createdBefore !== undefined) {
+      throw new TypeError("SparkAgent.getTransfers: pass createdAfter or createdBefore, not both (the SDK takes one).");
+    }
+    return await this.#wallet.getTransfers(limit, offset, createdAfter, createdBefore);
   }
 
   // This wallet's latest token transactions, NEWEST FIRST, readable (see

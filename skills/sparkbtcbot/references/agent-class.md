@@ -8,7 +8,7 @@ The `SparkAgent` class exposes these (all `async` unless noted); full signatures
 
 - **Identity & balance** — `getIdentity()`, `getBalance()` (returns normalized `{ sats, lockedSats, tokens }` — the raw `wallet.getBalance()` returns `{ satsBalance, tokenBalances }`; same name, different shape, not interchangeable)
 - **Deposits** — `getDepositAddress()`, `listPendingDeposits()` (entries typed `static` / `single-use`), `claimDeposit(...)`; `getSingleUseDepositAddress()` refuses, because the operators currently refuse single-use claims
-- **Send** — `transfer(...)`, `transferTokens(...)`, `batchTransferTokens(transfers)`, `withdraw(...)` (L1 cooperative exit), `getWithdrawalFeeQuote(amountSats, address)`, `getTransfers(limit, offset)` (sats only), `getTokenTransactions({ tokenIdentifier, limit })` (newest first, readable: `hash`, `status` finalized/pending/cancelled, `type`, `outputs` with `to`, `ownerPublicKey`, `mine`, `amount`; compare recipients by key, since one key has a legacy `sp1…` and a `spark1…` address), `getTokenTransaction(hash)`
+- **Send** — `transfer(...)`, `transferTokens(...)`, `batchTransferTokens(transfers)`, `withdraw(...)` (L1 cooperative exit), `getWithdrawalFeeQuote(amountSats, address)`, `getTransfers(limit, offset, createdAfter | createdBefore)` (sats only; one time bound, a `Date`), `getTokenTransactions({ tokenIdentifier, limit })` (newest first, readable: `hash`, `status` finalized/pending/cancelled, `type`, `outputs` with `to`, `ownerPublicKey`, `mine`, `amount`; compare recipients by key, since one key has a legacy `sp1…` and a `spark1…` address), `getTokenTransaction(hash)`
 - **Lightning** — `createLightningInvoice(amountSats, memo, options)`, `createTrackedInvoice(amountSats, memo, { expirySeconds })` → `{ id, invoice, paymentHash, expiresAt }` and `getInvoiceStatus(id)` → `{ state, paid, customerCharged, expired, canReinvoice, … }` (one per order: no Spark fallback, so every payment marks it paid; an amount is required; states in `references/wallet.md`), `payLightningInvoice(bolt11, ...)` (persists one dedup `transferId` per invoice, so a warranted retry of the same invoice cannot double-pay — `references/lightning.md` → Retry Dedup), `estimateLightningFee(bolt11, amountSats)`, `getLightningSendRequest(id)` (poll an initiated send for its preimage), `payAndSettle(bolt11, ...)` (pay + wait for the preimage, VERIFIED against the invoice's payment hash; check status before any retry on its timeout). A Spark-backed invoice settles Spark-direct (free) unless the payment passes `expectedPaymentHash` (checked before anything is sent) or `preferSpark: false`; then it goes over Lightning, because a Spark-direct payment ignores the hash. Merchant checkouts and `fetchL402` always go over Lightning. ⚠️ `payLightningInvoice` here takes a **bare BOLT11 string** first; the raw `wallet.payLightningInvoice` takes **one `{ invoice, ... }` object** — not interchangeable, and the raw layer crashes opaquely on a bare string (`references/lightning.md` → Pay)
 - **Spark invoices** — `createSatsInvoice(amountSats, memo)`, `createTokenInvoice(tokenIdentifier, amount, memo)`, `fulfillInvoice(invoices, options)` (allowlist-gated on each invoice's decoded receiver; supports `dryRun`)
 - **L402 paywalls** — `fetchL402(url, options)` (`{ resend: true }` re-sends a POST that may have reached the service), `previewL402(url)`, `forgetL402(url, { method })` (sync; lets the agent buy a URL again after it stopped, only on the user's say-so)
@@ -920,8 +920,19 @@ export class SparkAgent {
     }
   }
 
-  async getTransfers(limit = 10, offset = 0) {
-    return await this.#wallet.getTransfers(limit, offset);
+  // Same arguments as the raw wallet.getTransfers: the time window is passed
+  // through (it was dropped, so "received this month" needed the raw SDK).
+  async getTransfers(limit = 10, offset = 0, createdAfter, createdBefore) {
+    for (const [name, d] of [["createdAfter", createdAfter], ["createdBefore", createdBefore]]) {
+      if (d !== undefined && !(d instanceof Date && Number.isFinite(d.getTime()))) {
+        throw new TypeError(`SparkAgent.getTransfers: ${name} must be a Date, got ${JSON.stringify(d)}.`);
+      }
+    }
+    // The SDK takes one bound or the other, not both.
+    if (createdAfter !== undefined && createdBefore !== undefined) {
+      throw new TypeError("SparkAgent.getTransfers: pass createdAfter or createdBefore, not both (the SDK takes one).");
+    }
+    return await this.#wallet.getTransfers(limit, offset, createdAfter, createdBefore);
   }
 
   // This wallet's latest token transactions, NEWEST FIRST, readable (see

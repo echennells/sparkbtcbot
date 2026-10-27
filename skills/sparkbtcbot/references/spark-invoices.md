@@ -54,6 +54,8 @@ for (const err of result.satsTransactionErrors) {
 
 For token invoices the result has `tokenTransactionSuccess` / `tokenTransactionErrors` arrays of the same shape.
 
+**Matching a payment to its invoice.** A sats transfer that paid a Spark invoice carries the invoice as `sparkInvoice`, on the payer's and the receiver's `getTransfers()` entries (hosted REGTEST, 2026-10-27). After an unclear outcome (`PAYMENT_COMMITTED` from `agent.fulfillInvoice`), look for `transfer.sparkInvoice === invoice` before paying again. To narrow the list by time, `agent.getTransfers(limit, offset, createdAfter)` takes a `Date`; the operators' clock can run seconds behind yours (a transfer made a moment after a local timestamp was listed as older than it on REGTEST), so leave a minute of margin.
+
 ## Spark Invoice Embedded in BOLT11
 
 When you create a Lightning invoice with `includeSparkAddress: true`, the resulting BOLT11 carries the Spark address in route hints. Spark-aware payers can detect this and route via Spark (instant, free) instead of paying Lightning routing fees. The recipient can call `getLightningReceiveRequest(id)` and read `sparkInvoice` to get the embedded Spark invoice directly without decoding the BOLT11 manually.
