@@ -21,7 +21,7 @@ console.log(describeRate(rate));                          // "76,764 USD/BTC (me
 
 1. Currency from the ask ("$" → USD; "€" → EUR; "quid" → GBP …). If genuinely ambiguous, one question.
 2. `fetchBtcPrice` → `fiatToSats` → `agent.createLightningInvoice(sats, "…", { expirySeconds })`. The wrapper embeds a Spark fallback (`includeSparkAddress: true`) so a Spark-aware payer pays free. Default expiry is 1 hour — if the friend isn't paying *right now*, set `expirySeconds: 86400` and say it lasts a day.
-3. Hand over: the amount in their currency with ≈, the **BOLT11 string** ready to copy, and a QR **when the surface can render one** (a chat bot that shows images: yes; a terminal: paste string only — don't promise a QR you can't show). One line on who can pay it: "any Lightning wallet — Cash App, Strike, Wallet of Satoshi, Phoenix, Muun…".
+3. Hand over: the amount in their currency with ≈, the **BOLT11 string as copyable text**, always, because that works everywhere. If this chat can show images, also attach a QR code for scanning. Never give only a QR: a terminal, SMS or a voice assistant can't show one, so don't promise a QR you can't show. One line on who can pay it: "any Lightning wallet — Cash App, Strike, Wallet of Satoshi, Phoenix, Muun…".
 4. Don't mention: the mnemonic, backups, Spark's operators, unilateral exit, what a sat is. If they ask what this is, one sentence: "a Bitcoin Lightning invoice — your friend's app pays it and the money lands in your bot's wallet."
 
 Don't hand out a native Spark invoice or a bare Spark address here (`SKILL.md` → Receiving): the friend's wallet is almost certainly a Lightning app, and only a BOLT11 works for it.

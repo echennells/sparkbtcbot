@@ -82,7 +82,7 @@ A Spark wallet can be paid five different ways, and most payers can only use som
 | User's word / situation | Give them | Who can pay it |
 |---|---|---|
 | "invoice", "payment request", or any amount-bearing ask | **BOLT11 Lightning invoice** via `createLightningInvoice` with `includeSparkAddress: true` | Any Lightning wallet (fees on the sender, ~0.15%); Spark wallets pay it free via the embedded fallback |
-| A **fiat** amount ("$100", "€50") — typically a user who doesn't know Bitcoin | Same BOLT11, sized with `fetchBtcPrice` → `fiatToSats`; headline in their currency with **≈** and the rate time, sats in parentheses; paste string always, QR only where the surface renders it | Same as above — `references/first-spend.md` for the wording and the post-receive path |
+| A **fiat** amount ("$100", "€50") — typically a user who doesn't know Bitcoin | Same BOLT11, sized with `fetchBtcPrice` → `fiatToSats`; headline in their currency with **≈** and the rate time, sats in parentheses; BOLT11 as copyable text always; add a QR if the chat shows images, never a QR alone | Same as above — `references/first-spend.md` for the wording and the post-receive path |
 | "address" (no amount semantics) | **Bare Spark address** from `getSparkAddress()` | Spark wallets only (incl. Xverse); reusable, amountless, never expires |
 | Payer is known to be another Spark-SDK agent | Native Spark invoice (`createSatsInvoice`) is fine | Only code calling `fulfillSparkInvoice` |
 | Payer is on-chain / amount is large | L1 static deposit address | Any Bitcoin wallet; small amounts are fee-dominated |

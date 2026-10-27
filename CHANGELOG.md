@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **Receive-invoice hand-over in plain words.** SKILL.md said "paste string always, QR only where the surface renders it", which a review read as jargon. It now says: give the BOLT11 as copyable text always, add a QR if the chat shows images, never a QR alone. `first-spend.md` says why: a terminal, SMS or a voice assistant can't show one.
+
 ## 0.9.0 — 2026-10-27
 
 spark-sdk 0.14 with the SDK's fee ladders forced off, and the money paths hardened against what three review rounds and a day of real REGTEST payments turned up: an expired invoice that locks the payer's coins, a single-use deposit the operators won't claim, a paywall retry that buys twice, a forged ledger entry that empties a sealed budget. Each fix below names the failure it closes, and the funded REGTEST tier now pays real invoices end to end, a local L402 server included.
