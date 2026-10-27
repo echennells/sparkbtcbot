@@ -4,7 +4,7 @@
 
 ### Changed
 
-- **Receive-invoice hand-over in plain words.** SKILL.md said "paste string always, QR only where the surface renders it", which a review read as jargon. It now says: give the BOLT11 as copyable text always, add a QR if the chat shows images, never a QR alone. `first-spend.md` says why: a terminal, SMS or a voice assistant can't show one.
+- **How to hand over an invoice or address, in plain words.** SKILL.md said "paste string always, QR only where the surface renders it", which a review read as jargon, and a second review noted that "copyable" was met by an inline code span. The receive rules now say, for anything handed out: the string alone in a code block (so chat apps show a copy button), plus its QR if the chat shows images, never a QR alone. `first-spend.md` spells it out: nothing else in the block, no line breaks inside the string, the string on its own line where the chat doesn't render markdown, and the QR of that exact string.
 
 ## 0.9.0 — 2026-10-27
 
