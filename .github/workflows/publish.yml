@@ -49,17 +49,19 @@ jobs:
       # min-release-age landed in npm 11.10.0 and on the runner's stock npm the
       # age gate is written and enforced by nothing.
       #
-      # `intel: sfw` additionally routes the install through Socket Firewall's
-      # known-malware blocklist -- the axis the age gate and script blocking
-      # cannot cover (a 30-day-old package with no install script). Fail-open:
-      # if Socket is unreachable it warns and the install proceeds unfiltered,
-      # so it cannot itself block a release; verify only expects it when the
-      # harden step reports it installed.
+      # `intel: sfw` (Socket Firewall's known-malware blocklist, the axis the
+      # age gate and script blocking cannot cover) is OFF until the action is
+      # fixed. Its first run here, the v0.9.0 publish (2026-10-27), failed
+      # closed: the action installs sfw with sudo into a root-owned
+      # /usr/local/lib/node_modules/sfw, and sfw then can't create its binary
+      # cache there as the job user (EACCES), so `npm ci` exits 1. It is not
+      # fail-open for a broken local install, only for Socket being
+      # unreachable. Turn it back on once the action installs sfw as the job
+      # user and checks that it runs.
       - name: Harden package managers
         uses: echennells/supply-chain-hardening/action@v2
         with:
           ecosystems: npm
-          intel: sfw
 
       - name: Install dependencies
         run: npm ci
