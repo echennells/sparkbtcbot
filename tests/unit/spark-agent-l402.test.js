@@ -517,7 +517,7 @@ describe("fetchL402 after payment: in-process recovery", () => {
     const { agent, pay } = mk();
     pay.mockRejectedValueOnce(Object.assign(new Error("outcome unknown"), { code: "PAYMENT_COMMITTED", settled: null }));
     await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }));
-    pay.mockRejectedValueOnce(Object.assign(new Error("invoice expired; an earlier attempt is on record"), { code: "PAYMENT_COMMITTED", reason: "INVOICE_EXPIRED" }));
+    pay.mockRejectedValueOnce(Object.assign(new Error("invoice expired; an earlier attempt is on record"), { code: "PAYMENT_COMMITTED", reason: "INVOICE_EXPIRED_AFTER_ATTEMPT" }));
     stubFetch([]);
     const r = await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }));
     expect(r.error).toMatchObject({ code: "PAYMENT_COMMITTED", reason: "L402_INVOICE_EXPIRED", settled: null, invoiceHash: expect.stringMatching(/^[0-9a-f]{64}$/) });
@@ -525,6 +525,27 @@ describe("fetchL402 after payment: in-process recovery", () => {
     expect(again.error).toMatchObject({ reason: "L402_INVOICE_EXPIRED" });
     expect(pay).toHaveBeenCalledTimes(2); // the block doesn't try again
   });
+
+  // ToB review of 9bc0f22..f88fbec (F3): with blocks kept forever, a full map
+  // dropped may-have-paid holds instead, and the next call bought again.
+  // Nothing held is dropped now; at the limit a NEW purchase is refused.
+  it("at the held limit a new purchase is refused before paying, and nothing held is dropped", async () => {
+    const inv = await invoice2000();
+    const { agent, pay } = mk();
+    for (let i = 0; i < 1000; i++) {
+      stubFetch([resp(402, { invoice: inv, macaroon: `m${i}` }), ...Array.from({ length: 3 }, () => new TypeError("fetch failed"))]);
+      await run(agent.fetchL402(`${URL_}/${i}`, { maxAmountSats: 3000 }));
+    }
+    expect(pay).toHaveBeenCalledTimes(1000);
+    stubFetch([resp(402, { invoice: inv, macaroon: "one-too-many" })]);
+    const refused = await run(agent.fetchL402(`${URL_}/new`, { maxAmountSats: 3000 }));
+    expect(refused.error.message).toMatch(/1000 unresolved L402 purchases.*Nothing was paid/s);
+    expect(pay).toHaveBeenCalledTimes(1000);
+    const seen = stubFetch([resp(200, { ok: true })]); // the first hold is still there
+    const first = await run(agent.fetchL402(`${URL_}/0`, { maxAmountSats: 3000 }));
+    expect(first.value).toMatchObject({ recovered: true });
+    expect(seen.map(auth)).toEqual(["L402 m0:abc123preimage"]);
+  }, 60_000);
 
   // ToB review of 7ec89b9 (N1): the held map dropped its oldest entry when
   // full, blocks included, so 100 other holds later the refused URL was bought

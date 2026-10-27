@@ -132,8 +132,8 @@ describe("getTokenTransactions / getTokenTransaction", () => {
       type: "transfer",
       createdAt: "2026-10-26T20:00:00.000Z",
       outputs: [
-        { to: encodeSparkAddress({ identityPublicKey: THEM, network: "REGTEST" }), mine: false, tokenIdentifier: TOKEN_ID, amount: "5" },
-        { to: encodeSparkAddress({ identityPublicKey: ME, network: "REGTEST" }), mine: true, tokenIdentifier: TOKEN_ID, amount: "895" },
+        { to: encodeSparkAddress({ identityPublicKey: THEM, network: "REGTEST" }), ownerPublicKey: THEM, mine: false, tokenIdentifier: TOKEN_ID, amount: "5" },
+        { to: encodeSparkAddress({ identityPublicKey: ME, network: "REGTEST" }), ownerPublicKey: ME, mine: true, tokenIdentifier: TOKEN_ID, amount: "895" },
       ],
     });
     expect(list[1]).toMatchObject({ status: "finalized", statusCode: "TOKEN_TRANSACTION_FINALIZED" });

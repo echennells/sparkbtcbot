@@ -219,6 +219,9 @@ function readableTokenTransaction(t, network, me) {
       }
       return {
         to,
+        // Compare recipients by key, not by address string: one key has two
+        // address encodings (legacy sp1… and spark1…), and `to` is the newer.
+        ownerPublicKey: owner || null,
         mine: owner === me,
         tokenIdentifier: o.tokenIdentifier?.length ? encodeBech32mTokenIdentifier({ tokenIdentifier: o.tokenIdentifier, network }) : null,
         amount: o.tokenAmount?.length ? BigInt("0x" + hex(o.tokenAmount)).toString() : "0",
@@ -457,8 +460,10 @@ const L402_DELIVERY_ATTEMPTS = 3;
 const L402_DELIVERY_BACKOFF_MS = 500;
 const L402_RETRY_STATUS = (status) => status >= 500 || status === 408 || status === 429;
 const L402_REPEATABLE = new Set(["GET", "HEAD", "OPTIONS", "PUT", "DELETE"]);
-// Undelivered L402 payments held per agent; past this the oldest is dropped.
-const L402_MAX_HELD = 100;
+// Unresolved L402 purchases held per agent (undelivered passes, payments in
+// doubt, blocks). Nothing held is ever dropped, since each may mean money has
+// left; past this many, fetchL402 refuses to start a new purchase.
+const L402_MAX_HELD = 1000;
 
 const l402RequestKey = (method, url) => `${String(method).toUpperCase()} ${url}`;
 
@@ -741,12 +746,13 @@ export class SparkAgent {
         },
       ])
     );
-    // Sats this wallet still owns but can't spend: coins locked in an
-    // outgoing transfer that hasn't completed, such as a Lightning payment the
-    // SSP refused after the SDK had locked the coins (an expired invoice on
-    // hosted REGTEST: 303 sats, with no set time to come back). Spark's docs:
-    // "Funds locked in an outgoing transfer can remain in owned while being
-    // excluded from available."
+    // Sats this wallet still owns but can't spend right now: coins in a send
+    // or leaf swap still in flight, leaves the SDK leaves out while the
+    // operators disagree about them (both settle within minutes), and coins
+    // locked by a Lightning send the SSP refused after the SDK had locked them
+    // (an expired invoice on hosted REGTEST). Spark's docs: "Funds locked in
+    // an outgoing transfer can remain in owned while being excluded from
+    // available."
     const locked = (satsBalance.owned ?? satsBalance.available) - satsBalance.available;
     return { sats: satsBalance.available.toString(), lockedSats: (locked > 0n ? locked : 0n).toString(), tokens };
   }
@@ -906,7 +912,11 @@ export class SparkAgent {
   // recipient, token and amount among the newest entries. Optionally one token
   // (btkn1… / btknrt1…). The operators page oldest-first; asking for the
   // previous page with no cursor returns the newest page (hosted REGTEST,
-  // 2026-10-26), so the raw query's first page was the wallet's OLDEST.
+  // 2026-10-26), so the raw query's first page was the wallet's OLDEST. That
+  // is the operators' code (query_token_txs_handler.go: no cursor + PREVIOUS
+  // orders by UUIDv7 id descending, takes the page, reverses it), but no doc
+  // or proto promises it; tests/integration/funded/token-transactions.test.js
+  // fails if it changes.
   async getTokenTransactions({ tokenIdentifier, limit = 20, ...rest } = {}) {
     rejectUnknownOptions("getTokenTransactions", rest);
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > TOKEN_TX_MAX_LIMIT) {
@@ -1111,12 +1121,13 @@ export class SparkAgent {
             `Nothing was sent by this call.`,
           { settled: null, op: "lightning_pay", invoiceHash: invoicePaymentHash(bolt11) ?? undefined },
         );
-        e.reason = "INVOICE_EXPIRED";
+        e.reason = "INVOICE_EXPIRED_AFTER_ATTEMPT";
         throw e;
       }
       const e = new Error(
         `Payment blocked: the invoice ${when}. Paying it would lock the amount in a transfer the SSP refuses, ` +
-          `with no set time for it to come back. Ask the payee for a new invoice. Nothing was sent.`,
+          `with no set time for it to come back. Nothing was sent by this call. Ask the payee for a new invoice, ` +
+          `unless an earlier attempt to pay this one had an unclear outcome: then check agent.getTransfers() first.`,
       );
       e.code = "INVOICE_EXPIRED";
       throw e;
@@ -1205,7 +1216,20 @@ export class SparkAgent {
     // closed inside the ledger. A deduped retry re-records here, so the budget
     // can OVERCOUNT one payment attempted twice — the safe direction for a
     // runaway-loop guardrail (see #recordSpend's crash trade-off).
-    const spend = rest[LN_RESUMING] ? NO_SPEND : await this.#recordSpend(amt, "lightning_pay");
+    // A dedup id this attempt minted must not outlive an attempt that provably
+    // sent nothing: left behind, it later reads as "an earlier attempt may have
+    // paid" (the expired-invoice refusal above), and blocks a legitimate
+    // purchase (ToB review of 9bc0f22..f88fbec).
+    const forgetIfMinted = async () => {
+      if (resolved && !resolved.reused) await this.#lnDedup.forget(bolt11).catch(() => {});
+    };
+    let spend;
+    try {
+      spend = rest[LN_RESUMING] ? NO_SPEND : await this.#recordSpend(amt, "lightning_pay");
+    } catch (err) {
+      await forgetIfMinted(); // the budget refused before the SDK was called
+      throw err;
+    }
     let result;
     try {
       // The SDK REQUIRES amountSatsToSend for a zero-amount invoice and REJECTS it
@@ -1242,6 +1266,7 @@ export class SparkAgent {
         settled.cause = err;
         throw settled;
       }
+      if (provesNothingSent(err)) await forgetIfMinted();
       throw await this.#spendFailed(err, spend, {
         method: "payLightningInvoice",
         op: "lightning_pay",
@@ -1623,7 +1648,7 @@ export class SparkAgent {
       throw await this.#spendFailed(err, NO_SPEND, {
         method: "transferTokens",
         op: "token_transfer",
-        next: "Check the token balance (agent.getBalance()) before sending again: a new transfer is a second payment.",
+        next: "Look for this send among agent.getTokenTransactions() (newest first) before sending again: a new transfer is a second payment.",
       });
     }
   }
@@ -1685,7 +1710,7 @@ export class SparkAgent {
       throw await this.#spendFailed(err, NO_SPEND, {
         method: "batchTransferTokens",
         op: "token_transfer",
-        next: "Check the token balance (agent.getBalance()) before sending again: a new batch is a second payment.",
+        next: "Look for this batch among agent.getTokenTransactions() (newest first) before sending again: a new batch is a second payment.",
       });
     }
   }
@@ -1981,6 +2006,13 @@ export class SparkAgent {
     // preimage IS the credential, and a Spark-direct payment returns none.
     const payOptions = { maxFeeSats: maxFee, maxAmountSats: maxAmt, preferSpark: false, [LN_NO_FEE_READS]: true };
     const { host, path } = l402Target(url);
+    if (this.#l402Held.size >= L402_MAX_HELD) {
+      throw new Error(
+        `L402 payment blocked: this agent holds ${this.#l402Held.size} unresolved L402 purchases (undelivered, in doubt or ` +
+          `refused), the most it keeps. Nothing was paid. Resolve them (call fetchL402 again for each) or, on the user's ` +
+          `say-so, agent.forgetL402(url).`,
+      );
+    }
     let payResult;
     try {
       payResult = await this.payAndSettle(invoice, payOptions);
@@ -2174,7 +2206,7 @@ export class SparkAgent {
           this.#l402Held.delete(key);
           return null;
         }
-        if (err?.reason === "INVOICE_EXPIRED" || err?.code === "INVOICE_EXPIRED") {
+        if (err?.reason === "INVOICE_EXPIRED_AFTER_ATTEMPT" || err?.code === "INVOICE_EXPIRED") {
           // The invoice died before the doubtful payment could be settled
           // again, so settling it can't tell us whether it went through.
           throw block({
@@ -2268,19 +2300,11 @@ export class SparkAgent {
     return this.#deliverL402(url, key, held, request, { recovered: true });
   }
 
+  // Never evicts: a dropped hold or block lets the next call buy that URL again
+  // on nobody's say-so (ToB reviews of 7ec89b9 and of 9bc0f22..f88fbec). The
+  // map is bounded by fetchL402 refusing new purchases at L402_MAX_HELD.
   #holdL402(key, entry) {
     this.#l402Held.delete(key);
-    if (this.#l402Held.size >= L402_MAX_HELD) {
-      // Drop the oldest held purchase, never a block: dropping a block would
-      // let the next call buy that URL again on nobody's say-so. Blocks are
-      // tiny and only grow as fast as services refuse passes.
-      for (const [k, v] of this.#l402Held) {
-        if (!v.blocked) {
-          this.#l402Held.delete(k);
-          break;
-        }
-      }
-    }
     this.#l402Held.set(key, entry);
   }
 

@@ -803,7 +803,7 @@ describe("payment-safety edges", () => {
     const { agent, calls } = mkAgent();
     for (const left of [-600, -1, 0, 29]) {
       for (const dryRun of [true, false]) {
-        await expect(agent.payLightningInvoice(at(left), { maxAmountSats: 5000, dryRun }), `${left}s`).rejects.toMatchObject({ code: "INVOICE_EXPIRED" });
+        await expect(agent.payLightningInvoice(at(left), { maxAmountSats: 5000, dryRun }), `${left}s`).rejects.toMatchObject({ code: "INVOICE_EXPIRED", message: expect.stringMatching(/unclear outcome.*getTransfers/s) });
       }
     }
     expect(calls.pay).toBeNull();
@@ -829,12 +829,62 @@ describe("payment-safety edges", () => {
     const clock = vi.spyOn(Date, "now").mockReturnValue((now + 180) * 1000); // the invoice has expired
     try {
       await expect(agent.payLightningInvoice(inv, { maxAmountSats: 5000 })).rejects.toMatchObject({
-        code: "PAYMENT_COMMITTED", reason: "INVOICE_EXPIRED", settled: null, message: expect.stringMatching(/earlier attempt.*getTransfers/s),
+        code: "PAYMENT_COMMITTED", reason: "INVOICE_EXPIRED_AFTER_ATTEMPT", settled: null, message: expect.stringMatching(/earlier attempt.*getTransfers/s),
       });
     } finally {
       clock.mockRestore();
     }
     expect(attempts).toBe(1);
+  }));
+
+  // ToB review of 9bc0f22..f88fbec (F2): the dedup id was minted before the
+  // budget check, so an attempt the budget refused (or the SDK refused before
+  // sending) left an entry that, once the invoice expired, read as "an earlier
+  // attempt may have paid". An attempt that provably sent nothing forgets the
+  // id it minted.
+  it("an attempt that provably sent nothing leaves no 'earlier attempt' behind", () => withFreshDedup(async () => {
+    const { SparkValidationError } = await import("@buildonspark/spark-sdk");
+    const now = Math.floor(Date.now() / 1000);
+    process.env.SPARK_LEAF_VAULT = "off";
+    const expired = () => vi.spyOn(Date, "now").mockReturnValue((now + 180) * 1000);
+
+    // Refused by the SDK before sending.
+    const inv = freshInvoice(KNOWN_INVOICE, now - 3600 + 90);
+    const wallet = {
+      getSparkAddress: async () => "sp1from",
+      getLightningSendFeeEstimate: async () => 5,
+      payLightningInvoice: async () => { throw new SparkValidationError("Total target amount exceeds available balance", { field: "amount" }); },
+    };
+    const agent = new SparkAgent(wallet, "MAINNET");
+    await expect(agent.payLightningInvoice(inv, { maxAmountSats: 5000 })).rejects.toMatchObject({ name: "SparkValidationError" });
+    let clock = expired();
+    try {
+      await expect(agent.payLightningInvoice(inv, { maxAmountSats: 5000 })).rejects.toMatchObject({ code: "INVOICE_EXPIRED" });
+    } finally {
+      clock.mockRestore();
+    }
+
+    // Refused by the spend budget before the SDK was called.
+    const dir = mkdtempSync(join(tmpdir(), "budget-"));
+    const saved = { b: process.env.SPARK_DAILY_BUDGET_SATS, p: process.env.SPARK_SPEND_LEDGER_PATH };
+    process.env.SPARK_DAILY_BUDGET_SATS = "100";
+    process.env.SPARK_SPEND_LEDGER_PATH = join(dir, "ledger.json");
+    try {
+      const inv2 = freshInvoice(KNOWN_INVOICE, now - 3600 + 91);
+      const capped = new SparkAgent(wallet, "MAINNET");
+      await expect(capped.payLightningInvoice(inv2, { maxAmountSats: 5000 })).rejects.toMatchObject({ code: "SPEND_BUDGET_EXCEEDED" });
+      clock = expired();
+      try {
+        await expect(capped.payLightningInvoice(inv2, { maxAmountSats: 5000 })).rejects.toMatchObject({ code: "INVOICE_EXPIRED" });
+      } finally {
+        clock.mockRestore();
+      }
+    } finally {
+      for (const [k, v] of [["SPARK_DAILY_BUDGET_SATS", saved.b], ["SPARK_SPEND_LEDGER_PATH", saved.p]]) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
   }));
 
   // ToB review of 375e6fb..HEAD: ONE payment hash of the wrong length passed

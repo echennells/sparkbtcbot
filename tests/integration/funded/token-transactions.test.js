@@ -6,6 +6,7 @@
 // and each output reads as recipient address, mine or not, token and amount.
 // Token sends cost no sats; the throwaway wallet sends its units back.
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { decodeSparkAddress } from "@buildonspark/spark-sdk";
 import { SparkAgent } from "../../../skills/sparkbtcbot/scripts/spark-agent.js";
 import { createTestWallet, cleanupAllWallets, getFundedMnemonic } from "../../helpers/wallet.js";
 
@@ -54,13 +55,17 @@ describeFunded("getTokenTransactions (REGTEST, real token sends)", () => {
     const list = await newestWith(payer, hash);
     expect(list[0]).toMatchObject({ hash, status: "finalized", statusCode: "TOKEN_TRANSACTION_FINALIZED", type: "transfer" });
     expect(list[0].createdAt).toMatch(/^\d{4}-\d\d-\d\dT/);
-    expect(list[0].outputs).toContainEqual({ to: receiverAddress, mine: false, tokenIdentifier: tokenId, amount: "1" });
+    expect(list[0].outputs).toContainEqual(expect.objectContaining({ to: receiverAddress, mine: false, tokenIdentifier: tokenId, amount: "1" }));
     expect(list[0].outputs.some((o) => o.mine && o.to === payerAddress && o.tokenIdentifier === tokenId)).toBe(true);
     expect(await payer.getTokenTransaction(hash)).toEqual(list[0]);
+    // The recipient's output carries its key: compare by key, since one key
+    // has two address encodings (legacy sp1… and spark1…).
+    const recipientKey = decodeSparkAddress(receiverAddress, "REGTEST").identityPublicKey;
+    expect(list[0].outputs.some((o) => o.ownerPublicKey === recipientKey && !o.mine)).toBe(true);
 
     // The receiver sees the same transaction, its own output marked mine.
     const theirs = await newestWith(receiver, hash);
-    expect(theirs[0].outputs).toContainEqual({ to: receiverAddress, mine: true, tokenIdentifier: tokenId, amount: "1" });
+    expect(theirs[0].outputs).toContainEqual(expect.objectContaining({ to: receiverAddress, mine: true, tokenIdentifier: tokenId, amount: "1" }));
   }, 120_000);
 
   it("newest first across sends, with and without the token filter", async () => {
@@ -78,7 +83,7 @@ describeFunded("getTokenTransactions (REGTEST, real token sends)", () => {
   it("the units go back: the payer's newest entry is the incoming one, marked mine", async () => {
     const back = await receiver.transferTokens({ tokenIdentifier: tokenId, amount: 3n, to: payerAddress });
     const list = await newestWith(payer, back);
-    expect(list[0].outputs).toContainEqual({ to: payerAddress, mine: true, tokenIdentifier: tokenId, amount: "3" });
+    expect(list[0].outputs).toContainEqual(expect.objectContaining({ to: payerAddress, mine: true, tokenIdentifier: tokenId, amount: "3" }));
     expect(await payer.getTokenTransaction("00".repeat(32))).toBeNull();
   }, 120_000);
 });

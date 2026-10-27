@@ -107,7 +107,7 @@ describeFunded("tracked invoices (REGTEST, real Lightning payments)", () => {
     while (Date.parse(order.expiresAt) - Date.now() > 25_000) await sleep(1_000); // inside the 30 s margin
     const before = (await payerWallet.getBalance()).satsBalance;
     await expect(payer.payLightningInvoice(order.invoice, { maxAmountSats: PRICE + 10 })).rejects.toMatchObject({
-      code: "PAYMENT_COMMITTED", reason: "INVOICE_EXPIRED", settled: null,
+      code: "PAYMENT_COMMITTED", reason: "INVOICE_EXPIRED_AFTER_ATTEMPT", settled: null,
     });
     await sleep(3_000);
     const after = (await payerWallet.getBalance()).satsBalance;

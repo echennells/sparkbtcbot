@@ -549,10 +549,10 @@ export class PaymentCommittedError extends Error {
   paid?: true;
   /**
    * fetchL402: why this agent stopped buying the URL (forgetL402 lifts it).
-   * payLightningInvoice: INVOICE_EXPIRED when it refused an expired invoice
+   * payLightningInvoice: INVOICE_EXPIRED_AFTER_ATTEMPT when it refused an expired invoice
    * that an earlier attempt, on record in the dedup store, may already have paid.
    */
-  reason?: "L402_PASS_REFUSED" | "L402_PASS_EXPIRED" | "L402_INVOICE_EXPIRED" | "L402_NO_PROOF" | "INVOICE_EXPIRED";
+  reason?: "L402_PASS_REFUSED" | "L402_PASS_EXPIRED" | "L402_INVOICE_EXPIRED" | "L402_NO_PROOF" | "INVOICE_EXPIRED_AFTER_ATTEMPT";
   /** fetchL402 with reason L402_PASS_REFUSED: the HTTP status that refused the pass. */
   status?: number;
 }
