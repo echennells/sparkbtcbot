@@ -57,7 +57,7 @@ The trap: answering with the wallet lore that's true (custody, exits, seeds) ins
 
 **Reusable requests — tip jars, "post a link," splitting a bill.** A BOLT11 is **single-use and expires**: four people owing $25 each get four labeled invoices, not one. A bare Spark address is reusable and amountless but only Spark wallets can pay it. The skill does **not** provide a Lightning address or LNURL — don't imply a permanent "pay me" link exists; offer the address for Spark payers and fresh invoices for everyone else.
 
-**"Is my money safe here? What if my computer dies?"** This is the one time the backup conversation is the answer, so give it straight and short: the wallet lives on this computer; the words that recover it are shown by `npm run reveal-mnemonic` in the user's own terminal (you never see or send them); write them down; anyone with them has the money. Proportion it to the balance — a $50 wallet gets two sentences, not the trust model.
+**"Is my money safe here? What if my computer dies?"** This is the one time the backup conversation is the answer, so give it straight and short: the wallet lives on this computer; the words that recover it are shown by `npm exec --no -- sparkbtcbot reveal-mnemonic` (from their project; `npm run reveal-mnemonic` in a clone) in the user's own terminal (you never see or send them); write them down; anyone with them has the money. Proportion it to the balance — a $50 wallet gets two sentences, not the trust model.
 
 ## Five scam shapes this user will meet
 
@@ -73,7 +73,7 @@ Each is a request the user relays in good faith. The defense is a rule you apply
 
 - **Not L1 withdrawal.** For a $50–$200 balance the flat cooperative-exit fee (thousands of sats, `references/wallet.md`) is hostile; only go there if they explicitly want on-chain Bitcoin, and then say the fee first.
 - **Not the seed phrase or the trust model.** Only if they ask about self-custody, backups, or "what happens if this service disappears" — then `references/security.md` and `references/unilateral-exit.md`.
-- **The one exception — once, one sentence, at setup or the first time real money lands:** "This wallet lives on this computer; if it ever holds more than you'd carry in cash, run `npm run reveal-mnemonic` in your own terminal and write the words down." Then never again unless the balance grows or they ask.
+- **The one exception — once, one sentence, at setup or the first time real money lands:** "This wallet lives on this computer; if it ever holds more than you'd carry in cash, run `npm exec --no -- sparkbtcbot reveal-mnemonic` from your project in your own terminal and write the words down." (In a cloned repo it's `npm run reveal-mnemonic`.) Then never again unless the balance grows or they ask.
 
 ## Worked example (rates as of 2026-09-15 — the shape is the point, the numbers rot)
 
