@@ -13,39 +13,41 @@ on:
   push:
     tags: ["v*"]
 
+# Nothing at the workflow level: each job asks for what it needs. The token
+# that can publish (id-token) belongs to a job that runs no third-party
+# package code.
 permissions:
-  contents: write # create the GitHub Release for the tag
-  id-token: write # OIDC: trusted-publishing auth + provenance signing
+  contents: read
 
 jobs:
-  publish:
+  # Install, verify, test. This is where dependency code runs: `npm ci`
+  # installs the full tree and `npm test` executes vitest, vite and rolldown
+  # (a native binary among them). None of it can mint the publishing
+  # identity: this job has no id-token and read-only contents.
+  test:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          registry-url: "https://registry.npmjs.org"
           cache: npm
 
-      # Trusted publishing needs a current npm (the runner's bundled one is too
-      # old to speak OIDC to the registry).
+      # Pinned, not @latest: an unpinned npm install ran before the hardening
+      # step and so was not age-gated. 11.21.0 has min-release-age (11.10.0+).
       - name: Update npm
-        run: npm install -g npm@latest
+        run: npm install -g npm@11.21.0
 
-      # Harden the runner before anything is installed.
-      #
-      # Trusted publishing already removes the stolen-token risk, but `npm ci`
-      # runs BEFORE `npm publish`, so a dependency lifecycle script could alter
-      # the tree that then ships -- under this workflow's own provenance
-      # attestation. A signed artifact attesting to a commit whose contents
-      # changed after checkout is worse than a leaked token.
-      #
-      # Placement is load-bearing twice: AFTER setup-node, which prepends its
-      # toolcache to PATH and would shadow the hardening; and AFTER the npm
-      # upgrade, because min-release-age landed in npm 11.10.0 and on the
-      # runner's stock npm the age gate is written and enforced by nothing.
+      # Harden the runner before anything is installed. Placement is
+      # load-bearing twice: AFTER setup-node, which prepends its toolcache to
+      # PATH and would shadow the hardening; and AFTER the npm upgrade, because
+      # min-release-age landed in npm 11.10.0 and on the runner's stock npm the
+      # age gate is written and enforced by nothing.
       #
       # `intel: sfw` additionally routes the install through Socket Firewall's
       # known-malware blocklist -- the axis the age gate and script blocking
@@ -78,6 +80,56 @@ jobs:
           PKG_VERSION="$(node -p "require('./package.json').version")"
           TAG_VERSION="${GITHUB_REF_NAME#v}"
           if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match package.json version $PKG_VERSION" >&2
+            exit 1
+          fi
+
+  # Publish from a fresh checkout of the same commit, installing nothing.
+  # The tarball is the package.json `files` list read from the checkout (no
+  # lifecycle scripts, no bundled dependencies), so `npm publish` needs no
+  # node_modules, and no dependency code ever runs where the id-token is.
+  # Before the split one job held the token while `npm ci` and `npm test`
+  # ran the whole dev tree: a compromised dev dependency could rewrite a file
+  # under lib/ or skills/ between checkout and publish, and the provenance
+  # attestation would vouch for it (Trail of Bits review, SC-03).
+  publish:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the GitHub Release for the tag
+      id-token: write # OIDC: trusted-publishing auth + provenance signing
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # No npm cache: the test job's cache is written after dependency code
+      # has run, and this job installs nothing that would use it.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: "https://registry.npmjs.org"
+
+      # Trusted publishing needs a current npm (the runner's bundled one is too
+      # old to speak OIDC to the registry). Same pin as the test job.
+      - name: Update npm
+        run: npm install -g npm@11.21.0
+
+      # What ships is exactly the tagged commit: nothing installed, nothing
+      # changed since checkout.
+      - name: Check the tree is the tagged commit, untouched
+        run: |
+          if [ -e node_modules ]; then
+            echo "node_modules exists in the publish job; it must install nothing" >&2
+            exit 1
+          fi
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "The working tree differs from the tagged commit:" >&2
+            git status --porcelain >&2
+            exit 1
+          fi
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          if [ "$PKG_VERSION" != "${GITHUB_REF_NAME#v}" ]; then
             echo "Tag $GITHUB_REF_NAME does not match package.json version $PKG_VERSION" >&2
             exit 1
           fi
