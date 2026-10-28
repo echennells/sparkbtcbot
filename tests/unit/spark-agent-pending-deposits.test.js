@@ -193,10 +193,24 @@ describe("getSingleUseDepositAddress", () => {
 describe("getBalance lockedSats", () => {
   const agentWith = (satsBalance) => new SparkAgent({ getBalance: async () => ({ satsBalance, tokenBalances: new Map() }) }, "MAINNET");
   it("reports owned minus available, as a string", async () => {
-    expect(await agentWith({ available: 4422n, owned: 4725n, incoming: 0n }).getBalance()).toEqual({ sats: "4422", lockedSats: "303", tokens: {} });
+    expect(await agentWith({ available: 4422n, owned: 4725n, incoming: 0n }).getBalance()).toEqual({ sats: "4422", incomingSats: "0", lockedSats: "303", tokens: {} });
   });
   it("is 0 when nothing is locked or owned is missing", async () => {
     expect(await agentWith({ available: 100n, owned: 100n, incoming: 0n }).getBalance()).toMatchObject({ lockedSats: "0" });
     expect(await agentWith({ available: 100n }).getBalance()).toMatchObject({ lockedSats: "0" });
+  });
+});
+
+// A payment made while the wallet was closed shows only in the SDK's
+// `incoming` when it reopens, until the SDK claims it (REGTEST, 2026-10-28:
+// { available 0, owned 0, incoming 300 } at initialize). Without incomingSats
+// the agent read "0" and said nothing had arrived.
+describe("getBalance incomingSats", () => {
+  const agentWith = (satsBalance) => new SparkAgent({ getBalance: async () => ({ satsBalance, tokenBalances: new Map() }) }, "MAINNET");
+  it("reports what has arrived but isn't claimed yet, next to sats and lockedSats", async () => {
+    expect(await agentWith({ available: 0n, owned: 0n, incoming: 300n }).getBalance()).toEqual({ sats: "0", incomingSats: "300", lockedSats: "0", tokens: {} });
+  });
+  it("is 0 when the SDK gives no incoming figure", async () => {
+    expect(await agentWith({ available: 100n, owned: 100n }).getBalance()).toMatchObject({ incomingSats: "0" });
   });
 });

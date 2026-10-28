@@ -94,7 +94,7 @@ export interface LoadRecipientsAllowlistOptions {
  * Read the recipient allowlist file. Returns the list of allowed addresses,
  * or `null` if the file is missing / empty / all comments (meaning "not
  * enforced"). One address per line; `#` starts a comment; blank lines
- * ignored. Bypass = edit the file.
+ * ignored. Bypass = the user edits the file (an agent must not).
  */
 export function loadRecipientsAllowlist(
   options?: LoadRecipientsAllowlistOptions,
@@ -526,6 +526,171 @@ export function getReference(name: string): Promise<string>;
  */
 export function listReferences(): Promise<string[]>;
 
+// --- The error contract (lib/agent-errors.js) ---
+
+/**
+ * What an agent may do after an error, read from `err.retryable`:
+ * - "yes": proven that nothing happened and nothing is pending; the same call again is safe.
+ * - "no": the same call fails the same way; the input, a setting or the state has to change first.
+ * - "check-first": money (or value) may have moved; look (`err.nextStep` says where) before doing anything else.
+ */
+export type Retryable = "yes" | "no" | "check-first";
+
+/**
+ * Every code this package raises: the keys of AGENT_ERRORS. The names are
+ * stable API; the ones that predate the contract (PAYMENT_COMMITTED, the
+ * SPEND_LEDGER_* family, EEXIST, …) keep their exact spelling.
+ */
+export type AgentErrorCode =
+  // Input and caller mistakes
+  | "BAD_INPUT"
+  | "INVOICE_INVALID"
+  | "RECIPIENT_INVALID"
+  | "PAYMENT_HASH_MISMATCH"
+  | "AMOUNT_MISMATCH"
+  // Guard refusals
+  | "AMOUNT_OVER_LIMIT"
+  | "FEE_OVER_LIMIT"
+  | "QUOTE_UNREADABLE"
+  | "INSUFFICIENT_FUNDS"
+  | "RECIPIENT_NOT_ALLOWED"
+  | "SPEND_BUDGET_EXCEEDED"
+  | "SPEND_LEDGER_MISSING"
+  | "SPEND_LEDGER_BAD_SIGNATURE"
+  | "SPEND_LEDGER_UNREADABLE"
+  | "INVOICE_EXPIRED"
+  | "INVOICE_REFUSED"
+  | "SINGLE_USE_DEPOSITS_UNAVAILABLE"
+  | "DEPOSIT_NOT_FOUND"
+  | "DEPOSIT_LOOKUP_INCOMPLETE"
+  | "L402_CHALLENGE_INVALID"
+  | "L402_TOO_MANY_HELD"
+  | "L402_TOKEN_EXPIRED"
+  // Money (or value) may have moved: retryable "check-first" by default
+  | "PAYMENT_COMMITTED"
+  | "PAYMENT_ALREADY_SETTLED"
+  | "CLAIM_OUTCOME_UNKNOWN"
+  | "DEDUP_ENTRY_UNREADABLE"
+  | "CONCURRENT_PAYMENT_ATTEMPT"
+  | "TRANSFER_ID_CONFLICT"
+  | "LIGHTNING_PAYMENT_FAILED"
+  | "PREIMAGE_MISMATCH"
+  // Environment and services
+  | "SPARK_UNAVAILABLE"
+  | "SPARK_REFUSED"
+  | "SERVICE_UNAVAILABLE"
+  | "SERVICE_RESPONSE_INVALID"
+  | "PRICE_UNAVAILABLE"
+  | "PRIVACY_NOT_APPLIED"
+  | "STORAGE_ERROR"
+  | "BAD_CONFIG"
+  | "POLICY_NOT_LOADED"
+  | "NO_SEED"
+  | "NO_PASSPHRASE"
+  | "BAD_PASSPHRASE"
+  | "SEED_FILE_INVALID"
+  | "SDK_UNSUPPORTED"
+  | "EEXIST"
+  // The recovery backup (mostly reported through vaultHealth(), not thrown)
+  | "LEAF_VAULT_FATAL"
+  | "LEAF_VAULT_ANCHORLESS"
+  | "LEAF_VAULT_PATH_CONFLICT"
+  | "LEAF_VAULT_CORRUPT"
+  | "LEAF_VAULT_INCOMPLETE"
+  | "LEAF_VAULT_STALE";
+
+/**
+ * An error this package raised: its own class (Error, TypeError, an SDK error
+ * annotated in place, PaymentCommittedError, …) plus the contract fields.
+ * Decide on `retryable`, act on `nextStep`; the message is for people.
+ */
+export interface AgentError<C extends AgentErrorCode = AgentErrorCode> extends Error {
+  code: C;
+  retryable: Retryable;
+  /** One sentence saying what to do next, with method names. */
+  nextStep: string;
+  /** BAD_INPUT and other input refusals: the argument or option at fault. */
+  field?: string;
+  /** STORAGE_ERROR, DEDUP_ENTRY_UNREADABLE, CONCURRENT_PAYMENT_ATTEMPT: the OS error code (EACCES, EEXIST, …); the OS error itself is `cause`. */
+  osCode?: string;
+  /** The Lightning send this is about: check it with agent.getLightningSendRequest(sendId). */
+  sendId?: string;
+  /** The invoice's payment hash (hex). */
+  invoiceHash?: string;
+  /** PAYMENT_COMMITTED: why (PaymentCommittedError lists the values). */
+  reason?: string;
+  /** LIGHTNING_PAYMENT_FAILED: the send's final status. SERVICE_RESPONSE_INVALID, and PAYMENT_COMMITTED with reason L402_PASS_REFUSED: the HTTP status. */
+  status?: string | number;
+  /** LIGHTNING_PAYMENT_FAILED: true only when the sats are back (USER_SWAP_RETURNED, the one retryable "yes" case). */
+  fundsReturned?: boolean;
+  /** L402_TOO_MANY_HELD: the unresolved purchases, by method, host and path only. */
+  held?: Array<{ method: string; host: string; path: string }>;
+  /** INVOICE_REFUSED: each refused invoice and why. */
+  invalidInvoices?: Array<{ invoice: string; reason: string }>;
+  /** SPEND_BUDGET_EXCEEDED: the budget decision that refused the spend. */
+  check?: SpendBudgetCheck;
+  /** LEAF_VAULT_ANCHORLESS: the leaves the exit tool can't fee-bump. */
+  anchorless?: string[];
+  /** PRICE_UNAVAILABLE: the sources that failed. PAYMENT_COMMITTED from fulfillInvoice: the invoices whose outcome is unknown. */
+  failed?: Array<{ name: string; error: string }> | Array<{ invoice: string | undefined; reason: string }>;
+}
+
+/** A registry entry: the code's default `retryable` and `nextStep`. */
+export interface AgentErrorDefaults {
+  readonly retryable: Retryable;
+  readonly nextStep: string;
+  /** The less safe values a call site may set for this code (an exception the registry names). */
+  readonly lowerAllowed?: readonly Retryable[];
+}
+
+/** The registry: every code, with its default retryable and nextStep. Agents read err.retryable, not this table. */
+export const AGENT_ERRORS: Readonly<Record<AgentErrorCode, AgentErrorDefaults>>;
+
+/** The three values of `retryable`, least safe first. */
+export const RETRYABLE_VALUES: readonly Retryable[];
+
+/** What SparkAgent.status() can report in `problems`, most severe first. These are not errors: nothing throws them. */
+export type StatusProblemCode =
+  // Blocking: status().usable is false
+  | "AGENT_CLOSED"
+  | "SPARK_UNREACHABLE"
+  | "NETWORK_MISMATCH"
+  // Degraded: the agent works, with this caveat
+  | "SPEND_LEDGER_MISSING"
+  | "SPEND_LEDGER_BAD_SIGNATURE"
+  | "SPEND_LEDGER_UNREADABLE"
+  | "SPARK_STREAM_DOWN"
+  | "INCOMING_UNCLAIMED"
+  | "BALANCE_LOCKED"
+  | "LIGHTNING_UNREACHABLE"
+  | "BACKUP_BROKEN"
+  | "BACKUP_STALE"
+  | "PRIVACY_OFF"
+  | "BUDGET_EXHAUSTED";
+
+/** Each status() problem: whether it makes the agent unusable, and the nextStep status() gives for it. Key order is severity. */
+export const STATUS_PROBLEMS: Readonly<Record<StatusProblemCode, Readonly<{ blocking: boolean; nextStep: string }>>>;
+
+export interface AnnotateErrorOptions {
+  /** A SAFER value than the registry's default (yes → no → check-first), or one the entry allows. */
+  retryable?: Retryable;
+  /** A more specific sentence than the registry's. */
+  nextStep?: string;
+  /** Any other key is a fact set on the error (field, osCode, sendId, invoiceHash, …). */
+  [fact: string]: unknown;
+}
+
+/**
+ * Add the contract fields to an error, of any class, in place, and return it:
+ * `throw annotateError(new Error("…"), "BAD_INPUT", { field: "amount" })`.
+ * Class, message, stack and cause stay as they are. Something that isn't an
+ * extensible object (a thrown string, a frozen error) comes back wrapped in a
+ * new Error with it as `cause`. Under test an unregistered code, or a less
+ * safe retryable, throws.
+ */
+export function annotateError<E extends Error>(err: E, code: AgentErrorCode, options?: AnnotateErrorOptions): E & AgentError;
+export function annotateError(err: unknown, code: AgentErrorCode, options?: AnnotateErrorOptions): Error & AgentError;
+
 /**
  * Money has left, or may have. SparkAgent's money-moving methods throw it when
  * an SDK error doesn't prove nothing was sent (transfer, payLightningInvoice,
@@ -534,27 +699,51 @@ export function listReferences(): Promise<string[]>;
  * memory for the next call to the same URL) or the payment is still open
  * (`settled: null`). Never pay again with a new invoice, address or method;
  * check agent.getTransfers() first (token sends: agent.getTokenTransactions()).
- * A fetchL402 error may carry `reason`: L402_PASS_REFUSED, L402_PASS_EXPIRED or
- * L402_NO_PROOF, after which that agent won't buy the URL again on its own.
- * Never a preimage on it; `cause` is the SDK's own error, whose message can
- * quote the invoice.
+ * Always retryable "check-first"; `nextStep` says what to check for this case.
+ * A fetchL402 error may carry `reason`: L402_PASS_REFUSED, L402_PASS_EXPIRED,
+ * L402_INVOICE_EXPIRED or L402_NO_PROOF, after which that agent won't buy the
+ * URL again on its own. Never a preimage on it; `cause` is the SDK's own
+ * error, whose message can quote the invoice.
  */
-export class PaymentCommittedError extends Error {
+export class PaymentCommittedError extends Error implements AgentError<"PAYMENT_COMMITTED"> {
+  constructor(
+    message: string,
+    options?: { settled?: true | null; op?: string; invoiceHash?: string; sendId?: string; cause?: unknown; nextStep?: string },
+  );
   code: "PAYMENT_COMMITTED";
+  retryable: "check-first";
+  nextStep: string;
   settled: true | null;
   op?: string;
   invoiceHash?: string;
   sendId?: string;
-  /** Set on fetchL402's errors, for callers of the earlier shape. */
-  paid?: true;
+  /**
+   * fetchL402 and withdraw: true, for callers of the earlier shape.
+   * fulfillInvoice: the invoices of the batch that did go through.
+   */
+  paid?: true | Array<{ invoice: string; id: string | undefined }>;
+  /** fulfillInvoice: the invoices whose outcome is unknown, and why. */
+  failed?: Array<{ invoice: string | undefined; reason: string }>;
   /**
    * fetchL402: why this agent stopped buying the URL (forgetL402 lifts it).
    * payLightningInvoice: INVOICE_EXPIRED_AFTER_ATTEMPT when it refused an expired invoice
-   * that an earlier attempt, on record in the dedup store, may already have paid.
+   * that an earlier attempt, on record in the dedup store, may already have paid;
+   * EARLIER_ATTEMPT_OPEN when the operators refused this attempt because an earlier
+   * payment of the same invoice is still open (nothing new was sent).
    */
-  reason?: "L402_PASS_REFUSED" | "L402_PASS_EXPIRED" | "L402_INVOICE_EXPIRED" | "L402_NO_PROOF" | "INVOICE_EXPIRED_AFTER_ATTEMPT";
+  reason?:
+    | "L402_PASS_REFUSED"
+    | "L402_PASS_EXPIRED"
+    | "L402_INVOICE_EXPIRED"
+    | "L402_NO_PROOF"
+    | "INVOICE_EXPIRED_AFTER_ATTEMPT"
+    | "EARLIER_ATTEMPT_OPEN";
   /** fetchL402 with reason L402_PASS_REFUSED: the HTTP status that refused the pass. */
   status?: number;
+  /** fetchL402, a stopped purchase: the price it paid, in sats. */
+  amountSats?: number;
+  /** fetchL402, paid but no preimage yet: the service's token (not a working pass without the preimage). */
+  macaroon?: string;
 }
 /** True only when a failed SDK call proves no funds left (an allowlisted pre-send SparkValidationError). */
 export function provesNothingSent(err: unknown): boolean;

@@ -24,6 +24,7 @@ Teaches Claude Code how to give AI agents Bitcoin capabilities using the Spark L
 
 ```
 lib/
+  agent-errors.js                     # error-code registry: every error carries code + retryable (yes/no/check-first) + nextStep
   atomic-file.js                      # the one atomic writer (temp+fsync+link/rename+dir-fsync)
   encrypted-seed.js                   # scrypt + AES-256-GCM seed file helper
   leaf-vault.js                       # SDK-free recovery-bundle persistence + shape validation
@@ -56,6 +57,7 @@ skills/
       payment-flow.js
       token-operations.js
       spark-agent.js
+      spark-agent.d.ts                # types for the ./agent export: every method tagged @sideEffect read|receive|spend + its @throws codes
       l402-paywalls.js
     evals/                            # Skill-quality evals (does the skill make Claude produce correct/safe code?)
       evals.json                      # Output evals: SDK-correctness + security-behavior + user-story (graded on the reply), with checkable assertions

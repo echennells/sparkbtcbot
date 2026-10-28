@@ -119,9 +119,12 @@ async function fetchWithL402(wallet, url, options = {}) {
   console.log(`Invoice amount: ${amountSats} sats`);
 
   // Bound the AMOUNT, not just the routing fee — a malicious/compromised paywall
-  // can demand an arbitrarily large invoice. Raise maxAmountSats for pricier resources.
+  // can demand an arbitrarily large invoice. maxAmountSats is the price the user approved:
+  // raise it for a pricier resource only on their say-so.
   const amtCheck = checkL402Amount({ amountSats, maxAmountSats });
-  if (!amtCheck.ok) throw new Error(`L402 payment blocked: ${amtCheck.reason}. Raise maxAmountSats to override.`);
+  if (!amtCheck.ok) {
+    throw new Error(`L402 payment blocked: ${amtCheck.reason}; nothing was paid. The server's price is not approval: raise maxAmountSats only if the user approves this price.`);
+  }
 
   // Step 4: Pay the invoice. Fee cap comes from the LIBRARY, not an inline
   // formula — the lib's floor is 25 because a live 4,464-sat payment carried a
@@ -152,7 +155,7 @@ async function fetchWithL402(wallet, url, options = {}) {
         break;
       }
       if (status?.status === "LIGHTNING_PAYMENT_FAILED") {
-        throw new Error("L402 payment failed");
+        throw new Error("L402 payment failed: the service wasn't paid, but the sats may still be locked; check the balance before paying again");
       }
     }
   }

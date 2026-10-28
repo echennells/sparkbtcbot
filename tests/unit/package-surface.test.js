@@ -86,6 +86,11 @@ describe("published package surface (npm pack → consumer import)", () => {
     await access(join(installed, "skills/sparkbtcbot/scripts/spark-agent.js"));
     await access(join(installed, "skills/sparkbtcbot/scripts/cli.js"));
     await access(join(installed, "lib/index.js"));
+    // and every type declaration the exports map names (./agent's, lib's)
+    for (const conditions of Object.values(pkg.exports)) {
+      if (typeof conditions === "object" && conditions.types) await access(join(installed, conditions.types));
+    }
+    await access(join(installed, "skills/sparkbtcbot/scripts/spark-agent.d.ts"));
   });
 
   it("every specifier and named symbol the docs tell an agent to import resolves from a consumer project", async () => {

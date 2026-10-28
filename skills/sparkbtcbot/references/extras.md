@@ -39,7 +39,7 @@ const valid = secp256k1.verify(
 
 ## Event Listeners
 
-The wallet emits events for real-time updates. Useful for agents that need to react to incoming payments.
+The wallet emits events for real-time updates. Useful for agents that need to react to incoming payments, with one gap: `transfer:claimed` (and `agent.onTransferReceived`, which wraps it) fires only for payments claimed while the wallet is connected. The SDK also claims as the wallet opens and as its stream reconnects, without emitting (REGTEST, 2026-10-28), so a bot that acknowledges payments from this event misses every one made while it was offline. After boot, read `getTransfers()` for those, and `getBalance()`'s `incomingSats` for any still being claimed (`references/agent-class.md` → Receiving).
 
 ```javascript
 wallet.on("transfer:claimed", (transferId, balance) => {

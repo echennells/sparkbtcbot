@@ -34,7 +34,8 @@ import { ensureWalletPrivacy, privacyPreferenceFromEnv } from "../../../lib/wall
 import { enableLeafVault } from "./leaf-vault.js";
 import { sparkWalletOptions } from "../../../lib/wallet-options.js";
 import { l402TokenExpiry } from "../../../lib/l402-token.js";
-import { PaymentCommittedError, provesNothingSent } from "../../../lib/payment-outcome.js";
+import { PaymentCommittedError, provesNothingSent, preSendCode, classifySdkError } from "../../../lib/payment-outcome.js";
+import { annotateError, isConnectionFailure, STATUS_PROBLEMS } from "../../../lib/agent-errors.js";
 
 // Best-effort BOLT11 amount in sats (undefined for amountless invoices or on a
 // decode error) — used to size the amount-aware Lightning fee cap. Delegates to
@@ -52,9 +53,13 @@ function invoiceAmountSats(bolt11) {
 function rejectUnknownOptions(method, rest) {
   const unknown = Object.keys(rest);
   if (unknown.length) {
-    throw new Error(
-      `SparkAgent.${method}: unknown option(s) [${unknown.join(", ")}] — refusing a money-moving call ` +
-      `with options that would be silently ignored. Check the spelling against references/agent-class.md.`,
+    throw annotateError(
+      new Error(
+        `SparkAgent.${method}: unknown option(s) [${unknown.join(", ")}] — refusing a money-moving call ` +
+        `with options that would be silently ignored. Check the spelling against references/agent-class.md.`,
+      ),
+      "BAD_INPUT",
+      { field: unknown.join(", ") },
     );
   }
 }
@@ -71,16 +76,62 @@ function requireNumericOption(method, name, value) {
   if (value === undefined || value === null) return undefined;
   const n = Number(value);
   if (!Number.isFinite(n)) {
-    throw new Error(
-      `SparkAgent.${method}: ${name} must be a number, got ${JSON.stringify(value)} — ` +
-      `an unreadable ceiling silently disables the guard it's meant to set.`,
+    throw annotateError(
+      new Error(
+        `SparkAgent.${method}: ${name} must be a number, got ${JSON.stringify(value)} — ` +
+        `an unreadable ceiling silently disables the guard it's meant to set.`,
+      ),
+      "BAD_INPUT",
+      { field: name },
     );
   }
   return n;
 }
 
+// The contract fields (lib/agent-errors.js) on an error raised here: input
+// mistakes carry BAD_INPUT and the option or argument they name.
+const badInput = (err, field, extra) => annotateError(err, "BAD_INPUT", { field, ...extra });
+
+// An SDK call that moves no money (a read, a receive, a quote, or a fee
+// estimate before any send): its error is classified in place —
+// SPARK_UNAVAILABLE only for a connection failure, otherwise SPARK_REFUSED or
+// the pre-send code its message names (lib/payment-outcome.js). Compute the
+// arguments BEFORE the call, so this sees only the SDK's own errors.
+async function sparkRead(call) {
+  try {
+    return await call();
+  } catch (err) {
+    throw classifySdkError(err);
+  }
+}
+
+// The SDK's coop-exit quote, for getWithdrawalFeeQuote and withdraw (dry run
+// included). Not a pure read: the SDK first selects leaves for the amount, and
+// with no exact set it swaps leaves with the SSP (selectLeavesWithSwap), so a
+// connection lost mid-call can leave value in flight between the wallet and
+// the SSP. Never paid to anyone, but not "nothing moved" either: a connection
+// failure here is SPARK_UNAVAILABLE check-first, not "yes".
+async function withdrawalQuoteRead(call) {
+  try {
+    return await call();
+  } catch (err) {
+    const e = classifySdkError(err);
+    if (e?.code === "SPARK_UNAVAILABLE") {
+      annotateError(e, "SPARK_UNAVAILABLE", {
+        retryable: "check-first",
+        nextStep: "Spark couldn't be reached while pricing the withdrawal, after the SDK may have started a leaf swap with the SSP to fit the amount: nothing was sent to the address, but check getBalance() (lockedSats can stay above 0 for a few minutes) before calling withdraw or getWithdrawalFeeQuote again.",
+      });
+    }
+    throw e;
+  }
+}
+
 // Statuses from the SDK's LightningSendRequestStatus enum that mean the PAYEE
-// WAS NOT PAID, so the payment is over and a fresh attempt is safe. The
+// WAS NOT PAID, so the payment is over. Whether the SATS are back is another
+// question: a Lightning send is a transfer to the SSP locked to the payment
+// hash, and only USER_SWAP_RETURNED says the SSP has returned it; in the
+// others the sats can still be locked (the operators' source, verified
+// 2026-10-28). The SDK declares these statuses and nothing more. The
 // order is CREATED → LIGHTNING_PAYMENT_INITIATED → LIGHTNING_PAYMENT_SUCCEEDED
 // → PREIMAGE_PROVIDED → TRANSFER_COMPLETED. PREIMAGE_PROVIDING_FAILED and
 // TRANSFER_FAILED come AFTER the Lightning payment succeeded: the payee has
@@ -92,14 +143,56 @@ function requireNumericOption(method, name, value) {
 // direction.
 const PAYEE_UNPAID_STATUSES = new Set([
   "USER_TRANSFER_VALIDATION_FAILED", // refused before any payment
-  "LIGHTNING_PAYMENT_FAILED",        // the route failed; the funds come back
-  "PENDING_USER_SWAP_RETURN",
-  "USER_SWAP_RETURNED",              // failed, and the funds were already returned
-  "USER_SWAP_RETURN_FAILED",         // failed; returning the funds failed too
+  "LIGHTNING_PAYMENT_FAILED",        // the route failed; the sats stay locked until the SSP returns them
+  "PENDING_USER_SWAP_RETURN",        // the SSP is returning the sats: still locked
+  "USER_SWAP_RETURNED",              // failed, and the sats are back
+  "USER_SWAP_RETURN_FAILED",         // returning the sats failed: still locked
 ]);
 const PAYEE_MAYBE_PAID_STATUSES = new Set(["PREIMAGE_PROVIDING_FAILED", "TRANSFER_FAILED"]);
 export function isTerminalLightningFailure(status) {
   return typeof status === "string" && PAYEE_UNPAID_STATUSES.has(status);
+}
+
+// The one terminal status that says the sats are back (fundsReturned: true).
+const LIGHTNING_SATS_RETURNED = "USER_SWAP_RETURNED";
+
+// The operators refuse a second live Lightning swap for one payment hash
+// ("preimage request already exists", AlreadyExists) before they create any
+// transfer: THAT attempt sent nothing, but an earlier one for the invoice is
+// still open. The Spark-fallback rail's dedup refusal reads "transfer already
+// exists" instead, and only that one, under an id the store proves was used
+// for this invoice, means settled.
+const PREIMAGE_REQUEST_EXISTS = /preimage request already exists/i;
+const TRANSFER_ALREADY_EXISTS = /transfer already exists/i;
+
+// Whether an error, or one it wraps (originalError, cause), says `re`. The
+// SDK appends the operators' text to its own message, but a wrapper may not.
+function errorSays(err, re) {
+  for (let e = err, i = 0; e !== null && typeof e === "object" && i < 8; e = e.originalError ?? e.cause, i++) {
+    if (re.test(String(e.message ?? ""))) return true;
+  }
+  return false;
+}
+
+// LIGHTNING_PAYMENT_FAILED for a send that ended in a terminal-failure
+// status: the payee was not paid. Only USER_SWAP_RETURNED proves the sats are
+// back (retryable "yes"); in every other status they may still be locked to
+// the SSP, so the next payment for the same thing waits for them.
+function lightningPaymentFailed(status, { sendId, invoiceHash }) {
+  const returned = status === LIGHTNING_SATS_RETURNED;
+  return annotateError(
+    new Error(
+      returned
+        ? `Lightning payment failed (${status}): the payee was not paid and the sats are back, so paying this invoice again is safe.`
+        : `Lightning payment failed (${status}): the payee was not paid, but the sats may stay locked until the SSP returns them. ` +
+          `Check getBalance().lockedSats before paying this invoice again or any other invoice for the same thing.`,
+    ),
+    "LIGHTNING_PAYMENT_FAILED",
+    {
+      status, sendId, invoiceHash, fundsReturned: returned,
+      ...(returned ? { retryable: "yes", nextStep: "The payee was not paid and the sats are back: trying this payment again is safe." } : {}),
+    },
+  );
 }
 
 // What a Lightning payment cost comes from status reads, never from
@@ -234,6 +327,10 @@ function readableTokenTransaction(t, network, me) {
 // left: the SDK locks the coins before the SSP checks the expiry.
 const LIGHTNING_MIN_INVOICE_SECONDS = 30;
 
+// withdraw's exit speeds: the SDK's ExitSpeed values, exactly (it compares
+// them as written).
+const WITHDRAW_SPEEDS = Object.freeze(["FAST", "MEDIUM", "SLOW"]);
+
 // claimDeposit's lookup reads a deposit address's unclaimed UTXOs this many
 // at a time, until it finds the deposit or runs out, and gives up after
 // DEPOSIT_UTXO_MAX_PAGES pages (a server that ignored the offset kept it
@@ -266,15 +363,18 @@ function toSats(value, method, field = "amount") {
   if (value === undefined || value === null) return value;
   if (typeof value === "bigint") {
     if (value < 0n || value > BigInt(Number.MAX_SAFE_INTEGER)) {
-      throw new Error(`SparkAgent.${method}: ${field} ${value} is out of range (0 .. 2^53-1).`);
+      throw badInput(new Error(`SparkAgent.${method}: ${field} ${value} is out of range (0 .. 2^53-1).`), field);
     }
     return Number(value);
   }
   if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) return value;
-  throw new Error(
-    `SparkAgent.${method}: ${field} must be a non-negative integer below 2^53 (number or bigint), got ${
-      typeof value === "number" ? value : typeof value
-    }.`,
+  throw badInput(
+    new Error(
+      `SparkAgent.${method}: ${field} must be a non-negative integer below 2^53 (number or bigint), got ${
+        typeof value === "number" ? value : typeof value
+      }.`,
+    ),
+    field,
   );
 }
 
@@ -311,20 +411,30 @@ function spendLedgerFromEnv(seedCtx = getLoadedSeedContext()) {
   // two copies of lib/ are loaded, or SparkAgent was constructed before the
   // seed was read. All are bugs; none may degrade quietly.
   if (seedFileIsSealed(process.env.SPARK_SEED_PATH || undefined)) {
-    throw new Error(
-      "SparkAgent: the encrypted seed carries a SEALED spending policy, but this process did not " +
-        "receive it — refusing to run with the policy silently unenforced. Open the wallet with " +
-        "loadMnemonicFromEnv() (which reads the policy) before constructing SparkAgent, and make sure " +
-        "only ONE copy of lib/encrypted-seed.js is loaded (import from the npm package, don't mix it " +
-        "with a copied lib/). To remove the policy deliberately, run `npm exec --no -- sparkbtcbot set-policy`.",
+    throw annotateError(
+      new Error(
+        "SparkAgent: the encrypted seed carries a SEALED spending policy, but this process did not " +
+          "receive it — refusing to run with the policy silently unenforced. Open the wallet with " +
+          "loadMnemonicFromEnv() (which reads the policy) before constructing SparkAgent, and make sure " +
+          "only ONE copy of lib/encrypted-seed.js is loaded (import from the npm package, don't mix it " +
+          "with a copied lib/). To remove the policy deliberately, run `npm exec --no -- sparkbtcbot set-policy`.",
+      ),
+      "POLICY_NOT_LOADED",
     );
   }
   if (raw == null || String(raw).trim() === "") return null;
   const budgetSats = Number(raw);
   if (!Number.isFinite(budgetSats) || budgetSats <= 0) {
-    throw new Error(
-      `SPARK_DAILY_BUDGET_SATS is set but is not a positive number of sats: ${JSON.stringify(raw)}. ` +
-        `Fix or unset it — refusing to run with a budget that would be silently ignored.`,
+    throw annotateError(
+      new Error(
+        `SPARK_DAILY_BUDGET_SATS is set but is not a positive number of sats: ${JSON.stringify(raw)}. ` +
+          `Fix or unset it — refusing to run with a budget that would be silently ignored.`,
+      ),
+      "BAD_CONFIG",
+      {
+        field: "SPARK_DAILY_BUDGET_SATS",
+        nextStep: "Ask the user to fix SPARK_DAILY_BUDGET_SATS (a positive whole number of sats) or unset it; don't change it yourself.",
+      },
     );
   }
   return createSpendLedger({ budgetSats, path: process.env.SPARK_SPEND_LEDGER_PATH || undefined });
@@ -351,7 +461,12 @@ function lnDedupFromEnv() {
 // address for it on `network`. Throws on another network's invoice — paying
 // cross-network is never what the caller meant, so fail closed.
 export function sparkInvoiceReceiver(invoice, network) {
-  const decoded = decodeSparkAddress(invoice, network);
+  let decoded;
+  try {
+    decoded = decodeSparkAddress(invoice, network);
+  } catch (err) {
+    throw annotateError(err, "INVOICE_INVALID", { field: "invoice" }); // the SDK's own error, annotated in place
+  }
   return {
     identityPublicKey: decoded.identityPublicKey,
     address: encodeSparkAddress({ identityPublicKey: decoded.identityPublicKey, network }),
@@ -375,12 +490,14 @@ function assertSparkReceiverAllowed(receiver, invoice, allowlist) {
       // not a decodable Spark address — an L1 or malformed line can't match
     }
   }
-  const e = new Error(
-    `Recipient ${receiver.address} (receiver of Spark invoice ${invoice.slice(0, 24)}…) is not in the ` +
-      `allowlist. Add it to ${DEFAULT_ALLOWLIST_PATH} (one address per line) to permit this send.`,
+  throw annotateError(
+    new Error(
+      `Recipient ${receiver.address} (receiver of Spark invoice ${invoice.slice(0, 24)}…) is not in the ` +
+        `allowlist (${DEFAULT_ALLOWLIST_PATH}); nothing was sent. Only the user adds addresses to that file ` +
+        `(one per line). An agent must not edit it or use the raw SDK; ask the user.`,
+    ),
+    "RECIPIENT_NOT_ALLOWED",
   );
-  e.code = "RECIPIENT_NOT_ALLOWED";
-  throw e;
 }
 
 // L402 exchanges a bearer credential (macaroon:preimage) and pays an invoice
@@ -392,13 +509,17 @@ function assertHttpsUrl(method, url) {
   try {
     parsed = new URL(url);
   } catch {
-    throw new Error(`SparkAgent.${method}: invalid URL: ${url}`);
+    throw badInput(new Error(`SparkAgent.${method}: invalid URL: ${url}`), "url");
   }
   const local = parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1" || parsed.hostname === "::1";
   if (parsed.protocol !== "https:" && !local) {
-    throw new Error(
-      `SparkAgent.${method}: refusing a paid request over ${parsed.protocol}// — an L402 exchange ` +
-      `sends a bearer credential and pays an invoice from the response; use https (localhost is exempt).`,
+    throw badInput(
+      new Error(
+        `SparkAgent.${method}: refusing a paid request over ${parsed.protocol}// — an L402 exchange ` +
+        `sends a bearer credential and pays an invoice from the response; use https (localhost is exempt).`,
+      ),
+      "url",
+      { nextStep: "Nothing was paid. Use the service's https:// URL (only localhost may be plain http); never pay over plain http." },
     );
   }
 }
@@ -411,10 +532,13 @@ function assertHttpsUrl(method, url) {
 function toTokenAmount(value, method, field = "amount") {
   if (typeof value === "bigint" && value > 0n) return value;
   if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) return BigInt(value);
-  throw new Error(
-    `SparkAgent.${method}: ${field} must be a positive integer of the token's base units (bigint, or a number below 2^53), got ${
-      typeof value === "bigint" || typeof value === "number" ? String(value) : typeof value
-    }.`,
+  throw badInput(
+    new Error(
+      `SparkAgent.${method}: ${field} must be a positive integer of the token's base units (bigint, or a number below 2^53), got ${
+        typeof value === "bigint" || typeof value === "number" ? String(value) : typeof value
+      }.`,
+    ),
+    field,
   );
 }
 
@@ -426,9 +550,13 @@ function canonicalTokenId(value, network, method) {
     const { tokenIdentifier } = decodeBech32mTokenIdentifier(String(value).trim(), network);
     return encodeBech32mTokenIdentifier({ tokenIdentifier, network });
   } catch {
-    throw new Error(
-      `SparkAgent.${method}: tokenIdentifier ${JSON.stringify(value)} is not a ${network} token identifier ` +
-        "(btkn1… on mainnet, btknrt1… on regtest).",
+    throw badInput(
+      new Error(
+        `SparkAgent.${method}: tokenIdentifier ${JSON.stringify(value)} is not a ${network} token identifier ` +
+          "(btkn1… on mainnet, btknrt1… on regtest).",
+      ),
+      "tokenIdentifier",
+      { nextStep: "Pass this network's token id (btkn1… on MAINNET, btknrt1… on REGTEST), e.g. a key of getBalance().tokens." },
     );
   }
 }
@@ -467,12 +595,23 @@ const L402_MAX_HELD = 1000;
 
 const l402RequestKey = (method, url) => `${String(method).toUpperCase()} ${url}`;
 
+// Every L402 PAYMENT_COMMITTED's nextStep ends with this: a hold or block
+// keeps this agent from buying again only while the process lives.
+const L402_MEMORY_NOTE =
+  "Holds live in memory only: after a restart, check getTransfers() before any fetchL402 for that URL.";
+
 // What fetchL402 throws for a purchase it has stopped on: the service refused
 // the paid pass, the pass died before a doubtful payment settled, or a payment
 // ended with no proof. A PaymentCommittedError, so code that stops on
-// PAYMENT_COMMITTED stops here too; `reason` says which.
-function l402BlockedError(blocked) {
-  const e = new PaymentCommittedError(blocked.message, { settled: blocked.settled, op: "l402", invoiceHash: blocked.invoiceHash, sendId: blocked.sendId });
+// PAYMENT_COMMITTED stops here too; `reason` says which. `nextStep` replaces
+// the default for the call that makes the block (later calls get the default).
+function l402BlockedError(blocked, { nextStep: firstStep } = {}) {
+  const nextStep = firstStep ?? (blocked.reason === "L402_PASS_REFUSED"
+    ? "The service refused a pass this agent paid for: don't pay its new challenge. Check the payment in getTransfers() and take it up with the service using err.invoiceHash; call forgetL402(url) only on the user's say-so."
+    : "Nothing new was paid. Check getTransfers() for the earlier payment; don't buy this resource another way, and call forgetL402(url) only on the user's say-so.");
+  const e = new PaymentCommittedError(blocked.message, {
+    settled: blocked.settled, op: "l402", invoiceHash: blocked.invoiceHash, sendId: blocked.sendId, nextStep: `${nextStep} ${L402_MEMORY_NOTE}`,
+  });
   e.reason = blocked.reason;
   if (blocked.status !== undefined) e.status = blocked.status;
   if (blocked.amountSats != null) e.amountSats = blocked.amountSats;
@@ -485,6 +624,66 @@ const forgetHint = (method) => {
   const m = String(method).toUpperCase();
   return `agent.forgetL402(url${m === "GET" ? "" : `, { method: "${m}" }`})`;
 };
+
+// What fetchL402 throws when a payment failed (the service wasn't paid) but
+// its sats may still be locked to the SSP. The purchase stays held on the
+// send's id, so the next call reads the send instead of buying a fresh
+// invoice, and buys again on its own only once the send reads
+// USER_SWAP_RETURNED. That is all it promises: the SSP can leave a refunded
+// send at LIGHTNING_PAYMENT_FAILED (the SDK's own integration test accepts
+// either), so past that the hold lifts only on the user's say-so.
+// `earlier`: the failed payment was made by an earlier call.
+function l402FailedHeldError({ host, path, method, status, sendId, invoiceHash, cause, earlier }) {
+  return annotateError(
+    new Error(
+      `L402: ${earlier ? "the earlier payment" : "the payment"} for ${host}${path} failed (${status}), so the service was ` +
+        `not paid, but its sats may still be locked until the SSP returns them.${earlier ? " Nothing new was paid." : ""} ` +
+        `This agent buys ${host}${path} again on its own only once that send reads USER_SWAP_RETURNED. The SSP can leave ` +
+        `a refunded send at LIGHTNING_PAYMENT_FAILED, so once getBalance().lockedSats no longer holds the sats, ask the ` +
+        `user before ${forgetHint(method)}.`,
+      cause === undefined ? undefined : { cause },
+    ),
+    "LIGHTNING_PAYMENT_FAILED",
+    {
+      status, sendId, invoiceHash, fundsReturned: false,
+      nextStep: `${earlier ? "Nothing new was paid and the" : "The"} service wasn't paid, but the sats may not be back yet: call fetchL402 again later with the same URL and method (it buys again on its own only once the send reads USER_SWAP_RETURNED). If it keeps failing once getBalance().lockedSats no longer holds the sats, call ${forgetHint(method)} only on the user's say-so. ${L402_MEMORY_NOTE}`,
+    },
+  );
+}
+
+// nextSteps for a fetchL402 refused before paying: it has no dryRun, so the
+// price comes from previewL402 and the fee from estimateLightningFee.
+const L402_PRICE_STEP =
+  "Nothing was paid. Check the price with previewL402(url) and ask the user whether to pay it; only on their say-so call again with a higher maxAmountSats.";
+const L402_FEE_STEP =
+  "Nothing was paid. Check the price with previewL402(url) and the fee with estimateLightningFee(invoice), then try later or ask the user whether to allow a higher maxFeeSats; don't raise it yourself.";
+// fetchL402's PAYMENT_COMMITTED while a held purchase can still be finished.
+const L402_RESUME_STEP =
+  "Call fetchL402 again with the same URL and method in this process: it finishes this payment and presents its proof without paying again.";
+
+// The paid-content server's first request failed before any payment. A
+// connection failure is SERVICE_UNAVAILABLE: "yes" for a request that is safe
+// to repeat, "no" for POST/PATCH, which the service may have received. Any
+// other fetch error is the request's own (a bad header or body).
+function serviceFetchFailed(err, method) {
+  if (!isConnectionFailure(err)) return badInput(err, "headers", { nextStep: "Nothing was paid. Fix the request's headers or body and call again." });
+  return L402_REPEATABLE.has(String(method).toUpperCase())
+    ? annotateError(err, "SERVICE_UNAVAILABLE")
+    : annotateError(err, "SERVICE_UNAVAILABLE", {
+      retryable: "no",
+      nextStep: "Nothing was paid, but the service may have received the request: check with the service before sending it again.",
+    });
+}
+
+// The challenge's invoice, decoded; one that doesn't decode is a malformed
+// challenge (the decoder's own error, annotated in place).
+function decodeL402Invoice(decode, invoice) {
+  try {
+    return decode(invoice);
+  } catch (err) {
+    throw annotateError(err, "L402_CHALLENGE_INVALID");
+  }
+}
 
 // A delivered body is data even when it is not the JSON its header claims:
 // after payment, a parse error must not become a reason to pay again.
@@ -524,6 +723,120 @@ export async function parseL402Challenge(response) {
   return { invoice, macaroon };
 }
 
+// --- status() ---
+
+// What status() calls a problem, and how long it waits before calling it one.
+// A stream reconnecting, or sats incoming or locked for a moment, is normal.
+const STATUS_STREAM_DOWN_MS = 30_000;  // not connected this long: SPARK_STREAM_DOWN
+const STATUS_INCOMING_MS = 60_000;     // incoming this long while connected: INCOMING_UNCLAIMED
+const STATUS_LOCKED_MS = 30 * 60_000;  // locked this long: BALANCE_LOCKED
+// Deadlines for status()'s own reads. An operator call otherwise has a 30 s
+// deadline and 3 attempts, and an SSP call retries for 25 s or more.
+const STATUS_READ_TIMEOUT_MS = 10_000;
+const STATUS_LIGHTNING_TIMEOUT_MS = 5_000;
+
+// The sats figures getBalance() and status() report, as strings, from the
+// SDK's satsBalance (bigints):
+//   sats          available: spendable now.
+//   incomingSats  sent to this wallet, ARRIVED, not claimed yet. Never
+//                 "nothing arrived": a payment made while the wallet was closed
+//                 shows here first on the next open, and the SDK claims it
+//                 within about a second of boot. One sent less than about a
+//                 second before boot can stay here until the agent restarts or
+//                 its stream reconnects (REGTEST, 2026-10-28; status() reports
+//                 INCOMING_UNCLAIMED).
+//   lockedSats    owned but not spendable right now: coins in a send or leaf
+//                 swap still in flight, leaves the SDK leaves out while the
+//                 operators disagree about them (both settle within minutes),
+//                 coins locked by a Lightning send the SSP refused after the
+//                 SDK had locked them (an expired invoice on hosted REGTEST),
+//                 and, right after boot, a payment being claimed. Spark's docs:
+//                 "Funds locked in an outgoing transfer can remain in owned
+//                 while being excluded from available."
+function satsFigures({ available, owned, incoming }) {
+  const locked = (owned ?? available) - available;
+  return {
+    sats: available.toString(),
+    incomingSats: (incoming ?? 0n).toString(),
+    lockedSats: (locked > 0n ? locked : 0n).toString(),
+  };
+}
+
+// What status() knows without asking the network, kept from the wallet's
+// events: the state of the SDK's event stream (it has no getter for it), and
+// since when sats have been incoming or locked (balance:update; status()'s own
+// balance reads feed it too). create() hands `events` to the SDK, which
+// attaches them at construction: stream:connected can fire before
+// initialize() resolves, so a listener added afterwards can miss it (REGTEST,
+// 2026-10-28). An agent built around a wallet opened elsewhere can't know the
+// stream's state, so it stays "unknown"; its incoming and locked times count
+// from the first status() call that sees them.
+function walletTracker({ opening = false } = {}) {
+  const s = {
+    spark: opening ? "connecting" : "unknown",
+    downSince: opening ? Date.now() : null, // not connected since (connecting, disconnected)
+    connectedSince: null,
+    incomingSince: null,
+    lockedSince: null,
+  };
+  const big = (v) => (typeof v === "bigint" ? v : Number.isSafeInteger(v) ? BigInt(v) : null);
+  const noteBalance = ({ available, owned, incoming } = {}) => {
+    const avail = big(available);
+    if (avail === null) return;
+    const now = Date.now();
+    const inc = big(incoming) ?? 0n;
+    const locked = (big(owned) ?? avail) - avail;
+    s.incomingSince = inc > 0n ? (s.incomingSince ?? now) : null;
+    s.lockedSince = locked > 0n ? (s.lockedSince ?? now) : null;
+  };
+  // After cleanup() the SDK still emits stream:disconnected; closed stays closed.
+  const set = (spark) => {
+    if (s.spark === "closed") return;
+    s.spark = spark;
+    if (spark === "connected") {
+      s.connectedSince = Date.now();
+      s.downSince = null;
+    } else {
+      s.connectedSince = null;
+      s.downSince ??= Date.now();
+    }
+  };
+  return {
+    state: s,
+    noteBalance,
+    close: () => { s.spark = "closed"; },
+    // The SDK's event names and arguments (SparkWalletEvents).
+    events: {
+      "stream:connected": () => set("connected"),
+      "stream:reconnecting": () => set("connecting"),
+      "stream:disconnected": () => set("disconnected"),
+      "balance:update": noteBalance,
+    },
+  };
+}
+
+// One of status()'s reads, with a deadline: { ok, value, at } or { ok: false,
+// error }, never a rejection. A read still running at the deadline is left to
+// finish with its rejection caught, so it can't surface later as an unhandled
+// one.
+async function statusRead(read, ms) {
+  let timer;
+  const call = (async () => read())();
+  call.catch(() => {});
+  try {
+    const value = await Promise.race([
+      call,
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`no answer within ${ms} ms`)), ms); }),
+    ]);
+    return { ok: true, value, at: Date.now() };
+  } catch (error) {
+    return { ok: false, error };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+const NOT_READ = Object.freeze({ ok: false, skipped: true });
+
 export class SparkAgent {
   #wallet;
   #network;
@@ -539,6 +852,12 @@ export class SparkAgent {
   // or finishes the pending payment, instead of buying another. Memory only —
   // never on disk, in a log, or on an error object — so it ends with the process.
   #l402Held = new Map();
+  // status(): the wallet's stream state and incoming/locked times (create()
+  // replaces this with one that saw the wallet open), whether cleanup() has
+  // run, and the address, so a closed agent can still report it.
+  #track = walletTracker();
+  #closed = false;
+  #address = null;
 
   // seedContext (tests / non-env callers only): overrides the seed-bound
   // policy context normally observed by loadMnemonicFromEnv — shape
@@ -589,17 +908,34 @@ export class SparkAgent {
       (typeof mnemonic === "string" && mnemonic.trim().length > 0) ||
       (mnemonic instanceof Uint8Array && mnemonic.length > 0);
     if (!usable) {
-      throw new Error(
-        "SparkAgent.create: no mnemonic/seed provided — refusing to silently generate a fresh wallet. " +
-          "Load the seed with loadMnemonicFromEnv() (SPARK_PASSPHRASE + ~/.spark/seed.enc), " +
-          "or run `npm run setup` to create a wallet deliberately.",
+      throw badInput(
+        new Error(
+          "SparkAgent.create: no mnemonic/seed provided — refusing to silently generate a fresh wallet. " +
+            "Load the seed with loadMnemonicFromEnv() (SPARK_PASSPHRASE + ~/.spark/seed.enc), " +
+            "or, if no wallet exists yet, ask the user whether to create one now (`npm run setup`); run setup only on their say-so, never on your own initiative.",
+        ),
+        "mnemonic",
+        {
+          nextStep: "Open the wallet with SparkAgent.create(await loadMnemonicFromEnv(), network), so the words never leave the process; if no wallet exists yet, ask the user whether to create one now (setup) and run it only on their say-so, never on your own initiative.",
+        },
       );
     }
-    const { wallet, mnemonic: generated } = await SparkWallet.initialize({
-      mnemonicOrSeed: mnemonic,
-      options: sparkWalletOptions(network, { optimizationOptions: { auto: optimizeLeaves } }),
-    });
+    // Opening a wallet sends nothing (it claims inbound transfers), so an SDK
+    // error is classified like a read's (sparkRead). The tracker's events go
+    // in at construction, before the stream can connect (status()).
+    const track = walletTracker({ opening: true });
+    let opened;
+    try {
+      opened = await SparkWallet.initialize({
+        mnemonicOrSeed: mnemonic,
+        options: sparkWalletOptions(network, { optimizationOptions: { auto: optimizeLeaves }, events: track.events }),
+      });
+    } catch (err) {
+      throw classifySdkError(err); // a BAD_INPUT from sparkWalletOptions passes through as is
+    }
+    const { wallet, mnemonic: generated } = opened;
     const agent = new SparkAgent(wallet, network);
+    agent.#track = track;
     // Surface a broken recovery backup LOUDLY at startup instead of the silent
     // console.error default — the wallet still works, but the operator is told.
     const vaultReady = await agent.#vault?.ready;
@@ -636,7 +972,7 @@ export class SparkAgent {
   //
   // Reads ~/.spark/recipients.allow on every send. If the file is missing
   // or empty, no enforcement. If it contains addresses, the destination
-  // MUST match one of them. Bypass = edit the file. This is a guardrail
+  // MUST match one of them. Bypass = the user edits the file. This is a guardrail
   // against the agent surprising the operator, NOT a defense against a
   // compromised agent — anything with FS access to ~/.spark can edit it.
   async #assertAllowed(address) {
@@ -658,10 +994,18 @@ export class SparkAgent {
       const hint = /^(sp|tsp|sprt)1q/i.test(String(to))
         ? " It looks like a silent payment address, which is an L1 destination: use withdraw({ to, amount })."
         : "";
-      throw new Error(`SparkAgent.${method}: ${JSON.stringify(to)} is not a ${this.#network} Spark address (${err.message}).${hint}`);
+      throw annotateError(
+        new Error(`SparkAgent.${method}: ${JSON.stringify(to)} is not a ${this.#network} Spark address (${err.message}).${hint}`),
+        "RECIPIENT_INVALID",
+        { field: "to" },
+      );
     }
     if (decoded.sparkInvoiceFields && !allowInvoice) {
-      throw new Error(`SparkAgent.${method}: that's a Spark invoice, not an address. Pay it with fulfillInvoice([invoice]).`);
+      throw annotateError(
+        new Error(`SparkAgent.${method}: that's a Spark invoice, not an address. Pay it with fulfillInvoice([{ invoice }]).`),
+        "RECIPIENT_INVALID",
+        { field: "to", nextStep: "Nothing was sent. Pay a Spark invoice with fulfillInvoice([{ invoice }]) instead." },
+      );
     }
   }
 
@@ -673,16 +1017,20 @@ export class SparkAgent {
   // caller gets a PaymentCommittedError instead of an error that invites a
   // retry with a fresh invoice. Before, every SDK error undid the spend, so a
   // loop of timeouts that each may have paid was never counted at all.
+  // The proven case keeps the SDK's error, annotated in place with the code
+  // its message names (INSUFFICIENT_FUNDS, FEE_OVER_LIMIT, …); `next` is the
+  // unknown case's nextStep.
   async #spendFailed(err, spend, { method, op, next, invoiceHash, provable = true }) {
     if (provable && provesNothingSent(err)) {
       await spend.undo().catch(() => {});
-      return err;
+      const { code, field, nextStep } = preSendCode(err);
+      return annotateError(err, code, { field, nextStep });
     }
     return new PaymentCommittedError(
       `SparkAgent.${method}: the outcome is UNKNOWN — the payment may have been sent ` +
       `(${String(err?.message ?? err).slice(0, 200)}). The spend stays counted against the budget. ` +
       `Do NOT pay again with a new invoice, address or method. ${next}`,
-      { settled: null, op, invoiceHash, cause: err },
+      { settled: null, op, invoiceHash, cause: err, nextStep: next },
     );
   }
 
@@ -722,19 +1070,27 @@ export class SparkAgent {
 
   async getIdentity() {
     return {
-      address: await this.#wallet.getSparkAddress(),
-      publicKey: await this.#wallet.getIdentityPublicKey(),
+      address: await this.#sparkAddress(),
+      publicKey: await sparkRead(() => this.#wallet.getIdentityPublicKey()),
     };
+  }
+
+  // This wallet's Spark address (the SDK derives it locally).
+  #sparkAddress() {
+    return sparkRead(() => this.#wallet.getSparkAddress());
   }
 
   // --- Balance ---
 
-  // NOTE: this is CLAIMED Spark balance only. A confirmed L1 deposit that hasn't
-  // been claimed yet is invisible here — call listPendingDeposits() to answer
-  // "did my on-chain deposit arrive?" (kept off this hot path to avoid a deposit-
-  // address query on every balance check).
+  // { sats, incomingSats, lockedSats, tokens }: see satsFigures for what each
+  // sats figure means. incomingSats > 0 (or lockedSats right after boot) is a
+  // payment that has ARRIVED and is being claimed, never "nothing arrived".
+  // NOTE: a confirmed L1 deposit that hasn't been claimed yet is invisible
+  // here — call listPendingDeposits() to answer "did my on-chain deposit
+  // arrive?" (kept off this hot path to avoid a deposit-address query on every
+  // balance check).
   async getBalance() {
-    const { satsBalance, tokenBalances } = await this.#wallet.getBalance();
+    const { satsBalance, tokenBalances } = await sparkRead(() => this.#wallet.getBalance());
     const tokens = Object.fromEntries(
       Array.from(tokenBalances.entries()).map(([id, info]) => [
         id,
@@ -746,21 +1102,14 @@ export class SparkAgent {
         },
       ])
     );
-    // Sats this wallet still owns but can't spend right now: coins in a send
-    // or leaf swap still in flight, leaves the SDK leaves out while the
-    // operators disagree about them (both settle within minutes), and coins
-    // locked by a Lightning send the SSP refused after the SDK had locked them
-    // (an expired invoice on hosted REGTEST). Spark's docs: "Funds locked in
-    // an outgoing transfer can remain in owned while being excluded from
-    // available."
-    const locked = (satsBalance.owned ?? satsBalance.available) - satsBalance.available;
-    return { sats: satsBalance.available.toString(), lockedSats: (locked > 0n ? locked : 0n).toString(), tokens };
+    this.#track.noteBalance(satsBalance);
+    return { ...satsFigures(satsBalance), tokens };
   }
 
   // --- Deposits ---
 
   async getDepositAddress() {
-    return await this.#wallet.getStaticDepositAddress();
+    return await sparkRead(() => this.#wallet.getStaticDepositAddress());
   }
 
   // Confirmed-but-UNCLAIMED L1 deposits at this wallet's deposit addresses:
@@ -780,7 +1129,7 @@ export class SparkAgent {
     const deposits = [];
     for (const [type, address] of await this.#depositAddresses()) {
       // 4th arg excludeClaimed=true -> only UTXOs not yet claimed on Spark
-      const utxos = await this.#wallet.getUtxosForDepositAddress(address, limit, 0, true);
+      const utxos = await sparkRead(() => this.#wallet.getUtxosForDepositAddress(address, limit, 0, true));
       for (const u of utxos) deposits.push({ address, txid: u.txid, vout: u.vout, type });
     }
     return deposits;
@@ -790,8 +1139,8 @@ export class SparkAgent {
   // each address once.
   async #depositAddresses() {
     const [statics, singles] = await Promise.all([
-      this.#wallet.queryStaticDepositAddresses(),
-      this.#wallet.getUnusedDepositAddresses(),
+      sparkRead(() => this.#wallet.queryStaticDepositAddresses()),
+      sparkRead(() => this.#wallet.getUnusedDepositAddresses()),
     ]);
     const seen = new Set();
     const out = [];
@@ -814,7 +1163,7 @@ export class SparkAgent {
     const holds = async (address) => {
       let previous = null;
       for (let page = 0; page < DEPOSIT_UTXO_MAX_PAGES; page++) {
-        const utxos = await this.#wallet.getUtxosForDepositAddress(address, DEPOSIT_UTXO_PAGE, page * DEPOSIT_UTXO_PAGE, true);
+        const utxos = await sparkRead(() => this.#wallet.getUtxosForDepositAddress(address, DEPOSIT_UTXO_PAGE, page * DEPOSIT_UTXO_PAGE, true));
         if (utxos.some((u) => String(u.txid).toLowerCase() === want && Number(u.vout) === vout)) return true;
         if (utxos.length < DEPOSIT_UTXO_PAGE) return false;
         // The same page again means the server ignores the offset: the rest
@@ -825,17 +1174,17 @@ export class SparkAgent {
       }
       throw incomplete(address, `stopped after ${DEPOSIT_UTXO_PAGE * DEPOSIT_UTXO_MAX_PAGES} unclaimed UTXOs`);
     };
-    const incomplete = (address, why) => {
-      const e = new Error(
-        `SparkAgent.claimDeposit: can't tell whether ${txid}:${vout} is at ${address}: ${why}. ` +
-          "Nothing was spent or changed.",
+    const incomplete = (address, why) =>
+      annotateError(
+        new Error(
+          `SparkAgent.claimDeposit: can't tell whether ${txid}:${vout} is at ${address}: ${why}. ` +
+            "Nothing was spent or changed.",
+        ),
+        "DEPOSIT_LOOKUP_INCOMPLETE",
       );
-      e.code = "DEPOSIT_LOOKUP_INCOMPLETE";
-      return e;
-    };
-    const statics = await this.#wallet.queryStaticDepositAddresses();
+    const statics = await sparkRead(() => this.#wallet.queryStaticDepositAddresses());
     for (const address of statics) if (await holds(address)) return "static";
-    for (const address of await this.#wallet.getUnusedDepositAddresses()) {
+    for (const address of await sparkRead(() => this.#wallet.getUnusedDepositAddresses())) {
       if (!statics.includes(address) && (await holds(address))) return "single-use";
     }
     return null;
@@ -848,14 +1197,15 @@ export class SparkAgent {
   // unclaimable, and the SDK has no refund path for them. The static address
   // is claimed through the SSP instead and is unaffected.
   async getSingleUseDepositAddress() {
-    const e = new Error(
-      "SparkAgent.getSingleUseDepositAddress: refused — the Spark operators currently refuse to claim single-use " +
-        "deposits (finalize_deposit_tree_creation UNAVAILABLE), so coins sent to one would be stuck. " +
-        "Use getDepositAddress() (the static, reusable address) instead. To tell payers apart, give each order " +
-        "its own Lightning invoice (createLightningInvoice).",
+    throw annotateError(
+      new Error(
+        "SparkAgent.getSingleUseDepositAddress: refused — the Spark operators currently refuse to claim single-use " +
+          "deposits (finalize_deposit_tree_creation UNAVAILABLE), so coins sent to one would be stuck. " +
+          "Use getDepositAddress() (the static, reusable address) instead. To tell payers apart, give each order " +
+          "its own Lightning invoice (createLightningInvoice).",
+      ),
+      "SINGLE_USE_DEPOSITS_UNAVAILABLE",
     );
-    e.code = "SINGLE_USE_DEPOSITS_UNAVAILABLE";
-    throw e;
   }
 
   // --- Spark Transfers ---
@@ -879,7 +1229,7 @@ export class SparkAgent {
       return {
         dryRun: true,
         operation: "spark_transfer",
-        from: await this.#wallet.getSparkAddress(),
+        from: await this.#sparkAddress(),
         to,
         amount: String(sats),
         unit: "sats",
@@ -907,14 +1257,14 @@ export class SparkAgent {
   async getTransfers(limit = 10, offset = 0, createdAfter, createdBefore) {
     for (const [name, d] of [["createdAfter", createdAfter], ["createdBefore", createdBefore]]) {
       if (d !== undefined && !(d instanceof Date && Number.isFinite(d.getTime()))) {
-        throw new TypeError(`SparkAgent.getTransfers: ${name} must be a Date, got ${JSON.stringify(d)}.`);
+        throw badInput(new TypeError(`SparkAgent.getTransfers: ${name} must be a Date, got ${JSON.stringify(d)}.`), name);
       }
     }
     // The SDK takes one bound or the other, not both.
     if (createdAfter !== undefined && createdBefore !== undefined) {
-      throw new TypeError("SparkAgent.getTransfers: pass createdAfter or createdBefore, not both (the SDK takes one).");
+      throw badInput(new TypeError("SparkAgent.getTransfers: pass createdAfter or createdBefore, not both (the SDK takes one)."), "createdBefore");
     }
-    return await this.#wallet.getTransfers(limit, offset, createdAfter, createdBefore);
+    return await sparkRead(() => this.#wallet.getTransfers(limit, offset, createdAfter, createdBefore));
   }
 
   // This wallet's latest token transactions, NEWEST FIRST, readable (see
@@ -931,15 +1281,19 @@ export class SparkAgent {
   async getTokenTransactions({ tokenIdentifier, limit = 20, ...rest } = {}) {
     rejectUnknownOptions("getTokenTransactions", rest);
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > TOKEN_TX_MAX_LIMIT) {
-      throw new RangeError(`SparkAgent.getTokenTransactions: limit must be a whole number from 1 to ${TOKEN_TX_MAX_LIMIT}, got ${JSON.stringify(limit)}.`);
+      throw badInput(
+        new RangeError(`SparkAgent.getTokenTransactions: limit must be a whole number from 1 to ${TOKEN_TX_MAX_LIMIT}, got ${JSON.stringify(limit)}.`),
+        "limit",
+      );
     }
-    const res = await this.#wallet.queryTokenTransactionsWithFilters({
-      sparkAddresses: [await this.#wallet.getSparkAddress()],
+    const filter = {
+      sparkAddresses: [await this.#sparkAddress()],
       ...(tokenIdentifier !== undefined ? { tokenIdentifiers: [canonicalTokenId(tokenIdentifier, this.#network, "getTokenTransactions")] } : {}),
       pageSize: limit,
       direction: "PREVIOUS",
-    });
-    const me = await this.#wallet.getIdentityPublicKey();
+    };
+    const res = await sparkRead(() => this.#wallet.queryTokenTransactionsWithFilters(filter));
+    const me = await sparkRead(() => this.#wallet.getIdentityPublicKey());
     return [...(res?.tokenTransactionsWithStatus ?? [])].reverse().map((t) => readableTokenTransaction(t, this.#network, me));
   }
 
@@ -947,22 +1301,26 @@ export class SparkAgent {
   // batchTransferTokens returned, readable; null when the operators have none.
   async getTokenTransaction(hash) {
     if (typeof hash !== "string" || !/^[0-9a-fA-F]{64}$/.test(hash)) {
-      throw new TypeError(`SparkAgent.getTokenTransaction: pass the 64-character hex hash a token send returned, got ${JSON.stringify(hash)}.`);
+      throw badInput(
+        new TypeError(`SparkAgent.getTokenTransaction: pass the 64-character hex hash a token send returned, got ${JSON.stringify(hash)}.`),
+        "hash",
+      );
     }
-    const res = await this.#wallet.queryTokenTransactionsByTxHashes([hash.toLowerCase()]);
+    const res = await sparkRead(() => this.#wallet.queryTokenTransactionsByTxHashes([hash.toLowerCase()]));
     const found = res?.tokenTransactionsWithStatus?.[0];
-    return found ? readableTokenTransaction(found, this.#network, await this.#wallet.getIdentityPublicKey()) : null;
+    return found ? readableTokenTransaction(found, this.#network, await sparkRead(() => this.#wallet.getIdentityPublicKey())) : null;
   }
 
   // --- Lightning ---
 
   async createLightningInvoice(amountSats, memo, options = {}) {
-    const request = await this.#wallet.createLightningInvoice({
+    const params = {
       amountSats: toSats(amountSats, "createLightningInvoice"),
       memo,
       expirySeconds: options.expirySeconds || 3600,
       includeSparkAddress: options.includeSparkAddress ?? true,
-    });
+    };
+    const request = await sparkRead(() => this.#wallet.createLightningInvoice(params));
     return request.invoice.encodedInvoice;
   }
 
@@ -978,13 +1336,15 @@ export class SparkAgent {
     const sats = toSats(amountSats, "createTrackedInvoice");
     // An amountless invoice lets the payer pick the amount, and `paid` would
     // then mark a priced order paid for 1 sat.
-    if (!(sats >= 1)) throw new RangeError(`SparkAgent.createTrackedInvoice: amountSats must be at least 1, got ${JSON.stringify(amountSats)}.`);
-    const request = await this.#wallet.createLightningInvoice({
+    if (!(sats >= 1)) {
+      throw badInput(new RangeError(`SparkAgent.createTrackedInvoice: amountSats must be at least 1, got ${JSON.stringify(amountSats)}.`), "amountSats");
+    }
+    const request = await sparkRead(() => this.#wallet.createLightningInvoice({
       amountSats: sats,
       memo,
       expirySeconds,
       includeSparkAddress: false,
-    });
+    }));
     return {
       id: request.id,
       invoice: request.invoice.encodedInvoice,
@@ -1004,8 +1364,8 @@ export class SparkAgent {
   // a new invoice before then could charge the customer twice. `status` is the
   // SSP's own word. null when there is no such invoice.
   async getInvoiceStatus(id) {
-    if (typeof id !== "string" || !id) throw new TypeError("SparkAgent.getInvoiceStatus: pass the id createTrackedInvoice returned.");
-    const request = await this.#wallet.getLightningReceiveRequest(id);
+    if (typeof id !== "string" || !id) throw badInput(new TypeError("SparkAgent.getInvoiceStatus: pass the id createTrackedInvoice returned."), "id");
+    const request = await sparkRead(() => this.#wallet.getLightningReceiveRequest(id));
     if (!request) return null;
     const state = RECEIVE_STATES[request.status] ?? "unknown";
     const expiresAt = request.invoice?.expiresAt ?? null;
@@ -1039,11 +1399,14 @@ export class SparkAgent {
     // validation in spark-sdk through at least 0.14.0), so the wrapper
     // direction at least must fail loud and name both shapes.
     if (typeof bolt11 !== "string") {
-      throw new TypeError(
-        `SparkAgent.payLightningInvoice takes a bare BOLT11 string first — ` +
-        `payLightningInvoice("lnbc...", { maxFeeSats }) — got ${bolt11 === null ? "null" : typeof bolt11}. ` +
-        `The { invoice, ... } object shape belongs to the raw wallet.payLightningInvoice; ` +
-        `the two signatures are not interchangeable.`,
+      throw badInput(
+        new TypeError(
+          `SparkAgent.payLightningInvoice takes a bare BOLT11 string first — ` +
+          `payLightningInvoice("lnbc...", { maxFeeSats }) — got ${bolt11 === null ? "null" : typeof bolt11}. ` +
+          `The { invoice, ... } object shape belongs to the raw wallet.payLightningInvoice; ` +
+          `the two signatures are not interchangeable.`,
+        ),
+        "bolt11",
       );
     }
     rejectUnknownOptions("payLightningInvoice", rest);
@@ -1056,9 +1419,12 @@ export class SparkAgent {
       try {
         explicitTransferId = UUID.parse(transferId).toString();
       } catch {
-        throw new Error(
-          `SparkAgent.payLightningInvoice: transferId must be a UUID string, got ${JSON.stringify(transferId)} — ` +
-          `an unreadable dedup identity would forfeit the retry safety it exists to provide.`,
+        throw badInput(
+          new Error(
+            `SparkAgent.payLightningInvoice: transferId must be a UUID string, got ${JSON.stringify(transferId)} — ` +
+            `an unreadable dedup identity would forfeit the retry safety it exists to provide.`,
+          ),
+          "transferId",
         );
       }
     }
@@ -1073,26 +1439,35 @@ export class SparkAgent {
     // the binding here, before any I/O, and pays over Lightning; preferSpark:
     // false alone is for a caller that needs the preimage (fetchL402).
     if (preferSpark !== undefined && typeof preferSpark !== "boolean") {
-      throw new TypeError(`SparkAgent.payLightningInvoice: preferSpark must be a boolean, got ${JSON.stringify(preferSpark)}.`);
+      throw badInput(new TypeError(`SparkAgent.payLightningInvoice: preferSpark must be a boolean, got ${JSON.stringify(preferSpark)}.`), "preferSpark");
     }
     const hashBound = expectedPaymentHash !== undefined && expectedPaymentHash !== null;
     if (hashBound) {
       if (typeof expectedPaymentHash !== "string" || !/^[0-9a-f]{64}$/i.test(expectedPaymentHash)) {
-        throw new TypeError(
-          `SparkAgent.payLightningInvoice: expectedPaymentHash must be a 64-character hex string, or null for ` +
-          `no binding — got ${JSON.stringify(expectedPaymentHash)}.`,
+        throw badInput(
+          new TypeError(
+            `SparkAgent.payLightningInvoice: expectedPaymentHash must be a 64-character hex string, or null for ` +
+            `no binding — got ${JSON.stringify(expectedPaymentHash)}.`,
+          ),
+          "expectedPaymentHash",
         );
       }
       if (preferSpark === true) {
-        throw new Error(
-          `SparkAgent.payLightningInvoice: preferSpark: true can't be combined with expectedPaymentHash — ` +
-          `a Spark-direct payment ignores the payment hash, so the binding would check nothing.`,
+        throw badInput(
+          new Error(
+            `SparkAgent.payLightningInvoice: preferSpark: true can't be combined with expectedPaymentHash — ` +
+            `a Spark-direct payment ignores the payment hash, so the binding would check nothing.`,
+          ),
+          "preferSpark",
         );
       }
       if (!paymentHashMatches(bolt11, expectedPaymentHash)) {
-        throw new Error(
-          `Payment blocked: the invoice's payment hash (${invoicePaymentHash(bolt11) ?? "none readable"}) is not ` +
-          `expectedPaymentHash (${expectedPaymentHash.toLowerCase()}) — this is not the invoice the checkout issued.`,
+        throw annotateError(
+          new Error(
+            `Payment blocked: the invoice's payment hash (${invoicePaymentHash(bolt11) ?? "none readable"}) is not ` +
+            `expectedPaymentHash (${expectedPaymentHash.toLowerCase()}) — this is not the invoice the checkout issued.`,
+          ),
+          "PAYMENT_HASH_MISMATCH",
         );
       }
     }
@@ -1101,14 +1476,20 @@ export class SparkAgent {
     // would report any preimage as proof (ToB review 2026-10-26). Refuse it.
     const hashCount = invoicePaymentHashCount(bolt11);
     if (hashCount !== null && hashCount !== 1) {
-      throw new Error(
-        `Payment blocked: the invoice carries ${hashCount} payment hashes; a valid BOLT11 invoice has exactly one.`,
+      throw annotateError(
+        new Error(
+          `Payment blocked: the invoice carries ${hashCount} payment hashes; a valid BOLT11 invoice has exactly one.`,
+        ),
+        "INVOICE_INVALID",
       );
     }
     // One hash that isn't 32 bytes reads as no hash at all, and the preimage
     // check would then pass anything (ToB review of 375e6fb..HEAD).
     if (hashCount === 1 && !invoicePaymentHash(bolt11)) {
-      throw new Error("Payment blocked: the invoice's payment hash is not a 32-byte hash, so no preimage could prove this payment.");
+      throw annotateError(
+        new Error("Payment blocked: the invoice's payment hash is not a 32-byte hash, so no preimage could prove this payment."),
+        "INVOICE_INVALID",
+      );
     }
     // An expired invoice can't be paid, but the SDK locks the coins before the
     // SSP says so: on hosted REGTEST (2026-10-26) paying one tied up 303 sats
@@ -1131,18 +1512,28 @@ export class SparkAgent {
             `it is on record (transferId ${earlier.transferId ?? "unreadable"}) that may have gone through. Check ` +
             `agent.getTransfers() before paying a new invoice for the same thing: that would be a second payment. ` +
             `Nothing was sent by this call.`,
-          { settled: null, op: "lightning_pay", invoiceHash: invoicePaymentHash(bolt11) ?? undefined },
+          {
+            settled: null, op: "lightning_pay", invoiceHash: invoicePaymentHash(bolt11) ?? undefined,
+            nextStep: "Nothing was sent by this call, but an earlier attempt to pay this invoice may have gone through: check getTransfers() for it before paying any new invoice for the same thing.",
+          },
         );
         e.reason = "INVOICE_EXPIRED_AFTER_ATTEMPT";
         throw e;
       }
-      const e = new Error(
-        `Payment blocked: the invoice ${when}. Paying it would lock the amount in a transfer the SSP refuses, ` +
-          `with no set time for it to come back. Nothing was sent by this call. Ask the payee for a new invoice, ` +
-          `unless an earlier attempt to pay this one had an unclear outcome: then check agent.getTransfers() first.`,
+      // With the dedup store off there is no record to consult, so an earlier
+      // attempt can't be ruled out: money may have moved, so check first.
+      throw annotateError(
+        new Error(
+          `Payment blocked: the invoice ${when}. Paying it would lock the amount in a transfer the SSP refuses, ` +
+            `with no set time for it to come back. Nothing was sent by this call. Ask the payee for a new invoice, ` +
+            `unless an earlier attempt to pay this one had an unclear outcome: then check agent.getTransfers() first.`,
+        ),
+        "INVOICE_EXPIRED",
+        this.#lnDedup ? {} : {
+          retryable: "check-first",
+          nextStep: "Check getTransfers() first: SPARK_LN_DEDUP is off, so an earlier attempt to pay this invoice can't be ruled out, and a new invoice for the same thing would be a second payment. Nothing was sent by this call.",
+        },
       );
-      e.code = "INVOICE_EXPIRED";
-      throw e;
     }
     const sparkDirect = !hashBound && preferSpark !== false;
     // Validate BEFORE any I/O: a garbage ceiling must throw here, not degrade
@@ -1151,10 +1542,22 @@ export class SparkAgent {
     const maxAmt = requireNumericOption("payLightningInvoice", "maxAmountSats", maxAmountSats) ?? 10_000;
     const amtSats = toSats(amountSats, "payLightningInvoice", "amountSats"); // bigint -> safe-int Number
     const invoiceAmt = invoiceAmountSats(bolt11); // embedded amount; undefined for amountless/undecodable
-    const est = await this.#wallet.getLightningSendFeeEstimate({
+    // An invoice with no amount this can read needs the caller's: say so
+    // before the SSP's fee estimate, which refuses it with an opaque error.
+    if (invoiceAmt === undefined && amtSats === undefined) {
+      throw badInput(
+        new Error(
+          "Payment blocked: the invoice carries no amount this wallet can read, so the amount to pay is unknown. " +
+            "Pass amountSats (the amount agreed with the payee). Nothing was sent.",
+        ),
+        "amountSats",
+        { nextStep: "Nothing was sent. Pass amountSats with the amount agreed with the payee (ask the user if you don't know it) and call again." },
+      );
+    }
+    const est = await sparkRead(() => this.#wallet.getLightningSendFeeEstimate({
       encodedInvoice: bolt11,
       amountSats: amtSats,
-    });
+    }));
     const estimatedFee = lightningEstimateSats(est);
     // The INVOICE wins over the caller's number. For an amount-bearing invoice
     // the SDK pays the embedded amount (it rejects amountSatsToSend for those,
@@ -1164,10 +1567,14 @@ export class SparkAgent {
     // preview would show the operator the wrong number too. Disagreement is a
     // bug or an injected parameter, so refuse rather than silently pick one.
     if (invoiceAmt !== undefined && amtSats !== undefined && amtSats !== invoiceAmt) {
-      throw new Error(
-        `SparkAgent.payLightningInvoice: amountSats (${amountSats}) disagrees with the invoice's ` +
-        `embedded amount (${invoiceAmt} sats). The invoice amount is what gets paid — omit amountSats ` +
-        `for amount-bearing invoices.`,
+      throw annotateError(
+        new Error(
+          `SparkAgent.payLightningInvoice: amountSats (${amountSats}) disagrees with the invoice's ` +
+          `embedded amount (${invoiceAmt} sats). The invoice amount is what gets paid — omit amountSats ` +
+          `for amount-bearing invoices.`,
+        ),
+        "AMOUNT_MISMATCH",
+        { field: "amountSats" },
       );
     }
     const amt = invoiceAmt ?? amtSats;
@@ -1178,7 +1585,8 @@ export class SparkAgent {
     // Amount ceiling: the fee cap alone CANNOT stop an induced full-balance send
     // (routing ~0.25% always fits a 0.5% fee cap), so bound the AMOUNT too — the
     // same guard the L402 path uses. Fails closed on an amountless/undecodable
-    // invoice. Raise maxAmountSats for a genuinely larger send.
+    // invoice. maxAmountSats is what the user agreed to pay: a genuinely
+    // larger send raises it on their say-so, never to fit the invoice.
     const amtCheck = checkL402Amount({ amountSats: amt, maxAmountSats: maxAmt });
     const ok = feeCheck.ok && amtCheck.ok;
     const reason = !amtCheck.ok ? amtCheck.reason : feeCheck.reason;
@@ -1186,7 +1594,7 @@ export class SparkAgent {
       return {
         dryRun: true,
         operation: "lightning_pay",
-        from: await this.#wallet.getSparkAddress(),
+        from: await this.#sparkAddress(),
         invoice: bolt11,
         amount: amt !== undefined ? String(amt) : "<from invoice>",
         unit: "sats",
@@ -1200,8 +1608,23 @@ export class SparkAgent {
       };
     }
     if (!ok) {
-      const hint = !amtCheck.ok ? "Raise maxAmountSats" : "Raise maxFeeSats";
-      throw new Error(`Lightning send blocked: ${reason}. ${hint} to override.`);
+      // Each ceiling is the user's: the message keeps the option's name for
+      // the developer, and says nothing was sent and who may raise it, since
+      // an agent reads it too (verified 2026-10-28: "Raise maxAmountSats to
+      // override" read as permission to fit the cap to the invoice).
+      const hint = amtCheck.amountSats === null
+        ? "Pass amountSats with the amount agreed with the payee."
+        : !amtCheck.ok
+          ? "maxAmountSats is the most the user agreed to pay: never raise it to fit an invoice. Raise maxAmountSats only on the user's say-so for this payment."
+          : "Show the user the fee; raise maxFeeSats only on their say-so for this payment.";
+      const blocked = new Error(`Lightning send blocked: ${reason}; nothing was sent. ${hint}`);
+      if (amtCheck.ok) {
+        throw annotateError(blocked, "FEE_OVER_LIMIT", {
+          nextStep: "Nothing was sent. Preview the fee with payLightningInvoice(invoice, { dryRun: true }) and try again later, or ask the user whether to allow a higher maxFeeSats; don't raise it yourself.",
+        });
+      }
+      // No readable amount at all is an input problem, not a ceiling.
+      throw amtCheck.amountSats === null ? badInput(blocked, "amountSats") : annotateError(blocked, "AMOUNT_OVER_LIMIT");
     }
     // Resolve the payment's dedup identity BEFORE recording the spend or
     // touching the SDK: one persisted transferId per invoice (write-ahead), so
@@ -1256,27 +1679,54 @@ export class SparkAgent {
         ...(invoiceAmt === undefined && amtSats !== undefined ? { amountSatsToSend: amtSats } : {}),
       });
     } catch (err) {
+      // "preimage request already exists": the operators refused THIS attempt
+      // before creating any transfer, because an earlier payment of this
+      // invoice is still open, its sats locked to the SSP or already paid
+      // out. Not settlement: after a failed payment whose sats were still
+      // being returned, reading it as settled told the user an unpaid invoice
+      // was paid (verified 2026-10-28). Nothing was sent, so a dedup id this
+      // attempt minted is dropped and the spend undone (the earlier attempt
+      // counted its own), and another invoice for the same purchase must wait.
+      if (errorSays(err, PREIMAGE_REQUEST_EXISTS)) {
+        await forgetIfMinted();
+        await spend.undo().catch(() => {});
+        const e = new PaymentCommittedError(
+          `SparkAgent.payLightningInvoice: an earlier payment of this invoice is still open (its sats locked to the ` +
+            `SSP, or already paid out), so the operators refused a second one. Nothing new was sent. Check ` +
+            `agent.getBalance().lockedSats, and agent.getLightningSendRequest(id) for that send or agent.getTransfers(); ` +
+            `don't pay another invoice for this purchase yet: ` +
+            `if the earlier payment completes, that would be a second payment.`,
+          {
+            settled: null, op: "lightning_pay", invoiceHash: invoicePaymentHash(bolt11) ?? undefined, cause: err,
+            nextStep: "Nothing new was sent, but an earlier payment of this invoice is still open (sats locked or paid): check getBalance().lockedSats, and getLightningSendRequest(id) for that send or getTransfers(), and don't pay this invoice or another for the same thing until it has resolved.",
+          },
+        );
+        e.reason = "EARLIER_ATTEMPT_OPEN";
+        throw e;
+      }
       // AlreadyExists on a KNOWN retry (the store proved this id was already
       // used for THIS invoice) is proof of settlement, not failure — the
       // Spark-fallback rail dedupes via a DB uniqueness constraint and
       // surfaces it as a raw gRPC error that reads as the opposite of what
       // happened (2026-08-31 live QA + ToB sharp-edges F1). Translate it
-      // HERE, where the wrapper holds the proof. This attempt's spend entry
+      // HERE, where the wrapper holds the proof, and only on that rail's
+      // signature ("transfer already exists"). This attempt's spend entry
       // is a duplicate — the attempt that paid recorded it — so it is undone.
       // A non-reused AlreadyExists (store deleted between attempts?) is a
       // state we can't vouch for, so it falls through to "outcome unknown".
-      if (resolved?.reused && /already\s?exists/i.test(String(err?.message ?? ""))) {
+      if (resolved?.reused && errorSays(err, TRANSFER_ALREADY_EXISTS)) {
         await spend.undo().catch(() => {});
-        const settled = new Error(
-          `SparkAgent.payLightningInvoice: this invoice's payment ALREADY SETTLED — the operators ` +
-          `refused a second transfer under the recorded transferId (${resolved.transferId}). This is ` +
-          `dedup working, not a failed payment. Do NOT retry on any rail or by any path: not with a ` +
-          `fresh invoice (a new payment hash escapes dedup = a real second payment) and not via the ` +
-          `raw SDK. Verify via the balance delta or transfer list.`,
+        throw annotateError(
+          new Error(
+            `SparkAgent.payLightningInvoice: this invoice's payment ALREADY SETTLED — the operators ` +
+            `refused a second transfer under the recorded transferId (${resolved.transferId}). This is ` +
+            `dedup working, not a failed payment. Do NOT retry on any rail or by any path: not with a ` +
+            `fresh invoice (a new payment hash escapes dedup = a real second payment) and not via the ` +
+            `raw SDK. Verify via the balance delta or transfer list.`,
+            { cause: err },
+          ),
+          "PAYMENT_ALREADY_SETTLED",
         );
-        settled.code = "PAYMENT_ALREADY_SETTLED";
-        settled.cause = err;
-        throw settled;
       }
       if (provesNothingSent(err)) await forgetIfMinted();
       throw await this.#spendFailed(err, spend, {
@@ -1335,22 +1785,22 @@ export class SparkAgent {
 
 
   async estimateLightningFee(bolt11, amountSats) {
-    return await this.#wallet.getLightningSendFeeEstimate({
-      encodedInvoice: bolt11,
-      amountSats: toSats(amountSats, "estimateLightningFee"),
-    });
+    const params = { encodedInvoice: bolt11, amountSats: toSats(amountSats, "estimateLightningFee") };
+    return await sparkRead(() => this.#wallet.getLightningSendFeeEstimate(params));
   }
 
   // payLightningInvoice can return LIGHTNING_PAYMENT_INITIATED before the
   // preimage exists; poll the send request by id until it appears or fails.
   async getLightningSendRequest(id) {
-    return await this.#wallet.getLightningSendRequest(id);
+    return await sparkRead(() => this.#wallet.getLightningSendRequest(id));
   }
 
   // Pay a BOLT11 and wait for the settlement preimage — the proof-of-payment
   // that merchant policy says to log. Wraps the LIGHTNING_PAYMENT_INITIATED
-  // poll loop every merchant purchase otherwise re-implements. Throws on
-  // LIGHTNING_PAYMENT_FAILED. A Spark-direct payment returns at once with
+  // poll loop every merchant purchase otherwise re-implements. Throws
+  // LIGHTNING_PAYMENT_FAILED when the send ends with the payee unpaid; its
+  // fundsReturned says whether the sats are back yet (true only for
+  // USER_SWAP_RETURNED, the one "yes" retry). A Spark-direct payment returns at once with
   // { settled: true, sparkDirect: true, paymentPreimage: null }: the payee has
   // the money, and there is no Lightning proof to wait for.
   // On poll exhaustion returns { settled: false }:
@@ -1365,10 +1815,13 @@ export class SparkAgent {
   // (live-validated, one debit either way): the Lightning rail REPLAYS the
   // original result (same id + preimage, reads as success); the Spark-fallback
   // rail THROWS "AlreadyExists ... transfer already exists" — which means
-  // ALREADY PAID, not failed. On AlreadyExists the payment is settled: do not
+  // ALREADY PAID, not failed. On that AlreadyExists the payment is settled: do not
   // retry on any rail, by ANY path — not via a fresh invoice (new payment
   // hash = new dedup entry = a real second payment) and not via the raw SDK
-  // (bypasses the store). Confirm via the balance/transfer list.
+  // (bypasses the store). Confirm via the balance/transfer list. The other
+  // AlreadyExists, "preimage request already exists", means an earlier
+  // payment of this invoice is still open, locked or paid: PAYMENT_COMMITTED
+  // with reason EARLIER_ATTEMPT_OPEN (payLightningInvoice).
   async payAndSettle(bolt11, { pollMs = 2000, maxPolls = 30, ...payOptions } = {}) {
     const sent = {}; // filled by payLightningInvoice: { amountSats, capSats }
     const result = await this.payLightningInvoice(bolt11, { ...payOptions, [LN_SETTLING]: sent });
@@ -1402,23 +1855,27 @@ export class SparkAgent {
           `SparkAgent.payAndSettle: the payment ended in ${status.status}, after the Lightning payment ` +
           `succeeded, so the payee may already have been paid. Do NOT pay again with a new invoice or method; ` +
           `check agent.getTransfers(). Retrying THIS invoice through payLightningInvoice is deduped.`,
-          { settled: null, op: "lightning_pay", sendId: result.id, invoiceHash: invoicePaymentHash(bolt11) ?? undefined },
+          {
+            settled: null, op: "lightning_pay", sendId: result.id, invoiceHash: invoicePaymentHash(bolt11) ?? undefined,
+            nextStep: "The payee may have been paid: check getTransfers() or getLightningSendRequest(err.sendId); only ever re-call payLightningInvoice with this same invoice, never a new one.",
+          },
         );
       } else if (isTerminalLightningFailure(status?.status)) {
         // Distinguishing a DEFINITIVE failure from a slow settle is what makes
         // the never-retry-on-timeout rule safe: a failed-and-refunded payment
         // that merely timed out would otherwise look pending forever, and the
         // rule would forbid the retry that is actually correct.
+        // The payee was not paid, but only USER_SWAP_RETURNED says the sats
+        // are back; in the other statuses they can still be locked to the SSP
+        // (the SDK has no terminal-status logic of its own), so the error says
+        // which (lightningPaymentFailed).
         // The dead transferId must not outlive the failure: kept, it makes a
-        // legitimate re-pay of the still-valid invoice replay the failure (or
-        // hit AlreadyExists, which the docs then read as "already paid") —
-        // ToB sharp-edges F5. The SDK marked this TERMINAL (funds failed or
-        // returned), so a fresh id on the next attempt is the correct state.
+        // legitimate re-pay of the still-valid invoice replay the failure —
+        // ToB sharp-edges F5. Dropping it can't pay twice: while the sats are
+        // still locked, the operators refuse a re-pay under a fresh id
+        // ("preimage request already exists", reported as EARLIER_ATTEMPT_OPEN).
         if (this.#lnDedup) await this.#lnDedup.forget(bolt11);
-        const failed = new Error(`Lightning payment failed (${status.status})`);
-        failed.code = "LIGHTNING_PAYMENT_FAILED";
-        failed.status = status.status;
-        throw failed;
+        throw lightningPaymentFailed(status.status, { sendId: result.id, invoiceHash: invoicePaymentHash(bolt11) ?? undefined });
       }
     }
     // Proof means PROOF: a Lightning preimage settles THIS invoice only if
@@ -1433,11 +1890,15 @@ export class SparkAgent {
       if (expected) {
         const got = createHash("sha256").update(Buffer.from(preimage, "hex")).digest("hex");
         if (got !== expected) {
-          throw new Error(
-            `SparkAgent.payAndSettle: the returned preimage does NOT hash to this invoice's payment ` +
-            `hash (sha256(preimage) = ${got}, invoice = ${expected}) — refusing to report settled. ` +
-            `This is the signature of a transferId shared with a different payment: THIS invoice was ` +
-            `not paid. Check the transfer list, and never reuse one transferId across invoices.`,
+          throw annotateError(
+            new Error(
+              `SparkAgent.payAndSettle: the returned preimage does NOT hash to this invoice's payment ` +
+              `hash (sha256(preimage) = ${got}, invoice = ${expected}) — refusing to report settled. ` +
+              `This is the signature of a transferId shared with a different payment: THIS invoice was ` +
+              `not paid. Check the transfer list, and never reuse one transferId across invoices.`,
+            ),
+            "PREIMAGE_MISMATCH",
+            { sendId: result.id, invoiceHash: expected },
           );
         }
       }
@@ -1455,18 +1916,16 @@ export class SparkAgent {
   // --- Spark Invoices ---
 
   async createSatsInvoice(amountSats, memo) {
-    return await this.#wallet.createSatsInvoice({
-      amount: toSats(amountSats, "createSatsInvoice"),
-      memo,
-    });
+    const params = { amount: toSats(amountSats, "createSatsInvoice"), memo };
+    return await sparkRead(() => this.#wallet.createSatsInvoice(params));
   }
 
   async createTokenInvoice(tokenIdentifier, amount, memo) {
-    return await this.#wallet.createTokensInvoice({
+    return await sparkRead(() => this.#wallet.createTokensInvoice({
       amount,
       tokenIdentifier,
       memo,
-    });
+    }));
   }
 
   // Paying a Spark invoice sends real sats/tokens to whoever created it — the
@@ -1477,8 +1936,11 @@ export class SparkAgent {
   async fulfillInvoice(invoices, { dryRun = false, ...rest } = {}) {
     rejectUnknownOptions("fulfillInvoice", rest);
     if (!Array.isArray(invoices)) {
-      throw new Error(
-        "SparkAgent.fulfillInvoice: pass an array of { invoice, amount } entries (see references/spark-invoices.md).",
+      throw badInput(
+        new Error(
+          "SparkAgent.fulfillInvoice: pass an array of { invoice, amount } entries (see references/spark-invoices.md).",
+        ),
+        "invoices",
       );
     }
     const allowlist = await loadRecipientsAllowlist();
@@ -1486,8 +1948,11 @@ export class SparkAgent {
     const entries = invoices.map((entry) => {
       const invoice = entry?.invoice;
       if (typeof invoice !== "string" || !invoice) {
-        throw new Error(
-          "SparkAgent.fulfillInvoice: every entry needs an `invoice` string — refusing to forward an entry whose receiver cannot be checked.",
+        throw badInput(
+          new Error(
+            "SparkAgent.fulfillInvoice: every entry needs an `invoice` string — refusing to forward an entry whose receiver cannot be checked.",
+          ),
+          "invoice",
         );
       }
       const receiver = sparkInvoiceReceiver(invoice, this.#network);
@@ -1503,9 +1968,13 @@ export class SparkAgent {
         const embeddedAmt = embedded.amount == null ? null : BigInt(embedded.amount);
         const callerAmt = entry.amount == null ? null : toTokenAmount(entry.amount, "fulfillInvoice", "entry amount");
         if (embeddedAmt !== null && callerAmt !== null && embeddedAmt !== callerAmt) {
-          throw new Error(
-            `SparkAgent.fulfillInvoice: entry amount (${callerAmt}) disagrees with the invoice's ` +
-              `embedded amount (${embeddedAmt}). Omit the entry amount for amount-bearing invoices.`,
+          throw annotateError(
+            new Error(
+              `SparkAgent.fulfillInvoice: entry amount (${callerAmt}) disagrees with the invoice's ` +
+                `embedded amount (${embeddedAmt}). Omit the entry amount for amount-bearing invoices.`,
+            ),
+            "AMOUNT_MISMATCH",
+            { field: "amount" },
           );
         }
         sdkEntries.push(embeddedAmt === null && callerAmt !== null ? { invoice, amount: callerAmt } : { invoice });
@@ -1514,9 +1983,13 @@ export class SparkAgent {
       const embeddedAmt = embedded?.amount == null ? null : Number(embedded.amount);
       const callerAmt = entry.amount == null ? null : Number(entry.amount);
       if (embeddedAmt !== null && callerAmt !== null && embeddedAmt !== callerAmt) {
-        throw new Error(
-          `SparkAgent.fulfillInvoice: entry amount (${callerAmt}) disagrees with the invoice's ` +
-            `embedded amount (${embeddedAmt}). Omit the entry amount for amount-bearing invoices.`,
+        throw annotateError(
+          new Error(
+            `SparkAgent.fulfillInvoice: entry amount (${callerAmt}) disagrees with the invoice's ` +
+              `embedded amount (${embeddedAmt}). Omit the entry amount for amount-bearing invoices.`,
+          ),
+          "AMOUNT_MISMATCH",
+          { field: "amount" },
         );
       }
       // The SDK gets an amount only for an amountless invoice, as bigint (the
@@ -1535,19 +2008,21 @@ export class SparkAgent {
     // that isn't a positive integer. Same rules the SDK applies, earlier.
     for (const e of entries) {
       const head = `SparkAgent.fulfillInvoice: invoice ${e.invoice.slice(0, 24)}…`;
-      if (e.type === "unknown") throw new Error(`${head} names no payment type (sats or tokens), so it can't be paid.`);
+      if (e.type === "unknown") {
+        throw annotateError(new Error(`${head} names no payment type (sats or tokens), so it can't be paid.`), "INVOICE_INVALID", { field: "invoice" });
+      }
       if (e.amount === "unknown") {
-        throw new Error(`${head} has no amount — pass { invoice, amount } (${e.type === "tokens" ? "token base units, bigint" : "sats"}).`);
+        throw badInput(new Error(`${head} has no amount — pass { invoice, amount } (${e.type === "tokens" ? "token base units, bigint" : "sats"}).`), "amount");
       }
       if (e.type === "sats" && !(Number.isSafeInteger(Number(e.amount)) && Number(e.amount) > 0)) {
-        throw new Error(`${head}: the amount must be a positive integer of sats, got ${e.amount}.`);
+        throw badInput(new Error(`${head}: the amount must be a positive integer of sats, got ${e.amount}.`), "amount");
       }
     }
     if (dryRun) {
       return {
         dryRun: true,
         operation: "fulfill_spark_invoice",
-        from: await this.#wallet.getSparkAddress(),
+        from: await this.#sparkAddress(),
         entries,
         network: this.#network,
       };
@@ -1595,13 +2070,14 @@ export class SparkAgent {
     const invalid = result?.invalidInvoices ?? [];
     if (invalid.length) {
       await spend.undo().catch(() => {});
-      const e = new Error(
-        `SparkAgent.fulfillInvoice: the SDK refused ${invalid.length} invoice(s) before sending anything, so nothing was paid ` +
-          `and the budget is untouched — ${reasons(invalid).slice(0, 400)}`,
+      throw annotateError(
+        new Error(
+          `SparkAgent.fulfillInvoice: the SDK refused ${invalid.length} invoice(s) before sending anything, so nothing was paid ` +
+            `and the budget is untouched — ${reasons(invalid).slice(0, 400)}`,
+        ),
+        "INVOICE_REFUSED",
+        { invalidInvoices: invalid.map((f) => ({ invoice: f.invoice, reason: String(f.error?.message ?? f.error ?? "") })) },
       );
-      e.code = "INVOICE_REFUSED";
-      e.invalidInvoices = invalid.map((f) => ({ invoice: f.invoice, reason: String(f.error?.message ?? f.error ?? "") }));
-      throw e;
     }
     const failed = [...(result?.satsTransactionErrors ?? []), ...(result?.tokenTransactionErrors ?? [])];
     if (failed.length) {
@@ -1613,7 +2089,10 @@ export class SparkAgent {
         `SparkAgent.fulfillInvoice: ${failed.length} invoice(s) failed after sending began, ${paid.length} paid. ` +
           `The failed ones' outcome is UNKNOWN — the whole spend stays counted against the budget. Do NOT pay them ` +
           `again with a new invoice, address or method; check agent.getTransfers() first. ${reasons(failed).slice(0, 400)}`,
-        { settled: null, op: "fulfill_spark_invoice" },
+        {
+          settled: null, op: "fulfill_spark_invoice",
+          nextStep: "Check getTransfers() and getTokenTransactions() for each invoice in err.failed, and pay none of them again until it is confirmed unpaid; err.paid lists the ones that went through.",
+        },
       );
       e.paid = paid;
       e.failed = failed.flatMap((f) =>
@@ -1631,7 +2110,9 @@ export class SparkAgent {
   // PAYMENT_COMMITTED. (The sats budget doesn't count tokens.)
   async transferTokens({ tokenIdentifier, amount, to, dryRun = false, ...rest }) {
     rejectUnknownOptions("transferTokens", rest);
-    if (!to) throw new Error("SparkAgent.transferTokens: `to` (the receiver's Spark address) is required.");
+    if (!to) {
+      throw annotateError(new Error("SparkAgent.transferTokens: `to` (the receiver's Spark address) is required."), "RECIPIENT_INVALID", { field: "to" });
+    }
     const id = canonicalTokenId(tokenIdentifier, this.#network, "transferTokens");
     const units = toTokenAmount(amount, "transferTokens");
     await this.#assertAllowed(to);
@@ -1641,7 +2122,7 @@ export class SparkAgent {
       return {
         dryRun: true,
         operation: "token_transfer",
-        from: await this.#wallet.getSparkAddress(),
+        from: await this.#sparkAddress(),
         to,
         tokenIdentifier: id,
         amount: String(units),
@@ -1676,25 +2157,35 @@ export class SparkAgent {
   async batchTransferTokens(transfers, { dryRun = false, ...rest } = {}) {
     rejectUnknownOptions("batchTransferTokens", rest);
     if (!Array.isArray(transfers) || transfers.length === 0) {
-      throw new Error(
-        "SparkAgent.batchTransferTokens: pass a non-empty array of { tokenIdentifier, tokenAmount, receiverSparkAddress } entries.",
+      throw badInput(
+        new Error(
+          "SparkAgent.batchTransferTokens: pass a non-empty array of { tokenIdentifier, tokenAmount, receiverSparkAddress } entries.",
+        ),
+        "transfers",
       );
     }
     const outputs = transfers.map((t, i) => {
       const { tokenIdentifier, tokenAmount, amount, receiverSparkAddress, to, ...extra } = t ?? {};
       if (receiverSparkAddress !== undefined && to !== undefined && receiverSparkAddress !== to) {
-        throw new Error(`SparkAgent.batchTransferTokens: entry ${i} names two different recipients (receiverSparkAddress and to) — pass one.`);
+        throw badInput(
+          new Error(`SparkAgent.batchTransferTokens: entry ${i} names two different recipients (receiverSparkAddress and to) — pass one.`),
+          "receiverSparkAddress",
+        );
       }
       const receiver = receiverSparkAddress ?? to;
       if (!receiver) {
-        throw new Error(
-          "SparkAgent.batchTransferTokens: every entry needs a recipient (receiverSparkAddress) — " +
-            "refusing to forward an entry whose receiver cannot be checked.",
+        throw annotateError(
+          new Error(
+            "SparkAgent.batchTransferTokens: every entry needs a recipient (receiverSparkAddress) — " +
+              "refusing to forward an entry whose receiver cannot be checked.",
+          ),
+          "RECIPIENT_INVALID",
+          { field: "receiverSparkAddress" },
         );
       }
       rejectUnknownOptions(`batchTransferTokens (entry ${i})`, extra);
       if (tokenAmount !== undefined && amount !== undefined) {
-        throw new Error(`SparkAgent.batchTransferTokens: entry ${i} sets both tokenAmount and amount — pass one.`);
+        throw badInput(new Error(`SparkAgent.batchTransferTokens: entry ${i} sets both tokenAmount and amount — pass one.`), "tokenAmount");
       }
       return {
         tokenIdentifier: canonicalTokenId(tokenIdentifier, this.#network, "batchTransferTokens"),
@@ -1708,7 +2199,7 @@ export class SparkAgent {
       return {
         dryRun: true,
         operation: "token_transfer",
-        from: await this.#wallet.getSparkAddress(),
+        from: await this.#sparkAddress(),
         entries: outputs.map((o) => ({ to: o.receiverSparkAddress, tokenIdentifier: o.tokenIdentifier, amount: String(o.tokenAmount) })),
         totals: tokenTotals(outputs.map((o) => ({ tokenIdentifier: o.tokenIdentifier, amount: o.tokenAmount }))),
         unit: "tokens",
@@ -1751,51 +2242,58 @@ export class SparkAgent {
   async claimDeposit({ txid, vout = 0, maxFeeSats, maxFeePct = 10, dryRun = false, ...rest }) {
     rejectUnknownOptions("claimDeposit", rest);
     if (typeof txid !== "string" || !/^[0-9a-fA-F]{64}$/.test(txid)) {
-      throw new TypeError(`SparkAgent.claimDeposit: txid must be a 64-character hex transaction id, got ${JSON.stringify(txid)}.`);
+      throw badInput(new TypeError(`SparkAgent.claimDeposit: txid must be a 64-character hex transaction id, got ${JSON.stringify(txid)}.`), "txid");
     }
     if (!Number.isSafeInteger(vout) || vout < 0) {
-      throw new TypeError(`SparkAgent.claimDeposit: vout must be a non-negative integer, got ${JSON.stringify(vout)}.`);
+      throw badInput(new TypeError(`SparkAgent.claimDeposit: vout must be a non-negative integer, got ${JSON.stringify(vout)}.`), "vout");
     }
     // Garbage ceiling values throw here (requireNumericOption): a NaN maxFee
     // passed to the SDK never trips its `feeCharged > maxFee` check, which
     // would silently remove the ceiling entirely.
     const explicit = requireNumericOption("claimDeposit", "maxFeeSats", maxFeeSats) ?? null;
     const pct = requireNumericOption("claimDeposit", "maxFeePct", maxFeePct) ?? 10;
-    if (pct < 0 || pct > 100) throw new RangeError(`SparkAgent.claimDeposit: maxFeePct must be between 0 and 100, got ${pct}.`);
-    if (explicit !== null && explicit < 0) throw new RangeError(`SparkAgent.claimDeposit: maxFeeSats must not be negative, got ${explicit}.`);
+    if (pct < 0 || pct > 100) throw badInput(new RangeError(`SparkAgent.claimDeposit: maxFeePct must be between 0 and 100, got ${pct}.`), "maxFeePct");
+    if (explicit !== null && explicit < 0) throw badInput(new RangeError(`SparkAgent.claimDeposit: maxFeeSats must not be negative, got ${explicit}.`), "maxFeeSats");
     const type = await this.#depositType(txid, vout);
     if (type === "single-use") {
-      const e = new Error(
-        `SparkAgent.claimDeposit: ${txid}:${vout} is a single-use deposit. The operators currently refuse to claim ` +
-          "those (finalize_deposit_tree_creation UNAVAILABLE), so it stays at its address until they switch the step " +
-          "back on, and only this wallet's keys can claim it then: keep the recovery words backed up. " +
-          "Nothing was spent or changed.",
+      throw annotateError(
+        new Error(
+          `SparkAgent.claimDeposit: ${txid}:${vout} is a single-use deposit. The operators currently refuse to claim ` +
+            "those (finalize_deposit_tree_creation UNAVAILABLE), so it stays at its address until they switch the step " +
+            "back on, and only this wallet's keys can claim it then: keep the recovery words backed up. " +
+            "Nothing was spent or changed.",
+        ),
+        "SINGLE_USE_DEPOSITS_UNAVAILABLE",
+        { nextStep: "Nothing was claimed or changed. Tell the user this deposit can't be claimed for now (it stays listed in listPendingDeposits()); future deposits go to getDepositAddress()." },
       );
-      e.code = "SINGLE_USE_DEPOSITS_UNAVAILABLE";
-      throw e;
     }
     if (type === null) {
-      const e = new Error(
-        `SparkAgent.claimDeposit: ${txid}:${vout} isn't an unclaimed deposit at this wallet's deposit address. ` +
-          "It may need more confirmations (the claim needs 3), be claimed already, or have another vout; this " +
-          "doesn't mean the coins went elsewhere. listPendingDeposits() lists what can be claimed. Nothing was spent or changed.",
+      throw annotateError(
+        new Error(
+          `SparkAgent.claimDeposit: ${txid}:${vout} isn't an unclaimed deposit at this wallet's deposit address. ` +
+            "It may need more confirmations (the claim needs 3), be claimed already, or have another vout; this " +
+            "doesn't mean the coins went elsewhere. listPendingDeposits() lists what can be claimed. Nothing was spent or changed.",
+        ),
+        "DEPOSIT_NOT_FOUND",
       );
-      e.code = "DEPOSIT_NOT_FOUND";
-      throw e;
     }
     let cap = explicit;
     let credit = null;
     if (cap === null || dryRun) {
-      const quote = await this.#wallet.getClaimStaticDepositQuote(txid, vout);
+      const quote = await sparkRead(() => this.#wallet.getClaimStaticDepositQuote(txid, vout));
       // Number(null) === 0 — a missing credit must read as unreadable, not as
       // a zero-sat deposit (the same trap checkL402Amount documents).
       const quoted = quote?.creditAmountSats == null ? NaN : Number(quote.creditAmountSats);
       credit = Number.isFinite(quoted) ? quoted : null;
       if (cap === null) {
         if (credit === null) {
-          throw new Error(
-            "SparkAgent.claimDeposit: the claim quote is unreadable, so a size-aware fee ceiling " +
-              "cannot be derived — pass an explicit maxFeeSats to claim anyway.",
+          throw annotateError(
+            new Error(
+              "SparkAgent.claimDeposit: the claim quote is unreadable, so a size-aware fee ceiling " +
+                "cannot be derived — pass an explicit maxFeeSats to claim anyway.",
+            ),
+            "QUOTE_UNREADABLE",
+            { nextStep: "Nothing was claimed. Preview with claimDeposit({ txid, vout, dryRun: true }) and ask the user what maxFeeSats to allow; don't pick one yourself." },
           );
         }
         cap = Math.min(Math.ceil((credit * pct) / 100), CLAIM_MAX_FEE_SATS);
@@ -1812,20 +2310,30 @@ export class SparkAgent {
         network: this.#network,
       };
     }
-    return await this.#wallet.claimStaticDepositWithMaxFee({
-      transactionId: txid,
-      maxFee: cap,
-      outputIndex: vout,
-    });
+    try {
+      return await this.#wallet.claimStaticDepositWithMaxFee({
+        transactionId: txid,
+        maxFee: cap,
+        outputIndex: vout,
+      });
+    } catch (err) {
+      // The SDK checks the fee before it claims ("Fee larger than max fee");
+      // any other failure may come after the claim request, so the deposit
+      // may already be credited.
+      if (err?.name === "SparkValidationError" && String(err.message ?? "").startsWith("Fee larger than max fee")) {
+        throw annotateError(err, "FEE_OVER_LIMIT", {
+          nextStep: "Nothing was claimed. Preview with claimDeposit({ txid, vout, dryRun: true }) and try again later, or ask the user whether to allow a higher maxFeeSats; don't raise it yourself.",
+        });
+      }
+      throw annotateError(err, "CLAIM_OUTCOME_UNKNOWN");
+    }
   }
 
   // --- Withdrawal ---
 
   async getWithdrawalFeeQuote(amountSats, onchainAddress) {
-    return await this.#wallet.getWithdrawalFeeQuote({
-      amountSats: toSats(amountSats, "getWithdrawalFeeQuote"),
-      withdrawalAddress: onchainAddress,
-    });
+    const params = { amountSats: toSats(amountSats, "getWithdrawalFeeQuote"), withdrawalAddress: onchainAddress };
+    return await withdrawalQuoteRead(() => this.#wallet.getWithdrawalFeeQuote(params));
   }
 
   // Cooperative exit back to L1 Bitcoin. Allowlist applies to `to` (L1 BTC
@@ -1836,14 +2344,19 @@ export class SparkAgent {
     // non-finite cap would silently disable the ceiling below, and the quote
     // fetch itself is not side-effect-free (it can restructure leaves).
     const pct = requireNumericOption("withdraw", "maxFeePct", maxFeePct) ?? 10;
-    if (pct < 0 || pct > 100) throw new RangeError(`SparkAgent.withdraw: maxFeePct must be between 0 and 100, got ${pct}.`);
+    if (pct < 0 || pct > 100) throw badInput(new RangeError(`SparkAgent.withdraw: maxFeePct must be between 0 and 100, got ${pct}.`), "maxFeePct");
     const abs = requireNumericOption("withdraw", "maxFeeSats", maxFeeSats);
+    // The SDK takes exactly these. Another value used to surface as "fee
+    // quote is unreadable", after the quote had already been fetched.
+    if (!WITHDRAW_SPEEDS.includes(speed)) {
+      throw badInput(new RangeError(`SparkAgent.withdraw: speed must be one of ${WITHDRAW_SPEEDS.join(", ")}, got ${JSON.stringify(speed)}.`), "speed");
+    }
     await this.#assertAllowed(to);
     const sats = toSats(amount, "withdraw"); // number|bigint -> safe-int Number (SDK rejects bigint)
-    const quote = await this.#wallet.getWithdrawalFeeQuote({
+    const quote = await withdrawalQuoteRead(() => this.#wallet.getWithdrawalFeeQuote({
       amountSats: sats,
       withdrawalAddress: to,
-    });
+    }));
     // Total exit fee = userFee + l1BroadcastFee for the chosen speed. Ceiling:
     // reject an exit whose fee exceeds maxFeePct (default 10%) of the amount or an
     // absolute maxFeeSats — which legibly refuses uneconomical small withdrawals,
@@ -1863,7 +2376,7 @@ export class SparkAgent {
       return {
         dryRun: true,
         operation: "l1_withdraw",
-        from: await this.#wallet.getSparkAddress(),
+        from: await this.#sparkAddress(),
         to,
         amount: String(sats),
         unit: "sats",
@@ -1878,9 +2391,17 @@ export class SparkAgent {
     }
     if (!check.ok) {
       const detail = check.fee != null
-        ? ` (${((check.fee / sats) * 100).toFixed(1)}% of the ${sats}-sat exit). Raise maxFeeSats/maxFeePct to override.`
-        : `. Re-fetch the quote or check the SDK CoopExitFeeQuote shape.`;
-      throw new Error(`Withdrawal blocked: ${check.reason}${detail}`);
+        ? ` (${((check.fee / sats) * 100).toFixed(1)}% of the ${sats}-sat exit); nothing was sent. Show the user the fee; ` +
+          `raise maxFeeSats/maxFeePct only if they accept it.`
+        : `; nothing was sent. Re-fetch the quote or check the SDK CoopExitFeeQuote shape.`;
+      const blocked = new Error(`Withdrawal blocked: ${check.reason}${detail}`);
+      throw check.fee != null
+        ? annotateError(blocked, "FEE_OVER_LIMIT", {
+          nextStep: "Nothing was sent. Preview with withdraw({ to, amount, dryRun: true }); ask the user whether to withdraw a larger amount, wait, or allow a higher maxFeeSats or maxFeePct; don't raise them yourself.",
+        })
+        : annotateError(blocked, "QUOTE_UNREADABLE", {
+          nextStep: "Nothing was sent. Check getWithdrawalFeeQuote(amount, address) and try again later; if it stays unreadable, tell the user.",
+        });
     }
     // Budget counts amount + the vetted fee — both leave the wallet on an exit.
     const spend = await this.#recordSpend(sats + (check.fee ?? 0), "l1_withdraw");
@@ -1917,7 +2438,7 @@ export class SparkAgent {
       const err = new PaymentCommittedError(
         `SparkAgent.withdraw: the exit was sent, but the SSP returned no record of it. ` +
         `Do NOT retry, that would withdraw again. Find it with getTransfers().`,
-        { settled: null, op: "l1_withdraw" },
+        { settled: null, op: "l1_withdraw", nextStep: "The exit was sent: find it with getTransfers() and don't call withdraw again for it." },
       );
       err.paid = true;
       throw err;
@@ -1928,14 +2449,14 @@ export class SparkAgent {
   // --- Message Signing ---
 
   async signMessage(text) {
-    return await this.#wallet.signMessageWithIdentityKey(text);
+    return await sparkRead(() => this.#wallet.signMessageWithIdentityKey(text));
   }
 
   // Validates that `text`+`signature` was signed by THIS agent's own identity
   // key. To verify a signature from another party, use secp256k1.verify from
   // @noble/curves directly with their public key.
   async verifyOwnSignature(text, signature) {
-    return await this.#wallet.validateMessageWithIdentityKey(text, signature);
+    return await sparkRead(() => this.#wallet.validateMessageWithIdentityKey(text, signature));
   }
 
   // --- L402 paywalls (see references/l402.md) ---
@@ -1948,7 +2469,7 @@ export class SparkAgent {
     // the exact phantom-dryRun failure the wrapper exists to prevent.
     rejectUnknownOptions("fetchL402", rest);
     assertHttpsUrl("fetchL402", url);
-    if (typeof resend !== "boolean") throw new TypeError(`SparkAgent.fetchL402: resend must be true or false, got ${JSON.stringify(resend)}.`);
+    if (typeof resend !== "boolean") throw badInput(new TypeError(`SparkAgent.fetchL402: resend must be true or false, got ${JSON.stringify(resend)}.`), "resend");
     // Garbage ceiling values throw BEFORE any network I/O (requireNumericOption).
     const maxFee = requireNumericOption("fetchL402", "maxFeeSats", maxFeeSats);
     const maxAmt = requireNumericOption("fetchL402", "maxAmountSats", maxAmountSats) ?? 10_000;
@@ -1962,24 +2483,36 @@ export class SparkAgent {
     if (held) {
       const resumed = await this.#resumeL402(url, key, held, request);
       if (resumed) return resumed;
-      // null: that payment failed for good, so no money left — buying below is safe.
+      // null: that payment failed and the SSP returned its sats
+      // (USER_SWAP_RETURNED), so no money left — buying below is safe.
     }
 
-    const initialResponse = await fetch(url, {
-      method,
-      headers: { "Content-Type": "application/json", ...headers },
-      body: reqBody,
-    });
+    let initialResponse;
+    try {
+      initialResponse = await fetch(url, {
+        method,
+        headers: { "Content-Type": "application/json", ...headers },
+        body: reqBody,
+      });
+    } catch (err) {
+      throw serviceFetchFailed(err, method);
+    }
 
     if (initialResponse.status !== 402) {
       const ct = initialResponse.headers.get("content-type") || "";
-      const data = ct.includes("json") ? await initialResponse.json() : await initialResponse.text();
-      return { paid: false, data };
+      try {
+        const data = ct.includes("json") ? await initialResponse.json() : await initialResponse.text();
+        return { paid: false, data };
+      } catch (err) {
+        // The service answered (and may have acted on the request), just not
+        // readably: that is not unavailability, and a retry repeats the request.
+        throw annotateError(err, "SERVICE_RESPONSE_INVALID", { status: initialResponse.status });
+      }
     }
 
     // Header first (spec-compliant), body fallback — see parseL402Challenge.
     const { invoice, macaroon } = await parseL402Challenge(initialResponse);
-    if (!invoice || !macaroon) throw new Error("Invalid L402 challenge");
+    if (!invoice || !macaroon) throw annotateError(new Error("Invalid L402 challenge"), "L402_CHALLENGE_INVALID");
 
     // A pass the server has already declared dead buys nothing. The invoice
     // expires separately, so it can still be paid after the token's expiry
@@ -1989,25 +2522,42 @@ export class SparkAgent {
     const tokenExpiry = l402TokenExpiry(macaroon)?.expiresAt ?? null;
     const nowSec = Date.now() / 1000;
     if (tokenExpiry !== null && tokenExpiry - nowSec < L402_MIN_TOKEN_LIFETIME_SECONDS) {
-      const err = new Error(
-        `L402 payment blocked: the server's token ${tokenExpiry <= nowSec ? "expired" : "expires"} at ` +
-        `${new Date(tokenExpiry * 1000).toISOString()} — paying now would buy a pass the server itself says ` +
-        `is dead or about to be. Request the resource again for a fresh challenge.`,
+      throw annotateError(
+        new Error(
+          `L402 payment blocked: the server's token ${tokenExpiry <= nowSec ? "expired" : "expires"} at ` +
+          `${new Date(tokenExpiry * 1000).toISOString()} — paying now would buy a pass the server itself says ` +
+          `is dead or about to be. Request the resource again for a fresh challenge.`,
+        ),
+        "L402_TOKEN_EXPIRED",
       );
-      err.code = "L402_TOKEN_EXPIRED";
-      throw err;
     }
 
-    const decoded = decode(invoice);
+    const decoded = decodeL402Invoice(decode, invoice);
     const amountSection = decoded.sections.find((s) => s.name === "amount");
     const amountSats = amountSection?.value ? Math.ceil(Number(amountSection.value) / 1000) : null;
 
     // Bound the invoice AMOUNT, not just the routing fee — a malicious/compromised
     // paywall can demand an arbitrarily large invoice, and fetchL402 re-fetches a
     // fresh 402 challenge (so previewL402's price is NOT authoritative). Also
-    // refuses an amountless invoice. Raise maxAmountSats for pricier resources.
+    // refuses an amountless invoice. maxAmountSats is the price the user
+    // approved: raise it for a pricier resource only on their say-so.
     const amtCheck = checkL402Amount({ amountSats, maxAmountSats: maxAmt });
-    if (!amtCheck.ok) throw new Error(`L402 payment blocked: ${amtCheck.reason}. Raise maxAmountSats to override.`);
+    if (!amtCheck.ok) {
+      // No amount at all is a malformed challenge; too high is the user's call.
+      throw amtCheck.amountSats === null
+        ? annotateError(
+          new Error(`L402 payment blocked: ${amtCheck.reason}; nothing was paid.`),
+          "L402_CHALLENGE_INVALID",
+        )
+        : annotateError(
+          new Error(
+            `L402 payment blocked: ${amtCheck.reason}; nothing was paid. The server's price is not approval: ` +
+              `raise maxAmountSats only if the user approves this price.`,
+          ),
+          "AMOUNT_OVER_LIMIT",
+          { nextStep: L402_PRICE_STEP },
+        );
+    }
 
     // Route through the guarded wrapper so the payment also gets the amount-aware
     // routing-fee cap (maxFeeSats undefined => sized from the invoice amount).
@@ -2019,10 +2569,20 @@ export class SparkAgent {
     const payOptions = { maxFeeSats: maxFee, maxAmountSats: maxAmt, preferSpark: false, [LN_NO_FEE_READS]: true };
     const { host, path } = l402Target(url);
     if (this.#l402Held.size >= L402_MAX_HELD) {
-      throw new Error(
-        `L402 payment blocked: this agent holds ${this.#l402Held.size} unresolved L402 purchases (undelivered, in doubt or ` +
-          `refused), the most it keeps. Nothing was paid. Resolve them (call fetchL402 again for each) or, on the user's ` +
-          `say-so, agent.forgetL402(url).`,
+      // Which requests are held, by method, host and path only: never the
+      // macaroon or preimage, and never the query string (it can carry keys).
+      const held = [...this.#l402Held.keys()].map((k) => {
+        const at = k.indexOf(" ");
+        return { method: k.slice(0, at), ...l402Target(k.slice(at + 1)) };
+      });
+      throw annotateError(
+        new Error(
+          `L402 payment blocked: this agent holds ${this.#l402Held.size} unresolved L402 purchases (undelivered, in doubt or ` +
+            `refused), the most it keeps. Nothing was paid. Resolve them (call fetchL402 again for each) or, on the user's ` +
+            `say-so, agent.forgetL402(url).`,
+        ),
+        "L402_TOO_MANY_HELD",
+        { held },
       );
     }
     let payResult;
@@ -2033,8 +2593,49 @@ export class SparkAgent {
       // unrecorded: the natural retry fetches a NEW challenge, a new invoice,
       // and pays again (ToB review 2026-10-26). Hold it, so the next call for
       // this request settles THIS invoice instead. A refusal before paying
-      // (amount or fee cap, budget, an SDK pre-send check) is rethrown as is.
-      if (err?.code !== "PAYMENT_COMMITTED" && err?.code !== "PAYMENT_ALREADY_SETTLED") throw err;
+      // (amount or fee cap, budget, an SDK pre-send check) is rethrown as is,
+      // its nextStep pointed at what fetchL402 offers (it has no dryRun).
+      // A preimage that doesn't prove this invoice (PREIMAGE_MISMATCH) leaves
+      // no pass to present and this invoice not shown paid. Rethrown unheld,
+      // a retry loop bought again; block the URL instead, as #resumeL402 does
+      // for the same evidence, until the user's say-so lifts it.
+      if (err?.code === "PREIMAGE_MISMATCH") {
+        const blocked = {
+          reason: "L402_NO_PROOF",
+          settled: null,
+          message:
+            `L402: the payment for ${host}${path} came back with a preimage that does NOT prove THIS invoice ` +
+            `(invoice hash ${err.invoiceHash ?? invoicePaymentHash(invoice) ?? "unreadable"}), so there is no pass to present. ` +
+            `Check agent.getTransfers(). This agent won't buy ${host}${path} again on its own; ${forgetHint(method)} allows it, on the user's say-so.`,
+          invoiceHash: err.invoiceHash ?? invoicePaymentHash(invoice) ?? undefined,
+          sendId: err.sendId,
+          amountSats,
+        };
+        this.#holdL402(key, { blocked });
+        throw l402BlockedError(blocked, {
+          nextStep: "This payment came back without proof that it paid this invoice, so there is no pass: check getTransfers() and getLightningSendRequest(err.sendId) for it; don't buy this resource another way, and call forgetL402(url) only on the user's say-so.",
+        });
+      }
+      // The payment failed, but its sats may still be locked to the SSP. Hold
+      // it on the send's id, as #resumeL402 does for the same status, so the
+      // next call reads the send instead of buying. Rethrown unheld, the next
+      // call bought a fresh invoice at once: a retry loop locked one price per
+      // call, and had the SSP's "failed" ever been wrong, that was a second
+      // purchase (payments review 2026-10-28). With the sats back
+      // (USER_SWAP_RETURNED, retryable "yes") it is rethrown as is: buying
+      // again is safe.
+      if (err?.code === "LIGHTNING_PAYMENT_FAILED" && err.fundsReturned !== true) {
+        this.#holdL402(key, { macaroon, invoice, amountSats, sendId: err.sendId ?? null, preimage: null, payOptions });
+        throw l402FailedHeldError({
+          host, path, method, status: err.status ?? "unknown", sendId: err.sendId,
+          invoiceHash: err.invoiceHash ?? invoicePaymentHash(invoice) ?? undefined, cause: err, earlier: false,
+        });
+      }
+      if (err?.code !== "PAYMENT_COMMITTED" && err?.code !== "PAYMENT_ALREADY_SETTLED") {
+        if (err?.code === "FEE_OVER_LIMIT") annotateError(err, "FEE_OVER_LIMIT", { nextStep: L402_FEE_STEP });
+        if (err?.code === "AMOUNT_OVER_LIMIT") annotateError(err, "AMOUNT_OVER_LIMIT", { nextStep: L402_PRICE_STEP });
+        throw err;
+      }
       this.#holdL402(key, { macaroon, invoice, amountSats, sendId: err.sendId ?? null, preimage: null, payOptions });
       const e = new PaymentCommittedError(
         `L402: the payment for ${host}${path} may have gone through (${String(err.message).slice(0, 160)}). ` +
@@ -2042,7 +2643,11 @@ export class SparkAgent {
         (err.sendId || this.#lnDedup
           ? `Call fetchL402 with the same URL again in this process: it finishes THIS payment and presents its proof, without paying again.`
           : `SPARK_LN_DEDUP is off, so this agent can't safely settle it again: check agent.getTransfers().`),
-        { settled: err.code === "PAYMENT_ALREADY_SETTLED" ? true : null, op: "l402", sendId: err.sendId, invoiceHash: invoicePaymentHash(invoice) ?? undefined, cause: err },
+        {
+          settled: err.code === "PAYMENT_ALREADY_SETTLED" ? true : null, op: "l402", sendId: err.sendId, invoiceHash: invoicePaymentHash(invoice) ?? undefined, cause: err,
+          nextStep: (err.sendId || this.#lnDedup ? L402_RESUME_STEP : "SPARK_LN_DEDUP is off: check getTransfers() for this payment before anything else; don't buy this resource another way.") +
+            ` ${L402_MEMORY_NOTE}`,
+        },
       );
       e.paid = true;
       throw e;
@@ -2054,7 +2659,7 @@ export class SparkAgent {
         `L402 invoice PAID but no preimage yet (status ${payResult.lastStatus ?? "unknown"}). ` +
         `Do NOT buy this resource again another way. Call fetchL402 with the same URL again in this ` +
         `process: it checks this payment and presents its proof instead of paying.`,
-        { settled: null, op: "l402", sendId: payResult.id, invoiceHash: invoicePaymentHash(invoice) ?? undefined },
+        { settled: null, op: "l402", sendId: payResult.id, invoiceHash: invoicePaymentHash(invoice) ?? undefined, nextStep: `${L402_RESUME_STEP} ${L402_MEMORY_NOTE}` },
       );
       err.paid = true; // kept for callers written against the earlier error shape
       err.macaroon = macaroon; // not a working pass without the preimage
@@ -2065,7 +2670,8 @@ export class SparkAgent {
 
   // Lets this agent buy `url` again after fetchL402 stopped doing so: the
   // service refused the pass it paid for, the pass died before a doubtful
-  // payment could be settled, or a payment ended with no proof. Only on the
+  // payment could be settled, a payment ended with no proof, or a failed
+  // payment's send never read USER_SWAP_RETURNED. Only on the
   // user's say-so: if the earlier payment went through, the next fetchL402
   // for this URL is a second purchase. Also drops a held, undelivered pass.
   // Returns whether anything was held.
@@ -2074,8 +2680,8 @@ export class SparkAgent {
   }
 
   // Present a paid pass and return the resource. The money is already gone,
-  // so a failure in transit or a 5xx is retried with the SAME pass — a fresh
-  // challenge would be a new invoice. If every attempt fails, the pass is held
+  // so a failure in transit, a 5xx or a body cut off is retried with the SAME
+  // pass — a fresh challenge would be a new invoice. If every attempt fails, the pass is held
   // for the next call in this process and a PaymentCommittedError (settled:
   // true) is thrown. A request that isn't safe to repeat (POST, PATCH) is sent
   // once, and sent again only with { resend: true }: the service may already
@@ -2085,6 +2691,17 @@ export class SparkAgent {
     const { host, path } = l402Target(url);
     const repeatable = L402_REPEATABLE.has(String(method).toUpperCase());
     const attempts = repeatable ? L402_DELIVERY_ATTEMPTS : 1;
+    const holdPass = () => this.#holdL402(key, {
+      macaroon: pass.macaroon,
+      preimage: pass.preimage,
+      amountSats: pass.amountSats,
+      invoiceHash: pass.invoiceHash ?? (pass.invoice ? invoicePaymentHash(pass.invoice) ?? undefined : undefined),
+      ...(repeatable ? {} : { sentOnce: true, reqBody }),
+    });
+    // The pass is paid for: hold it BEFORE the first attempt, so a throw
+    // nobody planned for still leaves the next call presenting it instead of
+    // buying again. A recovered pass is held already.
+    if (!recovered) holdPass();
     let failure;
     let tried = 0;
     for (let attempt = 1; attempt <= attempts; attempt++) {
@@ -2128,7 +2745,20 @@ export class SparkAgent {
         this.#holdL402(key, { blocked });
         throw l402BlockedError(blocked);
       }
-      const data = await readBody(res);
+      // The service accepted the pass, but the body can still fail to arrive
+      // (a reset or crash mid-body, a proxy cutting a large response, a body
+      // timeout, a broken gzip stream). Escaping raw, that read as "nothing
+      // happened" and the retry bought a new pass, every time when the cut
+      // was deterministic (verified 2026-10-28). It is a failed delivery: a
+      // GET is presented again with the same pass; a POST falls through to
+      // the hold below.
+      let data;
+      try {
+        data = await readBody(res);
+      } catch (err) {
+        failure = `HTTP ${res.status}, body cut off (${err?.message ?? err})`;
+        continue;
+      }
       this.#l402Held.delete(key);
       return {
         paid: !recovered, // false when this call delivered a pass an earlier call bought
@@ -2140,13 +2770,7 @@ export class SparkAgent {
         data,
       };
     }
-    this.#holdL402(key, {
-      macaroon: pass.macaroon,
-      preimage: pass.preimage,
-      amountSats: pass.amountSats,
-      invoiceHash: pass.invoiceHash ?? (pass.invoice ? invoicePaymentHash(pass.invoice) ?? undefined : undefined),
-      ...(repeatable ? {} : { sentOnce: true, reqBody }),
-    });
+    holdPass();
     const e = new PaymentCommittedError(
       `L402: paid ${pass.amountSats ?? "?"} sats for ${host}${path} but the resource was not delivered ` +
       `after ${tried} attempt${tried === 1 ? "" : "s"} (${failure}). The pass is kept in this process. ` +
@@ -2155,7 +2779,13 @@ export class SparkAgent {
         : `The ${String(method).toUpperCase()} was sent and the service may have acted on it: check with the service. ` +
           `To send it again with the same pass (no new payment), call fetchL402 with { resend: true }. `) +
       `Do NOT buy this resource another way.`,
-      { settled: true, op: "l402" },
+      {
+        settled: true, op: "l402",
+        nextStep: (repeatable
+          ? "Paid, not yet delivered: call fetchL402 again with the same URL and method to present the paid pass without paying."
+          : `Paid, and the ${String(method).toUpperCase()} was sent once: check with the service whether it acted on it; to send it again with the same pass (no new payment), call fetchL402 with { resend: true }.`) +
+          ` ${L402_MEMORY_NOTE}`,
+      },
     );
     e.paid = true;
     throw e;
@@ -2163,18 +2793,34 @@ export class SparkAgent {
 
   // A held L402 purchase from an earlier call: finish it instead of buying
   // again. Returns the delivered result, throws while it can't be finished
-  // (always a PaymentCommittedError: money may have left), or returns null
-  // once the payment has failed for good (no money left, buying is safe).
+  // (a PaymentCommittedError while money may have left; LIGHTNING_PAYMENT_FAILED
+  // once the payment failed but its sats may still be locked to the SSP, the
+  // hold kept), or returns null once the payment has failed and its send reads
+  // USER_SWAP_RETURNED (the sats are back: no money left, buying is safe).
+  // Before, every failure status bought again at once, while the sats could
+  // still be locked to the SSP: had that failure ever been wrong, the new
+  // invoice would have been a second purchase (verified 2026-10-28).
   async #resumeL402(url, key, held, request) {
     const { host, path } = l402Target(url);
     if (held.blocked) throw l402BlockedError(held.blocked);
     const invoiceHash = held.invoiceHash ?? (held.invoice ? invoicePaymentHash(held.invoice) ?? undefined : undefined);
+    // The payment failed, but the sats may not be back: keep the hold, so this
+    // agent buys again only once the send reads USER_SWAP_RETURNED (or on the
+    // user's say-so).
+    const returning = (status, sendId, cause) =>
+      l402FailedHeldError({ host, path, method: request.method, status, sendId, invoiceHash, cause, earlier: true });
     const pending = (detail, extra = {}) =>
       Object.assign(
         new PaymentCommittedError(
           `L402: the earlier payment for ${host}${path} ${detail} Nothing new was paid. ` +
           `Do NOT buy this resource another way.`,
-          { settled: null, op: "l402", invoiceHash, ...extra },
+          {
+            settled: null, op: "l402", invoiceHash, ...extra,
+            nextStep: (this.#lnDedup
+              ? "Nothing new was paid. Call fetchL402 again later with the same URL and method, or check getTransfers() for the earlier payment; don't buy this resource another way."
+              : "Nothing new was paid. SPARK_LN_DEDUP is off: check getTransfers() for the earlier payment; don't buy this resource another way.") +
+              ` ${L402_MEMORY_NOTE}`,
+          },
         ),
         { paid: true },
       );
@@ -2214,9 +2860,16 @@ export class SparkAgent {
         settled = await this.payAndSettle(held.invoice, { ...held.payOptions, [LN_RESUMING]: true });
       } catch (err) {
         if (err?.code === "LIGHTNING_PAYMENT_FAILED") {
-          // The operators' record of this payment ended in failure: no money left.
-          this.#l402Held.delete(key);
-          return null;
+          // The operators' record of this payment ended in failure.
+          if (err.fundsReturned === true) {
+            // ...and the SSP returned the sats: no money left.
+            this.#l402Held.delete(key);
+            return null;
+          }
+          // The sats may still be locked: keep the hold, now on the send's id,
+          // so the next call reads its status instead of paying.
+          if (err.sendId) held.sendId = err.sendId;
+          throw returning(err.status ?? "unknown", held.sendId ?? undefined, err);
         }
         if (err?.reason === "INVOICE_EXPIRED_AFTER_ATTEMPT" || err?.code === "INVOICE_EXPIRED") {
           // The invoice died before the doubtful payment could be settled
@@ -2272,8 +2925,11 @@ export class SparkAgent {
         }
         held.preimage = status.paymentPreimage;
       } else if (isTerminalLightningFailure(status?.status)) {
-        this.#l402Held.delete(key);
+        // As in payAndSettle: the dead dedup id goes, and only
+        // USER_SWAP_RETURNED says the sats are back.
         if (this.#lnDedup) await this.#lnDedup.forget(held.invoice);
+        if (status.status !== LIGHTNING_SATS_RETURNED) throw returning(status.status, held.sendId);
+        this.#l402Held.delete(key);
         return null;
       } else if (PAYEE_MAYBE_PAID_STATUSES.has(status?.status)) {
         // The Lightning leg succeeded, so the service may have been paid, but
@@ -2294,9 +2950,13 @@ export class SparkAgent {
       }
     }
     if (held.sentOnce && request.resend && request.reqBody !== held.reqBody) {
-      throw new TypeError(
-        `SparkAgent.fetchL402: { resend: true } sends the original ${String(request.method).toUpperCase()} again, and this ` +
-          `call's body differs from it. Pass the same body, or check with the service before buying anything new.`,
+      throw badInput(
+        new TypeError(
+          `SparkAgent.fetchL402: { resend: true } sends the original ${String(request.method).toUpperCase()} again, and this ` +
+            `call's body differs from it. Pass the same body, or check with the service before buying anything new.`,
+        ),
+        "body",
+        { nextStep: "Nothing new was paid and the paid pass stays held. Call fetchL402 with { resend: true } and the original body, or check with the service first." },
       );
     }
     if (held.sentOnce && !request.resend) {
@@ -2304,7 +2964,10 @@ export class SparkAgent {
         `L402: the ${String(request.method).toUpperCase()} to ${host}${path} was already sent once with the pass ` +
         `this agent paid for, and the service may have acted on it. Check with the service. To send it again ` +
         `with the same pass (no new payment), call fetchL402 with { resend: true }.`,
-        { settled: true, op: "l402" },
+        {
+          settled: true, op: "l402",
+          nextStep: `Paid, and the request was sent once: check with the service whether it acted on it; to send it again with the same pass (no new payment), call fetchL402 with { resend: true }. ${L402_MEMORY_NOTE}`,
+        },
       );
       e.paid = true;
       throw e;
@@ -2322,15 +2985,20 @@ export class SparkAgent {
 
   async previewL402(url) {
     assertHttpsUrl("previewL402", url);
-    const response = await fetch(url);
+    let response;
+    try {
+      response = await fetch(url);
+    } catch (err) {
+      throw serviceFetchFailed(err, "GET");
+    }
     if (response.status !== 402) return { requiresPayment: false };
 
     const { decode } = await import("light-bolt11-decoder");
     const { invoice, macaroon } = await parseL402Challenge(response); // header first, body fallback
-    if (!invoice) throw new Error("Invalid L402 challenge: no invoice in header or body");
-    const decoded = decode(invoice);
+    if (!invoice) throw annotateError(new Error("Invalid L402 challenge: no invoice in header or body"), "L402_CHALLENGE_INVALID");
+    const decoded = decodeL402Invoice(decode, invoice);
     const amountSection = decoded.sections.find((s) => s.name === "amount");
-    if (!amountSection?.value) throw new Error("L402 invoice has no amount");
+    if (!amountSection?.value) throw annotateError(new Error("L402 invoice has no amount"), "L402_CHALLENGE_INVALID");
 
     const tokenExpiry = l402TokenExpiry(macaroon)?.expiresAt ?? null;
     return {
@@ -2347,6 +3015,11 @@ export class SparkAgent {
 
   // --- Events ---
 
+  // Fires for each payment the wallet claims from its live event stream.
+  // Payments claimed as the wallet opens, or as its stream reconnects, don't
+  // fire it (the SDK claims those without emitting; REGTEST, 2026-10-28): to
+  // find what arrived while the agent was offline, read getTransfers() after
+  // boot.
   onTransferReceived(callback) {
     this.#wallet.on("transfer:claimed", callback);
   }
@@ -2356,22 +3029,199 @@ export class SparkAgent {
   }
 
   // Recovery-backup health: { healthy, lastSuccessAt, consecutiveFailures,
-  // lastError, anchorless }, or { disabled: true } when opted out via
+  // consecutiveTransientSkips, lastError, anchorless, intervalMs,
+  // maxConsecutiveFailures }, or { disabled: true } when opted out via
   // SPARK_LEAF_VAULT. A non-empty `anchorless` makes it unhealthy.
   vaultHealth() {
     return this.#vault?.health?.() ?? { disabled: true };
   }
 
+  // --- Status ---
+
+  // One look at whether this agent can work: call it before a task, or when
+  // something seems off. It never throws for what it finds (only an unknown
+  // option is BAD_INPUT); a read that fails is reported. Returns
+  //   { schema: "sparkbtcbot.status.v1", usable, problems, nextStep, checkedAt,
+  //     network, address,
+  //     balance: { sats, incomingSats, lockedSats } | null,
+  //     privacy: { state: "on"|"off"|"off-by-choice"|"unknown", checkedAt },
+  //     backup: { state: "ok"|"starting"|"stale"|"broken"|"off", ageMinutes, lastError },
+  //     budget: { state: "none"|"ok"|"exhausted"|"broken", sealed, budgetSats,
+  //               spentSats, remainingSats, windowHours, nextReleaseAt },
+  //     connections: { spark: "connected"|"connecting"|"disconnected"|"closed"|"unknown",
+  //                    lightning: "reachable"|"unreachable"|"unchecked" } }
+  // `problems` are codes from STATUS_PROBLEMS (lib/agent-errors.js), most
+  // severe first; `usable` is false only for a blocking one (AGENT_CLOSED,
+  // SPARK_UNREACHABLE, NETWORK_MISMATCH); `nextStep` is the first problem's, or
+  // null. Not problems: no budget, privacy off by the user's choice
+  // (SPARK_PRIVACY=off), a backup turned off or on its first snapshot,
+  // Lightning unchecked, a stream connecting for under 30 s, sats incoming for
+  // under a minute or locked for under 30 minutes.
+  // Cost: a fresh balance read and a settings read in parallel (about 100 ms on
+  // REGTEST; 10 s deadline each). checkLightning adds an SSP fee estimate (5 s
+  // deadline), which proves only that the SSP answers. After cleanup() it makes
+  // no network call at all.
+  async status(options = {}) {
+    const { checkLightning = false, ...rest } = options ?? {};
+    const unknown = Object.keys(rest);
+    if (unknown.length) {
+      throw badInput(new Error(`SparkAgent.status: unknown option(s) [${unknown.join(", ")}]; the one option is checkLightning.`), unknown.join(", "));
+    }
+    if (typeof checkLightning !== "boolean") {
+      throw badInput(new Error(`SparkAgent.status: checkLightning must be true or false, got ${JSON.stringify(checkLightning)}.`), "checkLightning");
+    }
+    const closed = this.#closed;
+    const privacyWanted = privacyPreferenceFromEnv();
+    const read = (call, ms = STATUS_READ_TIMEOUT_MS) => (closed ? NOT_READ : statusRead(call, ms));
+    const [addressRead, balanceRead, settingsRead, lightningRead, budgetRead] = await Promise.all([
+      read(() => this.#wallet.getSparkAddress()), // derived locally
+      read(() => this.#wallet.getBalance()),
+      privacyWanted ? read(() => this.#wallet.getWalletSettings()) : NOT_READ,
+      checkLightning ? read(() => this.#wallet.getSwapFeeEstimate(1000), STATUS_LIGHTNING_TIMEOUT_MS) : NOT_READ,
+      this.#budgetStatus(), // a local file
+    ]);
+    const now = Date.now();
+    if (addressRead.ok && typeof addressRead.value === "string") this.#address = addressRead.value;
+    let balance = null;
+    if (balanceRead.ok) {
+      try {
+        balance = satsFigures(balanceRead.value.satsBalance);
+        this.#track.noteBalance(balanceRead.value.satsBalance);
+      } catch { /* an answer without the figures counts as no answer */ }
+    }
+
+    const problems = new Set();
+    const t = this.#track.state;
+    if (closed) problems.add("AGENT_CLOSED");
+    else {
+      if (!balance) problems.add("SPARK_UNREACHABLE");
+      if (this.#address) {
+        try { decodeSparkAddress(this.#address, this.#network); } catch { problems.add("NETWORK_MISMATCH"); }
+      }
+      if ((t.spark === "connecting" || t.spark === "disconnected") && now - t.downSince >= STATUS_STREAM_DOWN_MS) {
+        problems.add("SPARK_STREAM_DOWN");
+      }
+      // The SDK claims what is incoming when the stream connects, so the wait
+      // counts from then. While the stream is down, SPARK_STREAM_DOWN says why
+      // nothing is claimed; when its state is unknown, the wait counts alone.
+      if (balance && balance.incomingSats !== "0" && t.incomingSince != null) {
+        const from = t.spark === "connected" ? Math.max(t.incomingSince, t.connectedSince)
+          : t.spark === "unknown" ? t.incomingSince : null;
+        if (from != null && now - from >= STATUS_INCOMING_MS) problems.add("INCOMING_UNCLAIMED");
+      }
+      if (balance && balance.lockedSats !== "0" && t.lockedSince != null && now - t.lockedSince >= STATUS_LOCKED_MS) {
+        problems.add("BALANCE_LOCKED");
+      }
+    }
+    const lightning = lightningRead.skipped ? "unchecked" : lightningRead.ok ? "reachable" : "unreachable";
+    if (lightning === "unreachable") problems.add("LIGHTNING_UNREACHABLE");
+    const backup = this.#backupStatus(closed, now);
+    if (backup.state === "broken") problems.add("BACKUP_BROKEN");
+    if (backup.state === "stale") problems.add("BACKUP_STALE");
+    // Live, not the boot result: the setting is the operators'. A wallet with
+    // no settings row reads undefined, which is the public default. A failed
+    // read is "unknown", not a problem of its own (the balance read most
+    // likely failed too: SPARK_UNREACHABLE).
+    const privacy = !privacyWanted ? { state: "off-by-choice", checkedAt: null }
+      : !settingsRead.ok ? { state: "unknown", checkedAt: null }
+      : { state: settingsRead.value?.privateEnabled === true ? "on" : "off", checkedAt: new Date(settingsRead.at).toISOString() };
+    if (privacy.state === "off") problems.add("PRIVACY_OFF");
+    if (budgetRead.problem) problems.add(budgetRead.problem);
+
+    const severity = Object.keys(STATUS_PROBLEMS);
+    const sorted = [...problems].sort((a, b) => severity.indexOf(a) - severity.indexOf(b));
+    return {
+      schema: "sparkbtcbot.status.v1",
+      usable: !sorted.some((code) => STATUS_PROBLEMS[code].blocking),
+      problems: sorted,
+      nextStep: sorted.length ? STATUS_PROBLEMS[sorted[0]].nextStep : null,
+      checkedAt: new Date(now).toISOString(),
+      network: this.#network ?? null,
+      address: this.#address,
+      balance,
+      privacy,
+      backup,
+      budget: budgetRead.budget,
+      connections: { spark: t.spark, lightning },
+    };
+  }
+
+  // status().backup, from vaultHealth(), against the vault's own settings:
+  // broken once it has failed, or found nothing to write while the wallet
+  // holds funds, as many times in a row as it tolerates (3), or when it holds
+  // leaves the exit tool can't fee-bump, or has failed and never succeeded;
+  // starting before its first snapshot (only seen without create(), which
+  // waits for it); stale after a failure, or when the last snapshot is older
+  // than two timer periods plus 5 minutes (45 at the default 20). health()
+  // still reads healthy after cleanup() stopped the vault, so a closed agent's
+  // backup is "off".
+  #backupStatus(closed, now) {
+    const h = this.vaultHealth();
+    if (h.disabled) return { state: "off", ageMinutes: null, lastError: null };
+    const ageMinutes = h.lastSuccessAt == null ? null : Math.floor((now - h.lastSuccessAt) / 60_000);
+    const lastError = h.lastError ?? null;
+    if (closed) return { state: "off", ageMinutes, lastError };
+    const max = h.maxConsecutiveFailures ?? 3;
+    const staleAfterMinutes = (2 * (h.intervalMs ?? 20 * 60_000)) / 60_000 + 5;
+    const failures = h.consecutiveFailures ?? 0;
+    let state = "ok";
+    if (h.anchorless?.length > 0 || failures >= max || (h.consecutiveTransientSkips ?? 0) >= max || (h.lastSuccessAt == null && failures > 0)) {
+      state = "broken";
+    } else if (h.lastSuccessAt == null) state = "starting";
+    else if (failures >= 1 || ageMinutes > staleAfterMinutes) state = "stale";
+    return { state, ageMinutes, lastError };
+  }
+
+  // status().budget, from spendStatus() and whether the budget is sealed in
+  // the seed (the ledger's `bound`), plus the problem it means: BUDGET_EXHAUSTED,
+  // or the SPEND_LEDGER_* code every send would throw now. nextReleaseAt is
+  // when the oldest spend in the window leaves it.
+  async #budgetStatus() {
+    const ledger = this.#ledger;
+    const budget = {
+      state: "none",
+      sealed: Boolean(ledger?.bound),
+      budgetSats: ledger?.budgetSats ?? null,
+      spentSats: null,
+      remainingSats: null,
+      windowHours: ledger ? ledger.windowMs / 3_600_000 : null,
+      nextReleaseAt: null,
+    };
+    if (ledger?.budgetSats == null) return { budget, problem: null };
+    let s;
+    try {
+      s = await this.spendStatus();
+    } catch (err) {
+      const code = String(err?.code ?? "");
+      return { budget: { ...budget, state: "broken" }, problem: code.startsWith("SPEND_LEDGER_") && Object.hasOwn(STATUS_PROBLEMS, code) ? code : "SPEND_LEDGER_UNREADABLE" };
+    }
+    const oldest = s.entries.reduce((min, e) => Math.min(min, e.ts), Infinity);
+    const exhausted = s.remainingSats === 0;
+    return {
+      budget: {
+        ...budget,
+        state: exhausted ? "exhausted" : "ok",
+        spentSats: s.spentSats,
+        remainingSats: s.remainingSats,
+        nextReleaseAt: Number.isFinite(oldest) ? new Date(oldest + s.windowMs).toISOString() : null,
+      },
+      problem: exhausted ? "BUDGET_EXHAUSTED" : null,
+    };
+  }
+
   // --- Lifecycle ---
 
   async cleanup() {
+    // From here on status() reports AGENT_CLOSED and makes no network call.
+    this.#closed = true;
+    this.#track.close();
     // The vault flush below waits for the leaf-vault's OWN snapshot, but it
     // cannot make the SDK's background leaf optimizer finish — cleanup() tears
     // down the gRPC streams underneath it. If this agent moved value and is a
     // one-shot process, prefer SparkAgent.create(..., { optimizeLeaves: false })
     // so there's no in-flight optimization to interrupt. See references/wallet.md.
     await this.#vault?.dispose?.(); // first: the final flush needs the live wallet
-    await this.#wallet.cleanup();
+    await sparkRead(() => this.#wallet.cleanup());
   }
 }
 
@@ -2388,9 +3238,11 @@ async function main() {
   console.log("Spark Address:", identity.address);
   console.log("Public Key:   ", identity.publicKey);
 
-  const { sats, tokens } = await agent.getBalance();
+  const { sats, incomingSats, tokens } = await agent.getBalance();
   console.log("\n=== Balance ===");
   console.log("BTC:", sats.toString(), "sats");
+  // Right after boot a payment can still be being claimed: it has arrived.
+  if (incomingSats !== "0") console.log("Arriving (being claimed):", incomingSats, "sats");
 
   for (const [, info] of Object.entries(tokens)) {
     console.log(`${info.ticker}: ${info.balance}`);

@@ -62,9 +62,14 @@ describe("fulfillInvoice allowlist gate", () => {
   it("BLOCKS an invoice whose receiver is not in the allowlist (SDK never called)", async () => {
     const { agent, calls } = mkAgent();
     mockAllowlist = [bareAddress(OTHER_PK)];
-    await expect(agent.fulfillInvoice([{ invoice: INVOICE, amount: 1500n }]))
-      .rejects.toMatchObject({ code: "RECIPIENT_NOT_ALLOWED" });
+    const err = await agent.fulfillInvoice([{ invoice: INVOICE, amount: 1500n }]).then(() => null, (e) => e);
+    expect(err).toMatchObject({ code: "RECIPIENT_NOT_ALLOWED" });
     expect(calls.fulfill).toBeNull();
+    // Whose file it is (verified 2026-10-28: "Add it to <path>" read as an
+    // instruction to the agent that hit the gate).
+    expect(err.message).toMatch(/not in the allowlist \(.*recipients\.allow\); nothing was sent\. Only the user adds addresses to that file/);
+    expect(err.message).toMatch(/An agent must not edit it or use the raw SDK; ask the user\.$/);
+    expect(err.message).not.toMatch(/Add it to|to permit this send/);
   });
 
   it("blocks in dryRun mode too — a dry-run can't be used to bless a disallowed receiver", async () => {

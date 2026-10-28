@@ -164,6 +164,17 @@ describe("audit hardening", () => {
     await expect(store.idForInvoice(UNDECODABLE, mint, { explicitId: idA })).rejects.toThrow(
       /already recorded for a DIFFERENT invoice/i,
     );
+    // Verified 2026-10-28: the remedy was "Omit transferId to mint a fresh
+    // one", which for a re-issued invoice of the same purchase is a real
+    // second payment. The other invoice may be paid: look first.
+    const err = await store.idForInvoice(UNDECODABLE, mint, { explicitId: idA }).then(() => null, (e) => e);
+    expect(err).toMatchObject({ code: "TRANSFER_ID_CONFLICT", retryable: "check-first", field: "transferId" });
+    expect(err.message).toMatch(/was not shown to have failed/);
+    expect(err.message).toMatch(/do NOT pay it: check agent\.getTransfers\(\) first/);
+    expect(err.message).toMatch(/Only if this is a different payment, omit transferId\.$/);
+    expect(err.message).not.toMatch(/mint a fresh one/);
+    expect(err.message).toMatch(/recorded \d{4}-\d{2}-\d{2}T/); // when the other invoice's attempt was made
+    expect(err.nextStep).toMatch(/getTransfers\(\)/);
   });
 
   it("rejects a broken clock at construction (a Date-returning clock breaks TTLs silently)", () => {

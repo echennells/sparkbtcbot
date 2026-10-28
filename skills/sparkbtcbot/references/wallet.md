@@ -10,7 +10,7 @@ const { balance, satsBalance, tokenBalances } = await wallet.getBalance();
 // Three sats values exposed in 0.7.x:
 console.log("available:", satsBalance.available); // immediately spendable
 console.log("owned:    ", satsBalance.owned);     // available + locked in pending outgoing
-console.log("incoming: ", satsBalance.incoming);  // pending inbound, not yet claimed
+console.log("incoming: ", satsBalance.incoming);  // arrived, not claimed yet (not spendable yet)
 
 // `balance` (top-level) is deprecated; prefer satsBalance.available.
 
@@ -21,7 +21,9 @@ for (const [id, token] of tokenBalances) {
 
 `tokenBalances` is a `Map<Bech32mTokenIdentifier, { ownedBalance, availableToSendBalance, tokenMetadata }>`.
 
-> **⚠️ The `SparkAgent` wrapper's `getBalance()` returns a DIFFERENT shape** — normalized `{ sats, lockedSats, tokens }`, where `sats` is `satsBalance.available` **as a string** (the spendable figure), `lockedSats` is `owned` minus `available`: sats still this wallet's but not spendable right now. Usually 0. A send or leaf swap in flight, or leaves the operators briefly disagree about, raise it for a few minutes; a value that stays after a failed Lightning payment is coins that payment locked (`references/lightning.md` → expiry). Say so instead of reporting the sats missing; and `tokens` is a plain object, not the raw `{ satsBalance, tokenBalances }` (bigint + Map) above. Same method name, not interchangeable — the same wrapper-vs-raw divergence family as `payLightningInvoice` (`references/lightning.md` → Pay). Destructure `{ satsBalance }` from the raw wallet and `{ sats }` from the agent; crossing them yields `undefined`, which reads as a zero balance.
+> **⚠️ The `SparkAgent` wrapper's `getBalance()` returns a DIFFERENT shape** — normalized `{ sats, incomingSats, lockedSats, tokens }`, where `sats` is `satsBalance.available` **as a string** (the spendable figure); `incomingSats` is `satsBalance.incoming`: a payment that has **arrived** but isn't claimed yet, so it isn't spendable yet. Never report it as "nothing arrived": it is usually claimed within a second of the agent opening, and if it stays, restart the agent. `lockedSats` is `owned` minus `available`: sats still this wallet's but not spendable right now. Usually 0. A send or leaf swap in flight, or leaves the operators briefly disagree about, raise it for a few minutes; right after the agent opens, so does a payment it is still claiming; a value that stays after a failed Lightning payment is coins that payment locked (`references/lightning.md` → expiry). Say so instead of reporting the sats missing; and `tokens` is a plain object, not the raw `{ satsBalance, tokenBalances }` (bigint + Map) above. Same method name, not interchangeable — the same wrapper-vs-raw divergence family as `payLightningInvoice` (`references/lightning.md` → Pay). Destructure `{ satsBalance }` from the raw wallet and `{ sats }` from the agent; crossing them yields `undefined`, which reads as a zero balance.
+
+**Did a Spark or Lightning payment arrive, and is the agent working?** `agent.status()` answers both in one call (an on-chain deposit shows only in `listPendingDeposits()`, below): the same three figures, plus `INCOMING_UNCLAIMED` once incoming sats have waited a minute with the stream connected, `BALANCE_LOCKED` once sats have stayed locked for 30 minutes, and the stream, privacy, backup and budget state (`references/agent-class.md` → `status()`). A payment made while the agent was closed is claimed as it opens, and `agent.onTransferReceived` (the raw `transfer:claimed` event) does not fire for it: it fires only for payments claimed while the agent is connected. After boot, look in `getTransfers()` for what came in meanwhile. One made less than about a second before the agent opens can stay in `incomingSats` until the next restart (`references/agent-class.md` → Receiving).
 
 ## On L1: what this skill can and can't do
 

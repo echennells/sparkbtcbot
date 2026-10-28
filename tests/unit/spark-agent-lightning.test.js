@@ -215,6 +215,88 @@ describe("audit hardening (wrapper)", () => {
     await expect(agent.payAndSettle(INVOICE_2000_SATS, { pollMs: 1 })).rejects.toThrow(
       /does NOT hash to this invoice's payment hash/i,
     );
+    // Not proven paid either way: check-first, with the send to look up.
+    await expect(agent.payAndSettle(INVOICE_2000_SATS, { pollMs: 1 })).rejects.toMatchObject({
+      code: "PREIMAGE_MISMATCH", retryable: "check-first", sendId: "pay-1", invoiceHash: invoicePaymentHash(INVOICE_2000_SATS),
+    });
+  });
+
+  // Verified 2026-10-28: the operators refuse a second live Lightning swap
+  // for one payment hash ("preimage request already exists") before creating
+  // any transfer. After a failed payment whose sats were still being
+  // returned, the deleted id made the next attempt mint a fresh one: its
+  // refusal read as "outcome UNKNOWN" and kept that id, and the attempt after
+  // read the same refusal as PAYMENT_ALREADY_SETTLED for an invoice never paid.
+  const preimageRequestExists = () => Object.assign(
+    new Error("Failed to initiate preimage swap: rpc error: code = AlreadyExists desc = preimage request already exists for paymentHash 0f1e"),
+    { name: "SparkRequestError" },
+  );
+
+  it("'preimage request already exists' after a deleted id is EARLIER_ATTEMPT_OPEN, never PAYMENT_ALREADY_SETTLED", async () => {
+    const { dir } = await mkIsolated();
+    process.env.SPARK_LEAF_VAULT = "off";
+    let attempt = 0;
+    const wallet = {
+      getSparkAddress: async () => "sp1from",
+      getLightningSendFeeEstimate: async () => 5,
+      payLightningInvoice: async () => {
+        if (attempt++ === 0) return { id: "pay-1" };
+        throw preimageRequestExists(); // the first swap is still open
+      },
+      getLightningSendRequest: async () => ({ status: "PENDING_USER_SWAP_RETURN" }),
+    };
+    const agent = new SparkAgent(wallet, "MAINNET");
+    await expect(agent.payAndSettle(INVOICE_2000_SATS, { pollMs: 1 })).rejects.toMatchObject({
+      code: "LIGHTNING_PAYMENT_FAILED", retryable: "check-first", fundsReturned: false,
+    });
+    await expect(readdir(dir)).resolves.toEqual([]); // the dead id is gone (F5)
+    for (let i = 0; i < 2; i++) {
+      const err = await agent.payLightningInvoice(INVOICE_2000_SATS).then(() => null, (e) => e);
+      expect(err).toMatchObject({
+        code: "PAYMENT_COMMITTED", reason: "EARLIER_ATTEMPT_OPEN", retryable: "check-first", settled: null,
+        invoiceHash: invoicePaymentHash(INVOICE_2000_SATS),
+      });
+      expect(err.message).toMatch(/Nothing new was sent/);
+      expect(err.nextStep).toMatch(/lockedSats.*don't pay this invoice or another for the same thing/);
+      await expect(readdir(dir)).resolves.toEqual([]); // the id this refused attempt minted is dropped
+    }
+    expect(attempt).toBe(3);
+  });
+
+  it("'preimage request already exists' under a REUSED id is EARLIER_ATTEMPT_OPEN too; only 'transfer already exists' means settled", async () => {
+    const { dir } = await mkIsolated();
+    const { agent: first } = mkThrowing(null);
+    await first.payLightningInvoice(AMOUNTLESS, { amountSats: 500 }); // records the id
+    const { agent: retry } = mkThrowing(preimageRequestExists());
+    await expect(retry.payLightningInvoice(AMOUNTLESS, { amountSats: 500 })).rejects.toMatchObject({
+      code: "PAYMENT_COMMITTED", reason: "EARLIER_ATTEMPT_OPEN",
+    });
+    expect(await readdir(dir)).toHaveLength(1); // a recorded id is kept: it may be the open payment's
+    // The SDK's own wrapper may carry the operators' text only in originalError.
+    const wrapped = Object.assign(new Error("Failed to initiate preimage swap"), { originalError: preimageRequestExists() });
+    const { agent: viaChain } = mkThrowing(wrapped);
+    await expect(viaChain.payLightningInvoice(AMOUNTLESS, { amountSats: 500 })).rejects.toMatchObject({ reason: "EARLIER_ATTEMPT_OPEN" });
+  });
+
+  it("EARLIER_ATTEMPT_OPEN undoes this attempt's spend: nothing new was sent", async () => {
+    await mkIsolated();
+    const scratch = mkdtempSync(join(tmpdir(), "ln-budget-"));
+    const saved = { b: process.env.SPARK_DAILY_BUDGET_SATS, p: process.env.SPARK_SPEND_LEDGER_PATH, s: process.env.SPARK_SEED_PATH };
+    process.env.SPARK_DAILY_BUDGET_SATS = "10000";
+    process.env.SPARK_SPEND_LEDGER_PATH = join(scratch, "ledger.json");
+    process.env.SPARK_SEED_PATH = join(scratch, "no-seed.enc"); // keep the constructor's sealed-seed check off ~/.spark
+    try {
+      const { agent } = mkThrowing(preimageRequestExists());
+      for (let i = 0; i < 3; i++) {
+        await expect(agent.payLightningInvoice(INVOICE_2000_SATS)).rejects.toMatchObject({ reason: "EARLIER_ATTEMPT_OPEN" });
+      }
+      expect(await agent.spendStatus()).toMatchObject({ spentSats: 0 });
+    } finally {
+      for (const [k, v] of [["SPARK_DAILY_BUDGET_SATS", saved.b], ["SPARK_SPEND_LEDGER_PATH", saved.p], ["SPARK_SEED_PATH", saved.s]]) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
   });
 
   it("payAndSettle deletes the dedup entry on TERMINAL failure so a re-pay mints fresh", async () => {
@@ -406,6 +488,32 @@ describe("payAndSettle terminal statuses", () => {
     await expect(agent.payAndSettle(AMOUNTLESS, { amountSats: 500, pollMs: 1 }))
       .rejects.toMatchObject({ code: "PAYMENT_COMMITTED", settled: null, op: "lightning_pay", message: expect.stringMatching(new RegExp(status)) });
   });
+
+  // Verified 2026-10-28: the payee wasn't paid in any of these, but only
+  // USER_SWAP_RETURNED says the sats are back; in the others they can still be
+  // locked to the SSP, so a retry is "yes" only for that one.
+  it("USER_SWAP_RETURNED is retryable 'yes' with fundsReturned: true, and carries the send and the invoice", async () => {
+    const agent = mkStatus("USER_SWAP_RETURNED");
+    await expect(agent.payAndSettle(INVOICE_2000_SATS, { pollMs: 1 })).rejects.toMatchObject({
+      code: "LIGHTNING_PAYMENT_FAILED", retryable: "yes", fundsReturned: true, status: "USER_SWAP_RETURNED",
+      sendId: "pay-1", invoiceHash: invoicePaymentHash(INVOICE_2000_SATS),
+      message: expect.stringMatching(/the sats are back/),
+    });
+  });
+
+  it.each(["LIGHTNING_PAYMENT_FAILED", "PENDING_USER_SWAP_RETURN", "USER_SWAP_RETURN_FAILED", "USER_TRANSFER_VALIDATION_FAILED"])(
+    "%s is check-first with fundsReturned: false (the sats may still be locked)",
+    async (status) => {
+      const agent = mkStatus(status);
+      const err = await agent.payAndSettle(INVOICE_2000_SATS, { pollMs: 1 }).then(() => null, (e) => e);
+      expect(err).toMatchObject({
+        code: "LIGHTNING_PAYMENT_FAILED", retryable: "check-first", fundsReturned: false, status,
+        sendId: "pay-1", invoiceHash: invoicePaymentHash(INVOICE_2000_SATS),
+      });
+      expect(err.message).toMatch(/may stay locked.*getBalance\(\)\.lockedSats/s);
+      expect(err.nextStep).toMatch(/lockedSats/);
+    },
+  );
 
   it("reports lastStatus so a genuine pending is legible", async () => {
     const agent = mkStatus("LIGHTNING_PAYMENT_INITIATED");

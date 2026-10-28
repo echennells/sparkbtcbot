@@ -258,6 +258,113 @@ describe("fetchL402 after payment: in-process recovery", () => {
     expect(pay).toHaveBeenCalledTimes(1);
   });
 
+  // Verified 2026-10-28: the service accepted the paid pass, then the body
+  // stream broke (a reset mid-body, a proxy cutting the response). The raw
+  // `TypeError: terminated` escaped with nothing held, and every retry bought
+  // a new pass: 3 retries, 3 payments.
+  const cutBody = () => new Response(
+    new ReadableStream({
+      start(c) {
+        c.enqueue(new TextEncoder().encode('{"partial":'));
+        c.error(new TypeError("terminated"));
+      },
+    }),
+    { status: 200, headers: { "content-type": "application/json" } },
+  );
+
+  it("a body cut off after paying is a failed delivery: retried with the same pass, paid once", async () => {
+    const inv = await invoice2000();
+    const seen = stubFetch([resp(402, { invoice: inv, macaroon: "mac1" }), cutBody(), resp(200, { ok: true })]);
+    const { agent, pay } = mk();
+    const { value } = await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }));
+    expect(value).toMatchObject({ paid: true, status: 200, data: { ok: true } });
+    expect(pay).toHaveBeenCalledTimes(1);
+    expect(seen.slice(1).map(auth)).toEqual(["L402 mac1:abc123preimage", "L402 mac1:abc123preimage"]);
+  });
+
+  it("a body cut off on every attempt: PAYMENT_COMMITTED settled:true, and retries present the pass, never buy again", async () => {
+    const inv = await invoice2000();
+    stubFetch([resp(402, { invoice: inv, macaroon: "mac1" }), cutBody(), cutBody(), cutBody()]);
+    const { agent, pay } = mk();
+    const { error } = await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }));
+    expect(error).toMatchObject({ code: "PAYMENT_COMMITTED", retryable: "check-first", settled: true, op: "l402" });
+    expect(error.message).toMatch(/after 3 attempts \(HTTP 200, body cut off \(terminated\)\)/);
+
+    for (let i = 0; i < 3; i++) { // a retry loop on a deterministic cut: no new challenge, no new payment
+      const seen = stubFetch([cutBody(), cutBody(), cutBody()]);
+      const again = await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }));
+      expect(again.error).toMatchObject({ code: "PAYMENT_COMMITTED", settled: true });
+      expect(seen.map(auth)).toEqual(Array(3).fill("L402 mac1:abc123preimage"));
+    }
+    const seen = stubFetch([resp(200, { ok: true })]);
+    const { value } = await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }));
+    expect(value).toMatchObject({ paid: false, recovered: true, data: { ok: true } });
+    expect(seen.map(auth)).toEqual(["L402 mac1:abc123preimage"]);
+    expect(pay).toHaveBeenCalledTimes(1);
+  });
+
+  it("a POST whose body is cut off after paying is held as sent once (resend hint), not bought again", async () => {
+    const inv = await invoice2000();
+    const seen = stubFetch([resp(402, { invoice: inv, macaroon: "mac1" }), cutBody()]);
+    const { agent, pay } = mk();
+    const post = { method: "POST", body: { order: 7 }, maxAmountSats: 3000 };
+    const { error } = await run(agent.fetchL402(URL_, post));
+    expect(error).toMatchObject({ code: "PAYMENT_COMMITTED", settled: true });
+    expect(error.message).toMatch(/after 1 attempt \(HTTP 200, body cut off/);
+    expect(error.message).toMatch(/resend: true/);
+    expect(seen).toHaveLength(2); // the challenge and ONE paid attempt
+    stubFetch([]);
+    const again = await run(agent.fetchL402(URL_, post));
+    expect(again.error.message).toMatch(/already sent once/);
+    expect(pay).toHaveBeenCalledTimes(1);
+  });
+
+  // Defence in depth: the paid pass is held before the first delivery
+  // attempt, so even a throw nobody planned for leaves it to present.
+  it("an unexpected throw during the first delivery leaves the paid pass held", async () => {
+    const inv = await invoice2000();
+    const weird = { get status() { throw new TypeError("unexpected"); }, headers: { get: () => "" } };
+    stubFetch([resp(402, { invoice: inv, macaroon: "mac1" }), weird]);
+    const { agent, pay } = mk();
+    const { error } = await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }));
+    expect(error.message).toBe("unexpected");
+    const seen = stubFetch([resp(200, { ok: true })]);
+    const { value } = await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }));
+    expect(value).toMatchObject({ paid: false, recovered: true, data: { ok: true } });
+    expect(seen.map(auth)).toEqual(["L402 mac1:abc123preimage"]);
+    expect(pay).toHaveBeenCalledTimes(1);
+  });
+
+  // payAndSettle's PREIMAGE_MISMATCH used to escape fetchL402 with nothing
+  // held, so a retry bought again. Now it blocks the URL like #resumeL402
+  // does for the same evidence (L402_NO_PROOF), until forgetL402.
+  it("a preimage that doesn't prove the invoice blocks the URL (L402_NO_PROOF) until forgetL402", async () => {
+    stubFetch([resp(402, { invoice: KNOWN_INVOICE, macaroon: "mac1" })]);
+    const wallet = {
+      getSparkAddress: async () => "sp1from",
+      getLightningSendFeeEstimate: async () => 5,
+      payLightningInvoice: vi.fn(async () => ({ id: "send-1", paymentPreimage: "aa".repeat(32) })),
+      getLightningSendRequest: async () => null,
+    };
+    const agent = new SparkAgent(wallet, "MAINNET");
+    const { error } = await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }));
+    expect(error).toMatchObject({
+      code: "PAYMENT_COMMITTED", retryable: "check-first", reason: "L402_NO_PROOF", settled: null, sendId: "send-1",
+      invoiceHash: expect.stringMatching(/^[0-9a-f]{64}$/), amountSats: 2000,
+    });
+    expect(error.nextStep).toMatch(/getLightningSendRequest\(err\.sendId\)/);
+    expect(error.nextStep).not.toMatch(/Nothing new was paid/); // this call did try to pay
+
+    stubFetch([]); // a retry loop: no request, no payment
+    for (let i = 0; i < 2; i++) {
+      const again = await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }));
+      expect(again.error).toMatchObject({ code: "PAYMENT_COMMITTED", reason: "L402_NO_PROOF" });
+      expect(again.error.nextStep).toMatch(/Nothing new was paid/);
+    }
+    expect(wallet.payLightningInvoice).toHaveBeenCalledTimes(1);
+    expect(agent.forgetL402(URL_)).toBe(true); // the user's decision
+  });
+
   it("a payment still pending: the next call checks it instead of paying again", async () => {
     stubFetch([resp(402, { invoice: KNOWN_INVOICE, macaroon: "mac1" })]);
     const { agent, wallet, pay } = mk();
@@ -279,14 +386,104 @@ describe("fetchL402 after payment: in-process recovery", () => {
     expect(pay).toHaveBeenCalledTimes(1);
   });
 
-  it("a pending payment that failed for good: the next call buys afresh (nothing had left)", async () => {
-    stubFetch([resp(402, { invoice: KNOWN_INVOICE, macaroon: "mac1" })]);
-    const { agent, wallet, pay } = mk();
-    pay.mockResolvedValueOnce({ settled: false, paymentPreimage: null, id: "send-1", lastStatus: "LIGHTNING_PAYMENT_INITIATED" });
-    await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }));
+  // Changed 2026-10-28 (verified): every terminal-failure status used to buy
+  // again at once, but only USER_SWAP_RETURNED says the sats are back; in the
+  // others they can still be locked to the SSP. Those keep the hold.
+  it.each(["LIGHTNING_PAYMENT_FAILED", "PENDING_USER_SWAP_RETURN", "USER_SWAP_RETURN_FAILED", "USER_TRANSFER_VALIDATION_FAILED"])(
+    "a pending payment that ended in %s: held (sats may still be locked), bought afresh only once USER_SWAP_RETURNED",
+    async (status) => {
+      stubFetch([resp(402, { invoice: KNOWN_INVOICE, macaroon: "mac1" })]);
+      const { agent, wallet, pay } = mk();
+      pay.mockResolvedValueOnce({ settled: false, paymentPreimage: null, id: "send-1", lastStatus: "LIGHTNING_PAYMENT_INITIATED" });
+      await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }));
 
-    wallet.getLightningSendRequest = async () => ({ status: "LIGHTNING_PAYMENT_FAILED" });
+      wallet.getLightningSendRequest = async () => ({ status });
+      stubFetch([]); // any request here would be a bug
+      for (let i = 0; i < 2; i++) {
+        const { error } = await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }));
+        expect(error).toMatchObject({ code: "LIGHTNING_PAYMENT_FAILED", retryable: "check-first", fundsReturned: false, status, sendId: "send-1" });
+        expect(error.message).toMatch(/Nothing new was paid/);
+        expect(error.nextStep).toMatch(/forgetL402\(url\).*only on the user's say-so/);
+      }
+      expect(pay).toHaveBeenCalledTimes(1);
+
+      wallet.getLightningSendRequest = async () => ({ status: "USER_SWAP_RETURNED" });
+      const inv = await invoice2000();
+      stubFetch([resp(402, { invoice: inv, macaroon: "mac2" }), resp(200, { ok: true })]);
+      const { value } = await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }));
+      expect(value).toMatchObject({ paid: true, data: { ok: true } });
+      expect(pay).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  // Payments review 2026-10-28: a FIRST call whose payment failed with the
+  // sats maybe still locked threw unheld, so the next call bought a fresh
+  // invoice at once (a retry loop locked one price per call). Held now, on the
+  // send's id, as #resumeL402 holds for the same statuses. Through the real
+  // payAndSettle, so the error is the one it throws.
+  it.each(["LIGHTNING_PAYMENT_FAILED", "PENDING_USER_SWAP_RETURN", "USER_SWAP_RETURN_FAILED", "USER_TRANSFER_VALIDATION_FAILED"])(
+    "a first call whose payment failed in %s: held on the send's id, one payment across the calls until USER_SWAP_RETURNED",
+    async (status) => {
+      const inv = await invoice2000();
+      const sendStatus = { status };
+      const wallet = {
+        getSparkAddress: async () => "sp1from",
+        getLightningSendFeeEstimate: async () => 5,
+        payLightningInvoice: vi.fn(async () => ({ id: "send-1", status: "LIGHTNING_PAYMENT_INITIATED" })),
+        getLightningSendRequest: vi.fn(async () => sendStatus),
+      };
+      const agent = new SparkAgent(wallet, "MAINNET");
+      stubFetch([resp(402, { invoice: inv, macaroon: "mac1" })]);
+      // payAndSettle sets its poll timer only after real I/O (the SDK's lazy
+      // import, the dedup store), so one runAllTimersAsync() can finish before
+      // the timer exists: yield to I/O and advance until the call settles.
+      let done = false;
+      const pending = agent.fetchL402(URL_, { maxAmountSats: 3000 }).then((value) => ({ value }), (error) => ({ error }));
+      pending.finally(() => { done = true; });
+      for (const end = Date.now() + 20_000; !done && Date.now() < end;) {
+        await new Promise((r) => setImmediate(r));
+        await vi.advanceTimersByTimeAsync(2_000);
+      }
+      const first = await pending;
+      expect(first.error).toMatchObject({
+        code: "LIGHTNING_PAYMENT_FAILED", retryable: "check-first", fundsReturned: false, status, sendId: "send-1",
+        cause: expect.objectContaining({ code: "LIGHTNING_PAYMENT_FAILED", status }),
+      });
+      expect(first.error.message).toMatch(/only once that send reads USER_SWAP_RETURNED/);
+      expect(first.error.nextStep).toMatch(/forgetL402\(url\) only on the user's say-so.*Holds live in memory only.*If the check itself fails/);
+
+      wallet.getLightningSendRequest.mockClear();
+      stubFetch([]); // no new challenge: any request here would be a bug
+      for (let i = 0; i < 2; i++) {
+        const { error } = await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }));
+        expect(error).toMatchObject({ code: "LIGHTNING_PAYMENT_FAILED", retryable: "check-first", fundsReturned: false, status, sendId: "send-1" });
+        expect(error.message).toMatch(/Nothing new was paid/);
+      }
+      expect(wallet.getLightningSendRequest.mock.calls.map((c) => c[0])).toEqual(["send-1", "send-1"]);
+      expect(wallet.payLightningInvoice).toHaveBeenCalledTimes(1);
+
+      // The SSP returned the sats: the next call buys afresh.
+      sendStatus.status = "USER_SWAP_RETURNED";
+      const pay = vi.spyOn(agent, "payAndSettle").mockResolvedValue({ settled: true, paymentPreimage: "abc123preimage", id: "pay-2" });
+      stubFetch([resp(402, { invoice: inv, macaroon: "mac2" }), resp(200, { ok: true })]);
+      const { value } = await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }));
+      expect(value).toMatchObject({ paid: true, data: { ok: true } });
+      expect(pay).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("a first call whose payment failed with the sats back (USER_SWAP_RETURNED): nothing held, retryable 'yes'", async () => {
     const inv = await invoice2000();
+    stubFetch([resp(402, { invoice: inv, macaroon: "mac1" })]);
+    const { agent, pay } = mk();
+    const returned = Object.assign(new Error("Lightning payment failed (USER_SWAP_RETURNED)"), {
+      code: "LIGHTNING_PAYMENT_FAILED", retryable: "yes", status: "USER_SWAP_RETURNED", fundsReturned: true, sendId: "send-1",
+    });
+    pay.mockRejectedValueOnce(returned);
+    const first = await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }));
+    expect(first.error).toBe(returned);
+    expect(agent.forgetL402(URL_)).toBe(false); // nothing held
+
     stubFetch([resp(402, { invoice: inv, macaroon: "mac2" }), resp(200, { ok: true })]);
     const { value } = await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }));
     expect(value).toMatchObject({ paid: true, data: { ok: true } });
@@ -440,18 +637,50 @@ describe("fetchL402 after payment: in-process recovery", () => {
     expect(seen).toHaveLength(1);
   });
 
-  it("a held payment that failed for good while being settled: the same call buys afresh", async () => {
+  it("a held payment that failed while being settled, its sats back (USER_SWAP_RETURNED): the same call buys afresh", async () => {
     const inv = await invoice2000();
     stubFetch([resp(402, { invoice: inv, macaroon: "mac1" })]);
     const { agent, pay } = mk();
     pay.mockRejectedValueOnce(Object.assign(new Error("outcome unknown"), { code: "PAYMENT_COMMITTED", settled: null }));
     await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }));
 
-    pay.mockRejectedValueOnce(Object.assign(new Error("Lightning payment failed (LIGHTNING_PAYMENT_FAILED)"), { code: "LIGHTNING_PAYMENT_FAILED" }));
+    pay.mockRejectedValueOnce(Object.assign(new Error("Lightning payment failed (USER_SWAP_RETURNED)"), {
+      code: "LIGHTNING_PAYMENT_FAILED", status: "USER_SWAP_RETURNED", fundsReturned: true, sendId: "send-9",
+    }));
     stubFetch([resp(402, { invoice: inv, macaroon: "mac2" }), resp(200, { ok: true })]);
     const { value } = await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }));
     expect(value).toMatchObject({ paid: true, data: { ok: true } });
     expect(pay).toHaveBeenCalledTimes(3);
+  });
+
+  // Changed 2026-10-28 (verified): this used to buy afresh at once, while the
+  // failed payment's sats could still be locked to the SSP.
+  it("a held payment that failed while being settled, its sats maybe still locked: held on the send's id, not bought again", async () => {
+    const inv = await invoice2000();
+    stubFetch([resp(402, { invoice: inv, macaroon: "mac1" })]);
+    const { agent, wallet, pay } = mk();
+    pay.mockRejectedValueOnce(Object.assign(new Error("outcome unknown"), { code: "PAYMENT_COMMITTED", settled: null }));
+    await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }));
+
+    const failed = Object.assign(new Error("Lightning payment failed (PENDING_USER_SWAP_RETURN)"), {
+      code: "LIGHTNING_PAYMENT_FAILED", status: "PENDING_USER_SWAP_RETURN", fundsReturned: false, sendId: "send-9",
+    });
+    pay.mockRejectedValueOnce(failed);
+    stubFetch([]); // no new challenge, no delivery
+    const second = await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }));
+    expect(second.error).toMatchObject({
+      code: "LIGHTNING_PAYMENT_FAILED", retryable: "check-first", fundsReturned: false, status: "PENDING_USER_SWAP_RETURN", sendId: "send-9", cause: failed,
+    });
+    expect(second.error.nextStep).toMatch(/Holds live in memory only.*If the check itself fails/);
+
+    // The hold is now on the send's id: the next call reads its status instead of paying.
+    const asked = [];
+    wallet.getLightningSendRequest = async (id) => { asked.push(id); return { status: "USER_SWAP_RETURNED" }; };
+    stubFetch([resp(402, { invoice: inv, macaroon: "mac2" }), resp(200, { ok: true })]);
+    const third = await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }));
+    expect(asked).toEqual(["send-9"]);
+    expect(third.value).toMatchObject({ paid: true, data: { ok: true } });
+    expect(pay).toHaveBeenCalledTimes(3); // the held invoice twice, then the new purchase once
   });
 
   // ToB review of 375e6fb..HEAD: PREIMAGE_PROVIDING_FAILED read as "still

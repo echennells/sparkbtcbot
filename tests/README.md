@@ -19,7 +19,9 @@ tests/
   helpers/wallet.js                 # createTestWallet (fee ladders off like the package), cleanupAllWallets, getFundedMnemonic
   helpers/leaf-txs.js               # real nodeTx/refundTx bytes for mock leaves (the vault gate parses them)
   unit/
-    imports.test.js                 # SDK export sanity, SparkWallet method surface
+    imports.test.js                 # SDK export sanity, SparkWallet method surface, ./agent's .d.ts named first and in the tarball
+    agent-types-parity.test.js      # spark-agent.d.ts ↔ SparkAgent (members, @sideEffect/@dryRun tags, @throws codes, option keys, SDK type names) and lib/index.d.ts's error-code unions ↔ the registry; parses both under Node's type stripping
+    agent-class-errors-doc.test.js  # agent-class.md's error and status() tables ↔ lib/agent-errors.js, word for word (helpers/agent-errors-doc.js --write renders them; only the Meaning / Reported-when cells are hand-written)
     balance-shape.test.js           # regression: ownedBalance / availableToSendBalance
     encrypted-seed.test.js          # seed encrypt/decrypt round-trip, EEXIST, perms, NO_PASSPHRASE
     leaf-vault.test.js              # bundle shape validation (Blink compatibility contract)

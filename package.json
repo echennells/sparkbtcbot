@@ -41,6 +41,7 @@
       "import": "./lib/index.js"
     },
     "./agent": {
+      "types": "./skills/sparkbtcbot/scripts/spark-agent.d.ts",
       "import": "./skills/sparkbtcbot/scripts/spark-agent.js"
     },
     "./leaf-vault": {

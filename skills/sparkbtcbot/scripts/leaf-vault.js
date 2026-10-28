@@ -24,6 +24,7 @@ import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { open, mkdir, unlink } from "node:fs/promises";
 import { atomicWriteJson, readVault, validateSnapshotShape, isNonEmptyStr, BUNDLE_SCHEMA, RECOVERABLE_NETWORKS } from "../../../lib/leaf-vault.js";
+import { annotateError, hasAgentCode, isConnectionFailure } from "../../../lib/agent-errors.js";
 
 // TreeNode protobuf codec (+ the proto Network enum's name mapping) — loaded
 // LAZILY from the SDK's own exports subpath (`@buildonspark/spark-sdk/proto/spark`).
@@ -36,9 +37,11 @@ async function getProto() {
     const { TreeNode, networkToJSON } = await import("@buildonspark/spark-sdk/proto/spark");
     _proto = { TreeNode, networkToJSON };
   } catch (e) {
-    const err = new Error(`leaf-vault: cannot load the SDK TreeNode codec (@buildonspark/spark-sdk/proto/spark): ${e?.message ?? e}. Backup NOT captured.`);
-    err.code = "LEAF_VAULT_FATAL"; // reach-in breakage, not a transient — see runSnapshot
-    throw err;
+    // Reach-in breakage, not a transient: see runSnapshot.
+    throw annotateError(
+      new Error(`leaf-vault: cannot load the SDK TreeNode codec (@buildonspark/spark-sdk/proto/spark): ${e?.message ?? e}. Backup NOT captured.`),
+      "LEAF_VAULT_FATAL",
+    );
   }
   return _proto;
 }
@@ -147,13 +150,15 @@ export function assertLeafInternalsIntact(wallet, TreeNode) {
     missing.push("TreeNode proto codec (encode/decode/fromPartial)");
   }
   if (missing.length) {
-    const err = new Error(
-      `leaf-vault: SDK internals moved — cannot reach [${missing.join(", ")}]. Backup NOT captured. ` +
-      `Re-verify the reach-in against the resolved @buildonspark/spark-sdk version before relying on ` +
-      `unilateral-exit recovery.`,
+    // Reach-in breakage: enableLeafVault marks BROKEN on the first hit.
+    throw annotateError(
+      new Error(
+        `leaf-vault: SDK internals moved — cannot reach [${missing.join(", ")}]. Backup NOT captured. ` +
+        `Re-verify the reach-in against the resolved @buildonspark/spark-sdk version before relying on ` +
+        `unilateral-exit recovery.`,
+      ),
+      "LEAF_VAULT_FATAL",
     );
-    err.code = "LEAF_VAULT_FATAL"; // reach-in breakage — enableLeafVault marks BROKEN on the first hit
-    throw err;
   }
 }
 
@@ -215,7 +220,22 @@ export function anchorlessReason(count) {
 // into leaves + ancestor nodes, then run the INTEGRITY GATE — the leaf carries its
 // pre-signed txs, the chain reaches a genuine root, and every leaf reconstructs
 // OFFLINE — and only then persist atomically. Writes nothing on any failure.
-export async function snapshotLeafVault(wallet, { path = defaultVaultPath(), networkLabel } = {}) {
+// Every failure carries the error contract (lib/agent-errors.js): one the code
+// below didn't name (an SDK call, a decode) is SPARK_UNAVAILABLE when Spark
+// couldn't be reached, else LEAF_VAULT_INCOMPLETE.
+export async function snapshotLeafVault(wallet, options = {}) {
+  try {
+    return await snapshotOnce(wallet, options);
+  } catch (err) {
+    if (hasAgentCode(err)) throw err;
+    throw annotateError(err, isConnectionFailure(err) ? "SPARK_UNAVAILABLE" : "LEAF_VAULT_INCOMPLETE");
+  }
+}
+
+// Not written: the gate refused the capture (the prior bundle, if any, stays).
+const incomplete = (message, nextStep) => annotateError(new Error(message), "LEAF_VAULT_INCOMPLETE", { nextStep });
+
+async function snapshotOnce(wallet, { path = defaultVaultPath(), networkLabel } = {}) {
   const { TreeNode, networkToJSON } = await getProto();
   assertLeafInternalsIntact(wallet, TreeNode);
 
@@ -254,7 +274,11 @@ export async function snapshotLeafVault(wallet, { path = defaultVaultPath(), net
   }
   const network = normalizeNetwork(networkLabel ?? derived ?? "MAINNET");
   if (!KNOWN_NETWORKS.includes(network)) {
-    throw new Error(`leaf-vault: network "${network}" is not one of ${KNOWN_NETWORKS.join("/")} — Blink's recovery CLI would refuse this bundle; NOT written.`);
+    throw annotateError(
+      new Error(`leaf-vault: network "${network}" is not one of ${KNOWN_NETWORKS.join("/")} — Blink's recovery CLI would refuse this bundle; NOT written.`),
+      "BAD_INPUT",
+      { field: "networkLabel" },
+    );
   }
 
   const netEnum = Network[network];
@@ -267,7 +291,7 @@ export async function snapshotLeafVault(wallet, { path = defaultVaultPath(), net
   for (const leaf of leaves) {
     const nodeMap = new Map();
     const chain = await buildUnilateralExitChain(leaf, nodeMap, client, netEnum);
-    if (!chain.length) throw new Error(`leaf-vault: could not resolve exit chain for leaf ${leaf.id}; backup NOT captured.`);
+    if (!chain.length) throw incomplete(`leaf-vault: could not resolve exit chain for leaf ${leaf.id}; backup NOT captured.`);
     onlineLen.set(leaf.id, chain.length);
     reachesRoot.set(leaf.id, chain.some((n) => !n?.parentNodeId));
     for (const n of nodeMap.values()) if (!leafIds.has(n.id)) ancestors.set(n.id, n);
@@ -299,7 +323,7 @@ export async function snapshotLeafVault(wallet, { path = defaultVaultPath(), net
   // --- INTEGRITY GATE (must pass or nothing is written) ---
   const persisted = JSON.parse(JSON.stringify(bundle)); // exactly the value that hits disk
   const shape = validateSnapshotShape(persisted);
-  if (!shape.ok) throw new Error(`leaf-vault: bundle failed shape validation (${shape.reason}); NOT written.`);
+  if (!shape.ok) throw incomplete(`leaf-vault: bundle failed shape validation (${shape.reason}); NOT written.`);
 
   // Prove every leaf reconstructs OFFLINE from the bundle's own bytes, exactly
   // like Blink's createBundleSparkClient would serve them.
@@ -307,11 +331,11 @@ export async function snapshotLeafVault(wallet, { path = defaultVaultPath(), net
   for (const leaf of persisted.leaves) {
     const p = proofs.get(leaf.id);
     // content: the exit consumes nodeTx/refundTx — topology alone is not enough (M-1).
-    if (!p.hasTxs) throw new Error(`leaf-vault: leaf ${leaf.id} pre-signed nodeTx/refundTx missing or unparseable — not exitable; NOT written.`);
+    if (!p.hasTxs) throw incomplete(`leaf-vault: leaf ${leaf.id} pre-signed nodeTx/refundTx missing or unparseable — not exitable; NOT written.`);
     // completeness: the chain must reach a genuine tree root — guards the bulk-query
     // root-skip that silently produced incomplete bundles in Blink's case study.
-    if (!reachesRoot.get(leaf.id)) throw new Error(`leaf-vault: leaf ${leaf.id} exit chain never reaches a tree root — incomplete bundle; NOT written.`);
-    if (p.chainLen !== onlineLen.get(leaf.id)) throw new Error(`leaf-vault: leaf ${leaf.id} rebuilds to ${p.chainLen}/${onlineLen.get(leaf.id)} nodes offline — incomplete; NOT written.`);
+    if (!reachesRoot.get(leaf.id)) throw incomplete(`leaf-vault: leaf ${leaf.id} exit chain never reaches a tree root — incomplete bundle; NOT written.`);
+    if (p.chainLen !== onlineLen.get(leaf.id)) throw incomplete(`leaf-vault: leaf ${leaf.id} rebuilds to ${p.chainLen}/${onlineLen.get(leaf.id)} nodes offline — incomplete; NOT written.`);
   }
 
   // --- SHRINK GUARD (M-2 generalized: partial getLeaves, not just empty) ---
@@ -332,18 +356,24 @@ export async function snapshotLeafVault(wallet, { path = defaultVaultPath(), net
     // checks require both sides present, so an unreadable identity or a
     // pre-identity bundle is never a false positive.
     if (isNonEmptyStr(prior.network) && normalizeNetwork(prior.network) !== network) {
-      throw new Error(
-        `leaf-vault: prior bundle at ${path} is for network ${prior.network}, this wallet is ${network} ` +
-        `— refusing to overwrite a different wallet's recovery bundle; prior bundle KEPT. ` +
-        `Set SPARK_LEAF_VAULT_PATH to a distinct path per wallet/network.`,
+      throw annotateError(
+        new Error(
+          `leaf-vault: prior bundle at ${path} is for network ${prior.network}, this wallet is ${network} ` +
+          `— refusing to overwrite a different wallet's recovery bundle; prior bundle KEPT. ` +
+          `Set SPARK_LEAF_VAULT_PATH to a distinct path per wallet/network.`,
+        ),
+        "LEAF_VAULT_PATH_CONFLICT",
       );
     }
     if (isNonEmptyStr(prior.walletIdentityPublicKey) && isNonEmptyStr(identity) &&
         prior.walletIdentityPublicKey.toLowerCase() !== identity.toLowerCase()) {
-      throw new Error(
-        `leaf-vault: prior bundle at ${path} belongs to a different wallet identity ` +
-        `— refusing to overwrite its only recovery bundle; prior bundle KEPT. ` +
-        `Set SPARK_LEAF_VAULT_PATH to a distinct path per wallet.`,
+      throw annotateError(
+        new Error(
+          `leaf-vault: prior bundle at ${path} belongs to a different wallet identity ` +
+          `— refusing to overwrite its only recovery bundle; prior bundle KEPT. ` +
+          `Set SPARK_LEAF_VAULT_PATH to a distinct path per wallet.`,
+        ),
+        "LEAF_VAULT_PATH_CONFLICT",
       );
     }
 
@@ -439,7 +469,7 @@ export async function snapshotLeafVault(wallet, { path = defaultVaultPath(), net
           return { path, leafCount: unionWritten.leaves.length, nodeCount: (unionWritten.nodes ?? []).length, network, anchorless: unionAnchorless };
         }
 
-        throw new Error(
+        throw incomplete(
           `leaf-vault: a leaf present in the prior bundle is missing and the capture holds ` +
           `${capturedSats ?? "an unreadable"} sats vs a reported ${reported ?? "unreadable"} balance ` +
           `— treating as a partial getLeaves; new bundle NOT written.` +
@@ -447,6 +477,9 @@ export async function snapshotLeafVault(wallet, { path = defaultVaultPath(), net
             ? ` A UNION bundle (fresh capture + carried-over prior leaves ${missing.map((l) => l.id).join(", ")}) ` +
               `was written so the new leaves have exit material until a clean snapshot lands.`
             : ` Prior bundle KEPT.`),
+          rescued
+            ? "The wallet still works; a backup holding the new leaves and the earlier ones was written. Check vaultHealth() after the next snapshot; tell the user if it keeps failing."
+            : undefined,
         );
       }
     }
@@ -489,13 +522,20 @@ export async function verifyVault(path = defaultVaultPath()) {
     // "No vault on disk" is a distinct state from "vault is broken", and only the
     // caller knows which one is alarming: a wallet with no leaves has nothing to
     // back up, while a funded wallet with no vault has lost its only unilateral-exit
-    // path. Report it as data instead of throwing a raw ENOENT so callers can decide.
-    if (err?.code === "ENOENT") return { ok: false, missing: true, reason: `no vault at ${path}`, leafCount: 0, path };
+    // path. Report it as data instead of throwing so callers can decide. Anything
+    // else throws coded: STORAGE_ERROR (unreadable) or LEAF_VAULT_CORRUPT (not JSON).
+    if (err?.osCode === "ENOENT") return { ok: false, missing: true, reason: `no vault at ${path}`, leafCount: 0, path };
     throw err;
   }
   const shape = validateSnapshotShape(bundle);
   if (!shape.ok) return { ok: false, reason: shape.reason, leafCount: bundle?.leaves?.length ?? 0 };
-  const proofs = await proveOffline(TreeNode, bundle.leaves, bundle.nodes);
+  let proofs;
+  try {
+    proofs = await proveOffline(TreeNode, bundle.leaves, bundle.nodes);
+  } catch (err) {
+    // A node that doesn't decode: the file is damaged, not this code.
+    throw hasAgentCode(err) ? err : annotateError(err, "LEAF_VAULT_CORRUPT");
+  }
   const failed = bundle.leaves
     .filter((l) => { const p = proofs.get(l.id); return !p.chainLen || !p.reachesRoot || !p.hasTxs; })
     .map((l) => l.id);
@@ -535,6 +575,9 @@ async function writeBrokenMarker(markerPath, err, failures) {
 // is also debounced. Returns `{ dispose, ready, health }` — `ready` resolves to
 // `{ ok, error?, anchorless? }` for the boot snapshot so a caller can surface a
 // broken backup, or one written with leaves the exit tool can't fee-bump.
+// health() also carries the timer period (intervalMs) and the failure
+// threshold (maxConsecutiveFailures), so a reader (SparkAgent.status) judges
+// staleness against this vault's settings rather than the defaults.
 export function enableLeafVault(wallet, { path = defaultVaultPath(), networkLabel, intervalMs = 20 * 60_000, debounceMs = 4000, maxConsecutiveFailures = 3, onError } = {}) {
   debounceMs = Number.isFinite(debounceMs) && debounceMs >= 0 ? debounceMs : 4000;
   intervalMs = Number.isFinite(intervalMs) && intervalMs > 0 ? intervalMs : 20 * 60_000;
@@ -563,9 +606,7 @@ export function enableLeafVault(wallet, { path = defaultVaultPath(), networkLabe
     const changed = ids.join() !== anchorless.join();
     anchorless = ids;
     if (!changed || !ids.length) return;
-    const e = new Error(`leaf-vault: ${anchorlessReason(ids.length)}: ${ids.join(", ")}`);
-    e.code = "LEAF_VAULT_ANCHORLESS";
-    e.anchorless = ids;
+    const e = annotateError(new Error(`leaf-vault: ${anchorlessReason(ids.length)}: ${ids.join(", ")}`), "LEAF_VAULT_ANCHORLESS", { anchorless: ids });
     onError ? onError(e) : console.warn(`[leaf-vault] ${e.message}`);
   };
 
@@ -594,9 +635,12 @@ export function enableLeafVault(wallet, { path = defaultVaultPath(), networkLabe
           // surface it the same way persistent failures are surfaced.
           consecutiveTransientSkips++;
           if (consecutiveTransientSkips >= maxConsecutiveFailures) {
-            const e = new Error(
-              `leaf-vault: getLeaves returned empty ${consecutiveTransientSkips}x in a row while the ` +
-              `wallet reports a positive balance — the prior bundle is KEPT but going stale.`,
+            const e = annotateError(
+              new Error(
+                `leaf-vault: getLeaves returned empty ${consecutiveTransientSkips}x in a row while the ` +
+                `wallet reports a positive balance — the prior bundle is KEPT but going stale.`,
+              ),
+              "LEAF_VAULT_STALE",
             );
             lastError = e;
             report(e);
@@ -677,6 +721,8 @@ export function enableLeafVault(wallet, { path = defaultVaultPath(), networkLabe
       consecutiveTransientSkips,
       lastError: lastError?.message ?? null,
       anchorless: [...anchorless],
+      intervalMs,
+      maxConsecutiveFailures,
     }),
   };
 }
