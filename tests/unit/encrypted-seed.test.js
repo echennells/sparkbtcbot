@@ -121,10 +121,12 @@ describe("encrypted-seed", () => {
       process.env.SPARK_PASSPHRASE = STRONG_PP;
       process.env.SPARK_SEED_PATH = path;
       await expect(loadMnemonicFromEnv()).resolves.toBe(SAMPLE); // clears the env var
-      await expect(loadMnemonicFromEnv()).rejects.toMatchObject({
-        code: "NO_PASSPHRASE",
-        message: expect.stringMatching(/already read and cleared/),
-      });
+      const err = await loadMnemonicFromEnv().catch((e) => e);
+      expect(err).toMatchObject({ code: "NO_PASSPHRASE", message: expect.stringMatching(/already read and cleared/) });
+      // Not back to the user for a passphrase .env already holds, and no
+      // keeping the mnemonic around to reopen in-process (ToB review 2026-10-28).
+      expect(err.nextStep).toMatch(/restart the agent's process.*Don't ask the user to set it again/);
+      expect(`${err.message} ${err.nextStep}`).not.toMatch(/reuse the mnemonic|clearEnv/);
     } finally {
       if (origPP === undefined) delete process.env.SPARK_PASSPHRASE; else process.env.SPARK_PASSPHRASE = origPP;
       if (origPath === undefined) delete process.env.SPARK_SEED_PATH; else process.env.SPARK_SEED_PATH = origPath;

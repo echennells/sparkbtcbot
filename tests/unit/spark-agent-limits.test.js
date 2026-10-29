@@ -93,7 +93,7 @@ describe("spending limits: allowedOps gates every money-moving method", () => {
       expect(err).toMatchObject({ code: "LIMIT_DENIED", retryable: "no", rule: "allowedOps", op });
       const via = method === "payAndSettle" ? "payLightningInvoice" : method; // payAndSettle pays through it
       expect(err.message).toMatch(new RegExp(`SparkAgent\\.${via}: refused by the user's spending limits.*Nothing was sent`));
-      expect(err.nextStep).toMatch(/Only the user changes their limits, in their own message/);
+      expect(err.nextStep).toMatch(/change the limits \(sparkbtcbot limits set\) only when the user asks in their own message/);
       expect(calledNames(wallet)).toEqual([]);
     });
   }

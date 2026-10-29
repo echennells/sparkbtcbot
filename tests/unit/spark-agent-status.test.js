@@ -442,10 +442,26 @@ describe("status(): PRIVACY_OFF", () => {
     expect((await privacy(vi.fn(async () => undefined))).privacy.state).toBe("off");
   });
 
-  it("a failed read is 'unknown' and no problem of its own", async () => {
-    expect(await privacy(vi.fn(async () => { throw new Error("UNAVAILABLE"); }))).toMatchObject({
-      problems: [], privacy: { state: "unknown", checkedAt: null },
-    });
+  // ToB review 2026-10-28: only the coordinator answers the settings read, so
+  // it can fail while the balance read works; that went unreported.
+  it("a failed read with the balance answered is PRIVACY_UNKNOWN (degraded)", async () => {
+    const s = await privacy(vi.fn(async () => { throw new Error("UNAVAILABLE"); }));
+    expect(s).toMatchObject({ usable: true, problems: ["PRIVACY_UNKNOWN"], privacy: { state: "unknown", checkedAt: null } });
+    expect(s.nextStep).toMatch(/may be publicly readable.*change SPARK_PRIVACY only when the user asks/);
+  });
+
+  it("with the balance unanswered too, SPARK_UNREACHABLE says why and PRIVACY_UNKNOWN stays out", async () => {
+    const wallet = mkWallet();
+    const { agent } = await connected(wallet);
+    wallet.getWalletSettings = vi.fn(async () => { throw new Error("UNAVAILABLE"); });
+    wallet.getBalance = vi.fn(async () => { throw new Error("UNAVAILABLE"); });
+    expect((await agent.status()).problems).toEqual(["SPARK_UNREACHABLE"]);
+  });
+
+  it("off by the user's choice is never unknown", async () => {
+    process.env.SPARK_PRIVACY = "off";
+    const { agent } = await connected();
+    expect(await agent.status()).toMatchObject({ problems: [], privacy: { state: "off-by-choice" } });
   });
 });
 
@@ -614,11 +630,21 @@ describe("status(): order, nextStep, and never throwing for what it finds", () =
     expect(wallet.getBalance).not.toHaveBeenCalled();
   });
 
+  // ToB review 2026-10-28: AGENT_CLOSED and NETWORK_MISMATCH sent the agent
+  // to an in-process create(), which ends at NO_PASSPHRASE (the first open
+  // cleared it). Reopening means restarting the process.
+  it("every nextStep that reopens the wallet says to restart the process", () => {
+    for (const [code, { nextStep }] of Object.entries(STATUS_PROBLEMS)) {
+      if (/\b(re)?open|SparkAgent\.create/i.test(nextStep)) expect(nextStep, code).toMatch(/restart the agent's process/);
+    }
+    expect(STATUS_PROBLEMS.NETWORK_MISMATCH.nextStep).toMatch(/set SPARK_NETWORK to it only on their answer/);
+  });
+
   it("every problem it can report is in STATUS_PROBLEMS; exactly three block", () => {
     expect(Object.entries(STATUS_PROBLEMS).filter(([, p]) => p.blocking).map(([c]) => c)).toEqual(["AGENT_CLOSED", "SPARK_UNREACHABLE", "NETWORK_MISMATCH"]);
     expect(Object.keys(STATUS_PROBLEMS).sort()).toEqual([
       "AGENT_CLOSED", "BACKUP_BROKEN", "BACKUP_STALE", "BALANCE_LOCKED", "BUDGET_EXHAUSTED", "INCOMING_UNCLAIMED",
-      "L402_HELD", "LIGHTNING_UNREACHABLE", "LIMITS_UNREADABLE", "NETWORK_MISMATCH", "PRIVACY_OFF", "SPARK_STREAM_DOWN", "SPARK_UNREACHABLE",
+      "L402_HELD", "LIGHTNING_UNREACHABLE", "LIMITS_UNREADABLE", "NETWORK_MISMATCH", "PRIVACY_OFF", "PRIVACY_UNKNOWN", "SPARK_STREAM_DOWN", "SPARK_UNREACHABLE",
       "SPEND_LEDGER_BAD_SIGNATURE", "SPEND_LEDGER_MISSING", "SPEND_LEDGER_UNREADABLE",
     ]);
   });

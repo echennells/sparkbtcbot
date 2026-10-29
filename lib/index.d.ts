@@ -400,8 +400,10 @@ export interface SpendLedger {
 
 /**
  * Persistent cumulative-spend ledger on the shared atomic writer. A corrupt
- * ledger file fails CLOSED (code SPEND_LEDGER_UNREADABLE) — delete the file
- * to reset. Single-agent-per-ledger; give concurrent agents separate paths.
+ * ledger file fails CLOSED (code SPEND_LEDGER_UNREADABLE); deleting it resets
+ * the window, so an agent does that only when the user asks in their own
+ * message. A seed-bound ledger is reset only with `sparkbtcbot reset-ledger`.
+ * Single-agent-per-ledger; give concurrent agents separate paths.
  */
 export function createSpendLedger(options?: {
   path?: string;
@@ -720,6 +722,7 @@ export type StatusProblemCode =
   | "BACKUP_BROKEN"
   | "BACKUP_STALE"
   | "PRIVACY_OFF"
+  | "PRIVACY_UNKNOWN"
   | "BUDGET_EXHAUSTED";
 
 /** Each status() problem: whether it makes the agent unusable, and the nextStep status() gives for it. Key order is severity. */

@@ -127,8 +127,11 @@ describe("SparkAgent.create enables wallet privacy at boot", () => {
     const { agent } = await boot(w);
     expect(agent).toBeInstanceOf(SparkAgent);
     expect(warn).toHaveBeenCalledTimes(1);
-    expect(warn.mock.calls[0][0]).toMatch(/wallet privacy is NOT enabled: UNAVAILABLE/);
-    expect(warn.mock.calls[0][0]).toMatch(/SPARK_PRIVACY=off/);
+    // A failed read proves nothing either way; and the warning is read by the
+    // agent, so it says who decides on the opt-out (ToB review 2026-10-28).
+    expect(warn.mock.calls[0][0]).toMatch(/wallet privacy could not be turned on or confirmed: UNAVAILABLE/);
+    expect(warn.mock.calls[0][0]).toMatch(/Change SPARK_PRIVACY only when the user asks in their own message/);
+    expect(warn.mock.calls[0][0]).not.toMatch(/to silence|SPARK_PRIVACY=off/);
   });
 
   it("a fake wallet without the settings API (pre-0.11 SDK shape) warns rather than crashing boot", async () => {

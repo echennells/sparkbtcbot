@@ -47,7 +47,13 @@ describe("claimDeposit size-aware fee ceiling", () => {
 
   it("FAILS CLOSED when the quote is unreadable and no explicit cap was given", async () => {
     const { agent, calls } = mkAgent({ credit: null });
-    await expect(agent.claimDeposit({ txid: TX })).rejects.toThrow(/unreadable.*maxFeeSats/s);
+    const err = await agent.claimDeposit({ txid: TX }).catch((e) => e);
+    expect(err.message).toMatch(/unreadable.*maxFeeSats/s);
+    // Its own dry run fails the same way, so "preview, then pick a ceiling"
+    // led nowhere: try later (ToB review 2026-10-28).
+    expect(err).toMatchObject({ code: "QUOTE_UNREADABLE" });
+    expect(err.nextStep).toMatch(/stays listed in listPendingDeposits\(\); try claimDeposit again later/);
+    expect(err.nextStep).not.toMatch(/dryRun/);
     expect(calls.claim).toBeNull();
   });
 
