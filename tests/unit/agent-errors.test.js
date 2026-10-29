@@ -39,6 +39,7 @@ const CHECK_FIRST_CODES = [
   "CLAIM_OUTCOME_UNKNOWN",
   "DEDUP_ENTRY_UNREADABLE",
   "CONCURRENT_PAYMENT_ATTEMPT",
+  "L402_HOLD_UNREADABLE",
   "TRANSFER_ID_CONFLICT",
   "LIGHTNING_PAYMENT_FAILED",
   "PREIMAGE_MISMATCH",
@@ -612,7 +613,7 @@ describe("environment and services", () => {
     const err = await rejection(agent.fetchL402("https://svc.example/one-more"));
     expect(err).toMatchObject({ code: "L402_TOO_MANY_HELD", retryable: "no" });
     expect(err.held).toHaveLength(1000);
-    expect(err.held[7]).toEqual({ method: "GET", host: "svc.example", path: "/item/7" });
+    expect(err.held).toContainEqual({ method: "GET", host: "svc.example", path: "/item/7" });
     expect(JSON.stringify(err.held)).not.toMatch(/secret-macaroon|apiKey/);
   });
 

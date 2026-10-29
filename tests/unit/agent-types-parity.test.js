@@ -266,6 +266,8 @@ const LIB_CALLS = [
   [/\bledger\.assertCanSpend\(/, ["SPEND_BUDGET_EXCEEDED", ...LEDGER_READ], "lib/spend-ledger.js"],
   [/\bledger\.(?:record|status)\(/, LEDGER_READ, "lib/spend-ledger.js"],
   [/\breadLimits\(/, ["LIMITS_UNREADABLE"], "lib/spending-limits.js"],
+  [/\.#l402Store\.(?:read|list)\(/, ["L402_HOLD_UNREADABLE", "STORAGE_ERROR"], "lib/l402-holds.js"],
+  [/\.#l402Store\.(?:claim|put|remove|removeSync|count)\(/, ["STORAGE_ERROR"], "lib/l402-holds.js"],
   [/\.#lnDedup\.idForInvoice\(/, ["TRANSFER_ID_CONFLICT", "CONCURRENT_PAYMENT_ATTEMPT", "DEDUP_ENTRY_UNREADABLE", "STORAGE_ERROR"], "lib/transfer-ids.js"],
   [/\bsparkWalletOptions\(/, ["BAD_INPUT"], "lib/wallet-options.js"],
 ];
@@ -278,6 +280,8 @@ const CAUGHT = new Set([
 // Codes a callee raises that can't come out of this member.
 const NOT_FROM = {
   "#activeLedger": { BAD_INPUT: "createSpendLedger gets no budget there, so its one check can't fail" },
+  "#syncL402": { STORAGE_ERROR: "a failed write warns and keeps the copy in memory" },
+  "#l402HeldSummary": { L402_HOLD_UNREADABLE: "listed as reason \"unreadable\"", STORAGE_ERROR: "an unlistable store lists nothing" },
   "#budgetStatus": {
     LIMITS_UNREADABLE: "status() reports an unreadable limits file as a problem; it doesn't throw",
     SPEND_LEDGER_MISSING: "reported as a problem", SPEND_LEDGER_BAD_SIGNATURE: "reported as a problem",

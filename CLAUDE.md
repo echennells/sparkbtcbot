@@ -34,6 +34,7 @@ lib/
   fiat-rate.js                        # BTC price from mempool.space + Coinbase, cross-checked (the number behind "$100")
   spend-ledger.js                     # rolling-window cumulative budget (bounds send LOOPS)
   transfer-ids.js                     # persisted per-invoice Lightning dedup transferId (safe retries)
+  l402-holds.js                       # unfinished fetchL402 purchases on disk (~/.spark/l402-holds/): claimed before paying, finished by the next process
   wallet-privacy.js                   # SDK-free: turn the operators' per-wallet privacy setting on (wallets are public by default)
   recipients-allowlist.js             # opt-in outbound allowlist guardrail
   spending-limits.js                  # the user's limits, set in chat: daily budget, per-payment cap, ops, recipients (~/.spark/limits.json)
@@ -103,6 +104,7 @@ SPARK_NETWORK=MAINNET
 # SPARK_LIMITS_PATH=/custom/path          # the user's spending limits (default ~/.spark/limits.json; set with `sparkbtcbot limits`)
 # SPARK_LN_DEDUP=off                      # opt out of the persisted Lightning payment-dedup transferId
 # SPARK_LN_DEDUP_PATH=/custom/dir         # dedup-store directory (default ~/.spark/ln-dedup/)
+# SPARK_L402_HOLDS_PATH=/custom/dir       # unfinished L402 purchases (default ~/.spark/l402-holds/)
 ```
 
 ## Security Note

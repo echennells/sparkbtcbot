@@ -30,13 +30,14 @@ import {
 } from "../../../lib/fee-guards.js";
 import { createSpendLedger } from "../../../lib/spend-ledger.js";
 import { readLimits, checkLimits, limitsPath } from "../../../lib/spending-limits.js";
+import { createL402HoldStore, l402HoldFileName } from "../../../lib/l402-holds.js";
 import { createTransferIdStore, invoiceDedupKey } from "../../../lib/transfer-ids.js";
 import { ensureWalletPrivacy, privacyPreferenceFromEnv } from "../../../lib/wallet-privacy.js";
 import { enableLeafVault } from "./leaf-vault.js";
 import { sparkWalletOptions } from "../../../lib/wallet-options.js";
 import { l402TokenExpiry } from "../../../lib/l402-token.js";
 import { PaymentCommittedError, provesNothingSent, preSendCode, classifySdkError } from "../../../lib/payment-outcome.js";
-import { annotateError, isConnectionFailure, STATUS_PROBLEMS, RESTART } from "../../../lib/agent-errors.js";
+import { annotateError, isConnectionFailure, STATUS_PROBLEMS } from "../../../lib/agent-errors.js";
 
 // Best-effort BOLT11 amount in sats (undefined for amountless invoices or on a
 // decode error) — used to size the amount-aware Lightning fee cap. Delegates to
@@ -624,10 +625,65 @@ const L402_MAX_HELD = 1000;
 
 const l402RequestKey = (method, url) => `${String(method).toUpperCase()} ${url}`;
 
-// Every L402 PAYMENT_COMMITTED's nextStep ends with this: a hold or block
-// keeps this agent from buying again only while the process lives.
+// Every L402 PAYMENT_COMMITTED's nextStep ends with this. Holds are on disk
+// (lib/l402-holds.js): a chat agent's next tool call is a new process.
 const L402_MEMORY_NOTE =
-  "Holds live in memory only: after a restart, check getTransfers() before any fetchL402 for that URL.";
+  "The hold is saved on disk: a later fetchL402 for the same URL and method, in this process or a new one, finishes it instead of buying again.";
+// A purchase still running in another live process is that process's; one
+// whose process died, or that has run this long, is finished from its record.
+const L402_BUYING_STALE_MS = 10 * 60_000;
+const pidAlive = (pid) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err?.code === "EPERM"; // alive, just not ours to signal
+  }
+};
+const l402BodyHash = (reqBody) => createHash("sha256").update(reqBody ?? "").digest("hex");
+function l402Busy(rec) {
+  return annotateError(
+    new Error(
+      `L402: another process is buying ${rec.host ?? "this resource"}${rec.path ?? ""} right now${rec.pid ? ` (pid ${rec.pid})` : ""}. ` +
+        `Nothing was paid by this call.`,
+    ),
+    "CONCURRENT_PAYMENT_ATTEMPT",
+    { nextStep: "Nothing was paid by this call. Wait a minute, then call fetchL402 again with the same URL and method: it finishes that purchase instead of buying another." },
+  );
+}
+// A hold as its file stores it, and back. Never the preimage: a new process
+// reads it from Spark by the send's id.
+function l402RecordFromHold(key, entry) {
+  const at = key.indexOf(" ");
+  const base = { method: key.slice(0, at), ...l402Target(key.slice(at + 1)) };
+  if (entry.blocked) return { ...base, state: "blocked", blocked: entry.blocked };
+  return {
+    ...base,
+    state: "held",
+    paid: Boolean(entry.preimage),
+    macaroon: entry.macaroon,
+    invoice: entry.invoice,
+    invoiceHash: entry.invoiceHash ?? (entry.invoice ? invoicePaymentHash(entry.invoice) ?? undefined : undefined),
+    amountSats: entry.amountSats ?? null,
+    sendId: entry.sendId ?? null,
+    maxFeeSats: entry.payOptions?.maxFeeSats,
+    maxAmountSats: entry.payOptions?.maxAmountSats,
+    ...(entry.sentOnce ? { sentOnce: true, reqBodyHash: entry.reqBodyHash } : {}),
+  };
+}
+function l402HoldFromRecord(rec) {
+  if (rec.state === "blocked") return { blocked: rec.blocked };
+  return {
+    macaroon: rec.macaroon,
+    invoice: rec.invoice,
+    invoiceHash: rec.invoiceHash,
+    amountSats: rec.amountSats ?? null,
+    sendId: rec.sendId ?? null,
+    preimage: null,
+    payOptions: { maxFeeSats: rec.maxFeeSats ?? undefined, maxAmountSats: rec.maxAmountSats, preferSpark: false, [LN_NO_FEE_READS]: true },
+    ...(rec.sentOnce ? { sentOnce: true, reqBodyHash: rec.reqBodyHash } : {}),
+  };
+}
 
 // What fetchL402 throws for a purchase it has stopped on: the service refused
 // the paid pass, the pass died before a doubtful payment settled, or a payment
@@ -688,7 +744,7 @@ const L402_FEE_STEP =
   "Nothing was paid. Check the price with previewL402(url) and the fee with estimateLightningFee(invoice), then try later or ask the user whether to allow a higher maxFeeSats; pass a higher one only on their answer.";
 // fetchL402's PAYMENT_COMMITTED while a held purchase can still be finished.
 const L402_RESUME_STEP =
-  "Call fetchL402 again with the same URL and method in this process: it finishes this payment and presents its proof without paying again.";
+  "Call fetchL402 again with the same URL and method: it finishes this payment and presents its proof without paying again.";
 // The budget refused a held purchase whose earlier attempt sent nothing.
 const L402_BUDGET_STEP =
   "Nothing was paid: the earlier attempt to buy this resource sent nothing, and the spend budget has no room for it now. Tell the user what was blocked; spendStatus() shows when room returns, and fetchL402 for this URL buys it then. Raise a budget only when the user asks in their own message, and never edit the ledger file.";
@@ -887,6 +943,9 @@ export class SparkAgent {
   // or finishes the pending payment, instead of buying another. Memory only —
   // never on disk, in a log, or on an error object — so it ends with the process.
   #l402Held = new Map();
+  // The same holds on disk, the source of truth across processes
+  // (lib/l402-holds.js); #l402Held is this process's working copy.
+  #l402Store = null;
   // fetchL402 calls still running, keyed like #l402Held: { promise, sig }.
   // #l402Held only exists once a payment has returned, so without this two
   // overlapping calls for one URL (a duplicated tool call, a host timeout
@@ -914,6 +973,7 @@ export class SparkAgent {
     this.#network = network;
     this.#ledger = spendLedgerFromEnv(seedContext !== undefined ? seedContext : getLoadedSeedContext());
     this.#lnDedup = lnDedupFromEnv();
+    this.#l402Store = createL402HoldStore();
     // The fee ladders belong to the wallet object, so a wallet opened without
     // sparkWalletOptions (raw SDK defaults, 0.13+) arrives here with them on:
     // each claim hands the operators signed fee steps and leaves an anchorless
@@ -2655,12 +2715,17 @@ export class SparkAgent {
     const reqBody = body ? JSON.stringify(body) : undefined;
     const request = { method, headers, reqBody, resend };
 
-    // An earlier call in this process already paid, or may have paid, for
-    // exactly this request: finish that purchase, don't make another.
+    // An earlier call, in this process or another, already paid, or may have
+    // paid, for exactly this request: finish that purchase, don't make another.
     const key = l402RequestKey(method, url);
-    const held = this.#l402Held.get(key);
+    const held = await this.#heldFor(key);
     if (held) {
-      const resumed = await this.#resumeL402(url, key, held, request);
+      let resumed;
+      try {
+        resumed = await this.#resumeL402(url, key, held, request);
+      } finally {
+        await this.#syncL402(key);
+      }
       if (resumed) return resumed;
       // null: that payment failed and the SSP returned its sats
       // (USER_SWAP_RETURNED), so no money left — buying below is safe.
@@ -2747,16 +2812,14 @@ export class SparkAgent {
     // preimage IS the credential, and a Spark-direct payment returns none.
     const payOptions = { maxFeeSats: maxFee, maxAmountSats: maxAmt, preferSpark: false, [LN_NO_FEE_READS]: true };
     const { host, path } = l402Target(url);
-    if (this.#l402Held.size >= L402_MAX_HELD) {
+    if (Math.max(await this.#l402Store.count(), this.#l402Held.size) >= L402_MAX_HELD) {
       // Which requests are held, by method, host and path only: never the
       // macaroon or preimage, and never the query string (it can carry keys).
-      const held = [...this.#l402Held.keys()].map((k) => {
-        const at = k.indexOf(" ");
-        return { method: k.slice(0, at), ...l402Target(k.slice(at + 1)) };
-      });
+      const heldNow = await this.#l402HeldSummary();
+      const held = heldNow.map(({ method: m, host: h, path: p }) => ({ method: m, host: h, path: p }));
       throw annotateError(
         new Error(
-          `L402 payment blocked: this agent holds ${this.#l402Held.size} unresolved L402 purchases (undelivered, in doubt or ` +
+          `L402 payment blocked: this agent holds ${heldNow.length} unresolved L402 purchases (undelivered, in doubt or ` +
             `refused), the most it keeps. Nothing was paid. Resolve them (call fetchL402 again for each) or, on the user's ` +
             `say-so, agent.forgetL402(url).`,
         ),
@@ -2764,6 +2827,27 @@ export class SparkAgent {
         { held },
       );
     }
+    // Claim the purchase on disk BEFORE paying, with its invoice: a second
+    // process (or a retried tool call) then doesn't buy too, and a process
+    // that dies mid-purchase leaves the exact invoice behind, settled again
+    // through the dedup store instead of a new one being bought. A store that
+    // can't be written refuses here, with nothing paid.
+    const claimed = await this.#l402Store.claim(key, {
+      method: String(method).toUpperCase(), host, path, state: "buying",
+      macaroon, invoice, invoiceHash: invoicePaymentHash(invoice) ?? undefined, amountSats, sendId: null,
+      maxFeeSats: maxFee ?? undefined, maxAmountSats: maxAmt,
+    });
+    if (!claimed) throw l402Busy((await this.#l402Store.read(key).catch(() => null)) ?? { host, path });
+    try {
+      return await this.#buyL402(url, key, { invoice, macaroon, amountSats, payOptions, host, path, method }, request);
+    } finally {
+      await this.#syncL402(key);
+    }
+  }
+
+  // The payment and delivery of a purchase fetchL402 has claimed. Every exit
+  // leaves #l402Held as the hold to keep (or none), which the caller saves.
+  async #buyL402(url, key, { invoice, macaroon, amountSats, payOptions, host, path, method }, request) {
     let payResult;
     try {
       payResult = await this.payAndSettle(invoice, payOptions);
@@ -2820,7 +2904,7 @@ export class SparkAgent {
         `L402: the payment for ${host}${path} may have gone through (${String(err.message).slice(0, 160)}). ` +
         `Do NOT buy this resource again another way. ` +
         (err.sendId || this.#lnDedup
-          ? `Call fetchL402 with the same URL again in this process: it finishes THIS payment and presents its proof, without paying again.`
+          ? `Call fetchL402 with the same URL again: it finishes THIS payment and presents its proof, without paying again.`
           : `SPARK_LN_DEDUP is off, so this agent can't safely settle it again: check agent.getTransfers().`),
         {
           settled: err.code === "PAYMENT_ALREADY_SETTLED" ? true : null, op: "l402", sendId: err.sendId, invoiceHash: invoicePaymentHash(invoice) ?? undefined, cause: err,
@@ -2844,7 +2928,7 @@ export class SparkAgent {
       err.macaroon = macaroon; // not a working pass without the preimage
       throw err;
     }
-    return this.#deliverL402(url, key, { macaroon, preimage, amountSats, invoiceHash: invoicePaymentHash(invoice) ?? undefined, sendId: payResult.id }, request, { recovered: false });
+    return this.#deliverL402(url, key, { macaroon, preimage, invoice, payOptions, amountSats, invoiceHash: invoicePaymentHash(invoice) ?? undefined, sendId: payResult.id }, request, { recovered: false });
   }
 
   // Lets this agent buy `url` again after fetchL402 stopped doing so: the
@@ -2855,7 +2939,9 @@ export class SparkAgent {
   // for this URL is a second purchase. Also drops a held, undelivered pass.
   // Returns whether anything was held.
   forgetL402(url, { method = "GET" } = {}) {
-    return this.#l402Held.delete(l402RequestKey(method, url));
+    const key = l402RequestKey(method, url);
+    const inMemory = this.#l402Held.delete(key);
+    return this.#l402Store.removeSync(key) || inMemory;
   }
 
   // Present a paid pass and return the resource. The money is already gone,
@@ -2873,15 +2959,20 @@ export class SparkAgent {
     const holdPass = () => this.#holdL402(key, {
       macaroon: pass.macaroon,
       preimage: pass.preimage,
+      invoice: pass.invoice,
+      payOptions: pass.payOptions,
       amountSats: pass.amountSats,
       invoiceHash: pass.invoiceHash ?? (pass.invoice ? invoicePaymentHash(pass.invoice) ?? undefined : undefined),
       sendId: pass.sendId ?? undefined,
-      ...(repeatable ? {} : { sentOnce: true, reqBody }),
+      ...(repeatable ? {} : { sentOnce: true, reqBodyHash: l402BodyHash(reqBody) }),
     });
     // The pass is paid for: hold it BEFORE the first attempt, so a throw
     // nobody planned for still leaves the next call presenting it instead of
     // buying again. A recovered pass is held already.
-    if (!recovered) holdPass();
+    if (!recovered) {
+      holdPass();
+      await this.#syncL402(key); // on disk with its send id before the first attempt
+    }
     let failure;
     let tried = 0;
     for (let attempt = 1; attempt <= attempts; attempt++) {
@@ -2953,15 +3044,15 @@ export class SparkAgent {
     holdPass();
     const e = new PaymentCommittedError(
       `L402: paid ${pass.amountSats ?? "?"} sats for ${host}${path} but the resource was not delivered ` +
-      `after ${tried} attempt${tried === 1 ? "" : "s"} (${failure}). The pass is kept in this process. ` +
+      `after ${tried} attempt${tried === 1 ? "" : "s"} (${failure}). The pass is kept. ` +
       (repeatable
         ? `Call fetchL402 with the same URL again to present it without paying. `
         : `The ${String(method).toUpperCase()} was sent and the service may have acted on it: check with the service. ` +
           `To send it again with the same pass (no new payment), call fetchL402 with { resend: true }. `) +
       `Do NOT buy this resource another way.`,
       {
-        // The ids a restarted agent finds the payment by in getTransfers():
-        // the pass itself lives only in this process (ToB review 2026-10-28).
+        // The ids the payment is found by in getTransfers() (ToB review
+        // 2026-10-28); the pass itself is in the hold, never on the error.
         settled: true, op: "l402",
         invoiceHash: pass.invoiceHash ?? (pass.invoice ? invoicePaymentHash(pass.invoice) ?? undefined : undefined),
         sendId: pass.sendId ?? undefined,
@@ -3116,6 +3207,7 @@ export class SparkAgent {
         throw pending(`is still pending (status ${settled.lastStatus ?? "unknown"}). Call fetchL402 again later.`, { sendId: settled.id });
       }
       held.preimage = settled.paymentPreimage;
+      if (settled.id) held.sendId = settled.id; // a new process reads the preimage back by it
       paidHere = resume.fresh === true;
     }
     if (!held.preimage) {
@@ -3168,7 +3260,7 @@ export class SparkAgent {
         throw pending(`is still pending (status ${status?.status ?? "unknown"}). Call fetchL402 again later.`, { sendId: held.sendId });
       }
     }
-    if (held.sentOnce && request.resend && request.reqBody !== held.reqBody) {
+    if (held.sentOnce && request.resend && l402BodyHash(request.reqBody) !== held.reqBodyHash) {
       throw badInput(
         new TypeError(
           `SparkAgent.fetchL402: { resend: true } sends the original ${String(request.method).toUpperCase()} again, and this ` +
@@ -3197,13 +3289,57 @@ export class SparkAgent {
   // The held L402 purchases by method, host and path, and why each is held:
   // never the macaroon, preimage or query string (it can carry keys). `paid`
   // has a pass not yet delivered; `pending` a payment in doubt, or failed
-  // with its sats possibly locked; otherwise the block's reason.
-  #l402HeldSummary() {
-    return [...this.#l402Held].map(([k, entry]) => {
+  // with its sats possibly locked; `buying` a purchase running now, or one
+  // whose process died mid-way; `unreadable` a file that can't be read;
+  // otherwise the block's reason. From disk, plus any copy only this process
+  // has (its write failed).
+  async #l402HeldSummary() {
+    const byFile = new Map();
+    const records = (await this.#l402Store.list().catch(() => [])).sort((a, b) => (a.updatedAt ?? 0) - (b.updatedAt ?? 0)); // oldest first
+    for (const rec of records) {
+      byFile.set(rec.file, rec.unreadable
+        ? { method: null, host: null, path: null, reason: "unreadable" }
+        : { method: rec.method, host: rec.host, path: rec.path, reason: rec.state === "blocked" ? rec.blocked?.reason ?? "blocked" : rec.state === "buying" ? "buying" : rec.paid ? "paid" : "pending" });
+    }
+    for (const [k, entry] of this.#l402Held) {
+      const file = l402HoldFileName(k);
+      if ([...byFile.keys()].some((f) => f.endsWith(file))) continue;
       const at = k.indexOf(" ");
-      const reason = entry.blocked ? entry.blocked.reason : entry.preimage ? "paid" : "pending";
-      return { method: k.slice(0, at), ...l402Target(k.slice(at + 1)), reason };
-    });
+      byFile.set(file, { method: k.slice(0, at), ...l402Target(k.slice(at + 1)), reason: entry.blocked ? entry.blocked.reason : entry.preimage ? "paid" : "pending" });
+    }
+    return [...byFile.values()];
+  }
+
+  // What fetchL402 should finish for this request, if anything: the record on
+  // disk (another process may have written it), else this process's copy (a
+  // failed write leaves only that). A purchase another live process is still
+  // making refuses the call; one whose process died is finished from its
+  // record (its invoice, through the dedup store).
+  async #heldFor(key) {
+    const rec = await this.#l402Store.read(key);
+    if (!rec) return this.#l402Held.get(key) ?? null;
+    if (rec.state === "buying" && rec.pid !== process.pid && pidAlive(rec.pid) && Date.now() - rec.updatedAt < L402_BUYING_STALE_MS) {
+      throw l402Busy(rec);
+    }
+    const entry = l402HoldFromRecord(rec);
+    // This process may know the preimage already; the disk never holds it.
+    const cached = this.#l402Held.get(key);
+    if (cached?.preimage && cached.invoice === entry.invoice) entry.preimage = cached.preimage;
+    this.#l402Held.set(key, entry);
+    return entry;
+  }
+
+  // Save this process's copy, or remove the file once the copy is gone
+  // (delivered, proven unpaid, or the SSP returned the sats). A failed write
+  // keeps the copy in memory, which still guards this process, and warns.
+  async #syncL402(key) {
+    const entry = this.#l402Held.get(key);
+    try {
+      if (entry) await this.#l402Store.put(key, l402RecordFromHold(key, entry));
+      else await this.#l402Store.remove(key);
+    } catch (err) {
+      console.warn(`spark-agent: couldn't save an L402 hold (${err?.message ?? err}); it guards this process only.`);
+    }
   }
 
   // Never evicts: a dropped hold or block lets the next call buy that URL again
@@ -3361,16 +3497,12 @@ export class SparkAgent {
     if (privacy.state === "off") problems.add("PRIVACY_OFF");
     if (privacy.state === "unknown" && !closed && balance) problems.add("PRIVACY_UNKNOWN");
     for (const code of budgetRead.problems) problems.add(code);
-    const l402 = { held: closed ? [] : this.#l402HeldSummary() };
+    const l402 = { held: closed ? [] : await this.#l402HeldSummary() };
     if (l402.held.length) problems.add("L402_HELD");
 
     const severity = Object.keys(STATUS_PROBLEMS);
     const sorted = [...problems].sort((a, b) => severity.indexOf(a) - severity.indexOf(b));
-    let nextStep = sorted.length ? STATUS_PROBLEMS[sorted[0]].nextStep : null;
-    // A restart forgets held L402 purchases, so advice to restart waits for them.
-    if (nextStep && problems.has("L402_HELD") && sorted[0] !== "L402_HELD" && nextStep.includes(RESTART)) {
-      nextStep += " But first finish the held L402 purchases (status.l402.held) with fetchL402 in this process: a restart forgets them.";
-    }
+    const nextStep = sorted.length ? STATUS_PROBLEMS[sorted[0]].nextStep : null;
     return {
       schema: "sparkbtcbot.status.v1",
       usable: !sorted.some((code) => STATUS_PROBLEMS[code].blocking),

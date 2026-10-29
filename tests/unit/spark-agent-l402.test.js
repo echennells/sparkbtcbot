@@ -2,7 +2,7 @@
 // existed in the reference doc — a deployed bot got `TypeError: not a function`.
 // Now they ship on SparkAgent; these tests pin the 402 flow with a stubbed fetch.
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { readFile, mkdtemp, rm } from "node:fs/promises";
+import { readFile, mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { inspect } from "node:util";
@@ -193,9 +193,15 @@ describe("fetchL402 after payment: in-process recovery", () => {
     });
     return seen;
   };
+  // Holds are written to disk (real I/O) between the fake timers, so run them
+  // until the call settles, yielding to the real event loop between rounds.
   const run = async (promise) => {
-    const settled = promise.then((value) => ({ value }), (error) => ({ error }));
-    await vi.runAllTimersAsync();
+    let done = false;
+    const settled = promise.then((value) => ({ value }), (error) => ({ error })).finally(() => { done = true; });
+    while (!done) {
+      await vi.runAllTimersAsync();
+      if (!done) await stat(tmpdir());
+    }
     return settled;
   };
   const mk = () => {
@@ -501,7 +507,7 @@ describe("fetchL402 after payment: in-process recovery", () => {
         cause: expect.objectContaining({ code: "LIGHTNING_PAYMENT_FAILED", status }),
       });
       expect(first.error.message).toMatch(/only once that send reads USER_SWAP_RETURNED/);
-      expect(first.error.nextStep).toMatch(/forgetL402\(url\) only on the user's say-so.*Holds live in memory only.*If the check itself fails/);
+      expect(first.error.nextStep).toMatch(/forgetL402\(url\) only on the user's say-so.*The hold is saved on disk.*If the check itself fails/);
 
       wallet.getLightningSendRequest.mockClear();
       stubFetch([]); // no new challenge: any request here would be a bug
@@ -722,7 +728,7 @@ describe("fetchL402 after payment: in-process recovery", () => {
     expect(second.error).toMatchObject({
       code: "LIGHTNING_PAYMENT_FAILED", retryable: "check-first", fundsReturned: false, status: "PENDING_USER_SWAP_RETURN", sendId: "send-9", cause: failed,
     });
-    expect(second.error.nextStep).toMatch(/Holds live in memory only.*If the check itself fails/);
+    expect(second.error.nextStep).toMatch(/The hold is saved on disk.*If the check itself fails/);
 
     // The hold is now on the send's id: the next call reads its status instead of paying.
     const asked = [];

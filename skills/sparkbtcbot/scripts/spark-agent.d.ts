@@ -846,15 +846,18 @@ export declare class SparkAgent {
   /**
    * Fetch a resource behind an L402 paywall, paying its challenge under the
    * price and fee ceilings and the budget. A purchase that paid but didn't
-   * deliver is held in this process, and the next call for the same URL and
-   * method finishes it instead of buying again. So is one whose payment failed
-   * while its sats may still be locked (LIGHTNING_PAYMENT_FAILED, check-first):
-   * the next call buys again only once that send reads USER_SWAP_RETURNED. A
-   * call that overlaps one still running for the same method + URL joins it
-   * (`joined: true`, `paid: false`); with a different body it is refused with
-   * CONCURRENT_PAYMENT_ATTEMPT before anything is fetched or paid. No
-   * dry run: previewL402(url) shows the price.
+   * deliver, or whose payment is in doubt, is held on disk
+   * (~/.spark/l402-holds/, SPARK_L402_HOLDS_PATH), and the next call for the
+   * same URL and method, in this process or a new one, finishes it instead of
+   * buying again. So is one whose payment failed while its sats may still be
+   * locked (LIGHTNING_PAYMENT_FAILED, check-first): the next call buys again
+   * only once that send reads USER_SWAP_RETURNED. A call that overlaps one
+   * still running for the same method + URL joins it in-process (`joined:
+   * true`, `paid: false`) and is refused across processes; with a different
+   * body it is refused with CONCURRENT_PAYMENT_ATTEMPT before anything is
+   * fetched or paid. No dry run: previewL402(url) shows the price.
    * @sideEffect spend
+   * @throws {AgentError} L402_HOLD_UNREADABLE
    * @throws {AgentError} LIMIT_DENIED
    * @throws {AgentError} LIMITS_UNREADABLE
    * @throws {AgentError} BAD_INPUT
@@ -887,9 +890,10 @@ export declare class SparkAgent {
    * in doubt, a refused pass, a failed payment whose send never read
    * USER_SWAP_RETURNED), so the next fetchL402 for it may buy again: a
    * second purchase if the earlier payment went through. Call it only on the
-   * user's say-so. Returns whether anything was held.
+   * user's say-so. Removes the hold's file too (~/.spark/l402-holds/), so no
+   * later process finishes it either. Returns whether anything was held.
    * @sideEffect read
-   * @throws none
+   * @throws {AgentError} STORAGE_ERROR
    */
   forgetL402(url: string, options?: ForgetL402Options): boolean;
 

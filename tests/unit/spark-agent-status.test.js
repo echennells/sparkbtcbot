@@ -547,9 +547,10 @@ describe("status(): the user's spending limits", () => {
   });
 });
 
-// ToB review 2026-10-28: L402 holds live in memory only, and the restart
-// problems' nextSteps restarted the process with purchases held: a paid,
-// undelivered pass was lost, and the next process bought again.
+// ToB review 2026-10-28: the restart problems' nextSteps restarted the
+// process with L402 purchases held in memory, so a paid, undelivered pass was
+// lost and the next process bought again. Holds are on disk now
+// (lib/l402-holds.js); status() still lists the unfinished ones.
 describe("status(): L402_HELD", () => {
   afterEach(() => vi.unstubAllGlobals());
   const holdOne = async (agent) => {
@@ -573,7 +574,7 @@ describe("status(): L402_HELD", () => {
     expect(s.l402).toEqual({ held: [{ method: "GET", host: "api.example", path: "/paid", reason: "pending" }] });
     expect(JSON.stringify(s)).not.toMatch(/mac-secret|SECRET/);
     expect(s.nextStep).toBe(STATUS_PROBLEMS.L402_HELD.nextStep);
-    expect(s.nextStep).toMatch(/before anything restarts it/);
+    expect(s.nextStep).toMatch(/call fetchL402 again for each, same URL and method, to finish it without paying again/);
   });
 
   it("a closed agent holds nothing it can finish", async () => {
