@@ -14,6 +14,7 @@ import { SparkWallet } from "@buildonspark/spark-sdk";
 import { SparkAgent } from "../../skills/sparkbtcbot/scripts/spark-agent.js";
 import { STATUS_PROBLEMS } from "../../lib/agent-errors.js";
 import { testSparkAddress } from "../helpers/spark-address.js";
+import { freshInvoice } from "../helpers/bolt11.js";
 
 // The backup is the leaf-vault's; its health is what status() reads, so the
 // module is replaced by one whose health() each test sets.
@@ -102,6 +103,7 @@ describe("status(): a healthy agent", () => {
       backup: { state: "ok", ageMinutes: 0, lastError: null },
       budget: { state: "none", sealed: false, budgetSats: null, spentSats: null, remainingSats: null, windowHours: null, nextReleaseAt: null },
       limits: { state: "none" },
+      l402: { held: [] },
       connections: { spark: "connected", lightning: "unchecked" },
     });
   });
@@ -529,6 +531,43 @@ describe("status(): the user's spending limits", () => {
   });
 });
 
+// ToB review 2026-10-28: L402 holds live in memory only, and the restart
+// problems' nextSteps restarted the process with purchases held: a paid,
+// undelivered pass was lost, and the next process bought again.
+describe("status(): L402_HELD", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  const holdOne = async (agent) => {
+    const md = await readFile(join(ROOT, "node_modules/light-bolt11-decoder/README.md"), "utf8");
+    const invoice = freshInvoice(md.match(/lnbc20u[a-z0-9]+/)[0]);
+    vi.stubGlobal("fetch", async () => ({ status: 402, headers: { get: () => "application/json" }, json: async () => ({ invoice, macaroon: "mac-secret" }), text: async () => "" }));
+    await expect(agent.fetchL402("https://api.example/paid?key=SECRET", { maxAmountSats: 3000 })).rejects.toMatchObject({ code: "PAYMENT_COMMITTED" });
+  };
+  const payWallet = () => mkWallet({
+    getLightningSendFeeEstimate: vi.fn(async () => 5),
+    payLightningInvoice: vi.fn(async () => { throw new Error("deadline exceeded"); }),
+  });
+
+  it("lists each held purchase without its secrets or query string, ranked above the restart problems", async () => {
+    const { agent, emit } = await connected(payWallet());
+    await holdOne(agent);
+    emit("stream:disconnected", "gone");
+    at(31_000);
+    const s = await agent.status();
+    expect(s.problems).toEqual(["L402_HELD", "SPARK_STREAM_DOWN"]);
+    expect(s.l402).toEqual({ held: [{ method: "GET", host: "api.example", path: "/paid", reason: "pending" }] });
+    expect(JSON.stringify(s)).not.toMatch(/mac-secret|SECRET/);
+    expect(s.nextStep).toBe(STATUS_PROBLEMS.L402_HELD.nextStep);
+    expect(s.nextStep).toMatch(/before anything restarts it/);
+  });
+
+  it("a closed agent holds nothing it can finish", async () => {
+    const { agent } = await connected(payWallet());
+    await holdOne(agent);
+    await agent.cleanup();
+    expect((await agent.status()).l402).toEqual({ held: [] });
+  });
+});
+
 describe("status(): order, nextStep, and never throwing for what it finds", () => {
   it("lists problems most severe first, and gives the first one's nextStep", async () => {
     process.env.SPARK_DAILY_BUDGET_SATS = "1000";
@@ -579,7 +618,7 @@ describe("status(): order, nextStep, and never throwing for what it finds", () =
     expect(Object.entries(STATUS_PROBLEMS).filter(([, p]) => p.blocking).map(([c]) => c)).toEqual(["AGENT_CLOSED", "SPARK_UNREACHABLE", "NETWORK_MISMATCH"]);
     expect(Object.keys(STATUS_PROBLEMS).sort()).toEqual([
       "AGENT_CLOSED", "BACKUP_BROKEN", "BACKUP_STALE", "BALANCE_LOCKED", "BUDGET_EXHAUSTED", "INCOMING_UNCLAIMED",
-      "LIGHTNING_UNREACHABLE", "LIMITS_UNREADABLE", "NETWORK_MISMATCH", "PRIVACY_OFF", "SPARK_STREAM_DOWN", "SPARK_UNREACHABLE",
+      "L402_HELD", "LIGHTNING_UNREACHABLE", "LIMITS_UNREADABLE", "NETWORK_MISMATCH", "PRIVACY_OFF", "SPARK_STREAM_DOWN", "SPARK_UNREACHABLE",
       "SPEND_LEDGER_BAD_SIGNATURE", "SPEND_LEDGER_MISSING", "SPEND_LEDGER_UNREADABLE",
     ]);
   });

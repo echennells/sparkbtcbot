@@ -116,9 +116,10 @@ Some errors carry facts too: `field` (the argument or setting at fault), `osCode
 | `SPEND_LEDGER_MISSING` | degraded | `spendStatus()` throws this code, so every send would too. | Stop spending and tell the user; only they reset the ledger (sparkbtcbot reset-ledger, run in their own terminal). Don't recreate or edit the ledger file yourself. |
 | `SPEND_LEDGER_BAD_SIGNATURE` | degraded | `spendStatus()` throws this code, so every send would too. | Stop spending and tell the user; only they reset the ledger (sparkbtcbot reset-ledger, run in their own terminal). Don't edit or replace the ledger file yourself. |
 | `SPEND_LEDGER_UNREADABLE` | degraded | `spendStatus()` throws this code or can't read the ledger at all, so every send would fail. | Stop spending and tell the user the ledger file the message names can't be read; only they inspect or reset it. Don't delete or edit it yourself. |
+| `L402_HELD` | degraded | This process holds L402 purchases that aren't finished (`l402.held`: method, host, path and why, never the pass). Holds live in memory only, so it ranks above every problem whose nextStep restarts the process, and a higher one's restart advice gets "first finish the held L402 purchases" added. | This process holds L402 purchases that aren't finished (status.l402.held lists them): call fetchL402 again for each, same URL and method, in this process before anything restarts it; a new process forgets them and would buy again. If one can't be finished, tell the user; forgetL402(url) only on their say-so. |
 | `SPARK_STREAM_DOWN` | degraded | The SDK's event stream hasn't been connected for 30 seconds or more. | Spark's event stream has been down for 30 seconds or more, so payments arriving now wait to be claimed (sending still works): call status() again in a minute; if it stays down, restart the agent's process and tell the user if that doesn't help. |
-| `INCOMING_UNCLAIMED` | degraded | `incomingSats` has been above 0 for 60 seconds or more while the stream was connected, or, for an agent not opened with `create()` (stream `unknown`), since the first read that saw it (→ Receiving, below). | A payment has arrived (balance.incomingSats) but has waited 60 seconds or more to be claimed: it is not lost, only not spendable yet; restart the agent's process (opening the wallet again claims it), and don't report it as missing. |
 | `BALANCE_LOCKED` | degraded | `lockedSats` has been above 0 for 30 minutes or more. | Some sats (balance.lockedSats) have been locked for 30 minutes or more, usually by a send that hasn't finished: check getTransfers() before paying again for anything recent; if nothing is in flight, restart the agent's process and tell the user if they stay locked. If the check itself fails, don't pay; check again later. |
+| `INCOMING_UNCLAIMED` | degraded | `incomingSats` has been above 0 for 60 seconds or more while the stream was connected, or, for an agent not opened with `create()` (stream `unknown`), since the first read that saw it (→ Receiving, below). | A payment has arrived (balance.incomingSats) but has waited 60 seconds or more to be claimed: it is not lost, only not spendable yet; restart the agent's process (opening the wallet again claims it), and don't report it as missing. |
 | `LIGHTNING_UNREACHABLE` | degraded | Only with `checkLightning: true`: the SSP's fee estimate failed or took over 5 seconds. | The Lightning service didn't answer within 5 seconds, so Lightning payments, withdrawals and deposit claims may fail now (Spark transfers still work): call status({ checkLightning: true }) again later and tell the user if it keeps failing. |
 | `BACKUP_BROKEN` | degraded | The backup failed, or found nothing to write while the wallet holds funds, 3 times in a row; or it has failed and never succeeded; or `vaultHealth()` lists anchorless funds. | The wallet works, but its backup is failing or holds funds it can't fully protect (backup.lastError and vaultHealth().anchorless say which): tell the user; don't move, edit or delete backup files yourself. |
 | `BACKUP_STALE` | degraded | The last backup write failed, or the latest backup is older than two backup periods plus 5 minutes (45 minutes by default). | The wallet works, but its latest backup is old or the last write failed: check vaultHealth() after the next snapshot and tell the user if it stays stale. |
@@ -169,7 +170,7 @@ import { enableLeafVault } from "./leaf-vault.js";
 import { sparkWalletOptions } from "./lib/wallet-options.js";
 import { l402TokenExpiry } from "./lib/l402-token.js";
 import { PaymentCommittedError, provesNothingSent, preSendCode, classifySdkError } from "./lib/payment-outcome.js";
-import { annotateError, isConnectionFailure, STATUS_PROBLEMS } from "./lib/agent-errors.js";
+import { annotateError, isConnectionFailure, STATUS_PROBLEMS, RESTART } from "./lib/agent-errors.js";
 
 // Best-effort BOLT11 amount in sats (undefined for amountless invoices or on a
 // decode error) — used to size the amount-aware Lightning fee cap. Delegates to
@@ -2977,7 +2978,7 @@ export class SparkAgent {
       err.macaroon = macaroon; // not a working pass without the preimage
       throw err;
     }
-    return this.#deliverL402(url, key, { macaroon, preimage, amountSats, invoiceHash: invoicePaymentHash(invoice) ?? undefined }, request, { recovered: false });
+    return this.#deliverL402(url, key, { macaroon, preimage, amountSats, invoiceHash: invoicePaymentHash(invoice) ?? undefined, sendId: payResult.id }, request, { recovered: false });
   }
 
   // Lets this agent buy `url` again after fetchL402 stopped doing so: the
@@ -3008,6 +3009,7 @@ export class SparkAgent {
       preimage: pass.preimage,
       amountSats: pass.amountSats,
       invoiceHash: pass.invoiceHash ?? (pass.invoice ? invoicePaymentHash(pass.invoice) ?? undefined : undefined),
+      sendId: pass.sendId ?? undefined,
       ...(repeatable ? {} : { sentOnce: true, reqBody }),
     });
     // The pass is paid for: hold it BEFORE the first attempt, so a throw
@@ -3092,7 +3094,11 @@ export class SparkAgent {
           `To send it again with the same pass (no new payment), call fetchL402 with { resend: true }. `) +
       `Do NOT buy this resource another way.`,
       {
+        // The ids a restarted agent finds the payment by in getTransfers():
+        // the pass itself lives only in this process (ToB review 2026-10-28).
         settled: true, op: "l402",
+        invoiceHash: pass.invoiceHash ?? (pass.invoice ? invoicePaymentHash(pass.invoice) ?? undefined : undefined),
+        sendId: pass.sendId ?? undefined,
         nextStep: (repeatable
           ? "Paid, not yet delivered: call fetchL402 again with the same URL and method to present the paid pass without paying."
           : `Paid, and the ${String(method).toUpperCase()} was sent once: check with the service whether it acted on it; to send it again with the same pass (no new payment), call fetchL402 with { resend: true }.`) +
@@ -3322,6 +3328,18 @@ export class SparkAgent {
     return this.#deliverL402(url, key, held, request, { recovered: true, paid: paidHere });
   }
 
+  // The held L402 purchases by method, host and path, and why each is held:
+  // never the macaroon, preimage or query string (it can carry keys). `paid`
+  // has a pass not yet delivered; `pending` a payment in doubt, or failed
+  // with its sats possibly locked; otherwise the block's reason.
+  #l402HeldSummary() {
+    return [...this.#l402Held].map(([k, entry]) => {
+      const at = k.indexOf(" ");
+      const reason = entry.blocked ? entry.blocked.reason : entry.preimage ? "paid" : "pending";
+      return { method: k.slice(0, at), ...l402Target(k.slice(at + 1)), reason };
+    });
+  }
+
   // Never evicts: a dropped hold or block lets the next call buy that URL again
   // on nobody's say-so (ToB reviews of 7ec89b9 and of 9bc0f22..f88fbec). The
   // map is bounded by fetchL402 refusing new purchases at L402_MAX_HELD.
@@ -3475,14 +3493,21 @@ export class SparkAgent {
       : { state: settingsRead.value?.privateEnabled === true ? "on" : "off", checkedAt: new Date(settingsRead.at).toISOString() };
     if (privacy.state === "off") problems.add("PRIVACY_OFF");
     for (const code of budgetRead.problems) problems.add(code);
+    const l402 = { held: closed ? [] : this.#l402HeldSummary() };
+    if (l402.held.length) problems.add("L402_HELD");
 
     const severity = Object.keys(STATUS_PROBLEMS);
     const sorted = [...problems].sort((a, b) => severity.indexOf(a) - severity.indexOf(b));
+    let nextStep = sorted.length ? STATUS_PROBLEMS[sorted[0]].nextStep : null;
+    // A restart forgets held L402 purchases, so advice to restart waits for them.
+    if (nextStep && problems.has("L402_HELD") && sorted[0] !== "L402_HELD" && nextStep.includes(RESTART)) {
+      nextStep += " But first finish the held L402 purchases (status.l402.held) with fetchL402 in this process: a restart forgets them.";
+    }
     return {
       schema: "sparkbtcbot.status.v1",
       usable: !sorted.some((code) => STATUS_PROBLEMS[code].blocking),
       problems: sorted,
-      nextStep: sorted.length ? STATUS_PROBLEMS[sorted[0]].nextStep : null,
+      nextStep,
       checkedAt: new Date(now).toISOString(),
       network: this.#network ?? null,
       address: this.#address,
@@ -3491,6 +3516,7 @@ export class SparkAgent {
       backup,
       budget: budgetRead.budget,
       limits: budgetRead.limits,
+      l402,
       connections: { spark: t.spark, lightning },
     };
   }

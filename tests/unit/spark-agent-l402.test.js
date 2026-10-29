@@ -281,6 +281,8 @@ describe("fetchL402 after payment: in-process recovery", () => {
     const { agent, pay } = mk();
     const { error } = await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }));
     expect(error).toMatchObject({ code: "PAYMENT_COMMITTED", settled: true, op: "l402" });
+    // What a restarted process finds the payment by (ToB review 2026-10-28).
+    expect(error).toMatchObject({ sendId: "pay-1", invoiceHash: expect.stringMatching(/^[0-9a-f]{64}$/) });
     expect(error.message).toMatch(/Call fetchL402 with the same URL again/);
     expect(inspect(error)).not.toContain("abc123preimage"); // the pass never rides on the error
 

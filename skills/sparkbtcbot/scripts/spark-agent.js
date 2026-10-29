@@ -36,7 +36,7 @@ import { enableLeafVault } from "./leaf-vault.js";
 import { sparkWalletOptions } from "../../../lib/wallet-options.js";
 import { l402TokenExpiry } from "../../../lib/l402-token.js";
 import { PaymentCommittedError, provesNothingSent, preSendCode, classifySdkError } from "../../../lib/payment-outcome.js";
-import { annotateError, isConnectionFailure, STATUS_PROBLEMS } from "../../../lib/agent-errors.js";
+import { annotateError, isConnectionFailure, STATUS_PROBLEMS, RESTART } from "../../../lib/agent-errors.js";
 
 // Best-effort BOLT11 amount in sats (undefined for amountless invoices or on a
 // decode error) — used to size the amount-aware Lightning fee cap. Delegates to
@@ -2844,7 +2844,7 @@ export class SparkAgent {
       err.macaroon = macaroon; // not a working pass without the preimage
       throw err;
     }
-    return this.#deliverL402(url, key, { macaroon, preimage, amountSats, invoiceHash: invoicePaymentHash(invoice) ?? undefined }, request, { recovered: false });
+    return this.#deliverL402(url, key, { macaroon, preimage, amountSats, invoiceHash: invoicePaymentHash(invoice) ?? undefined, sendId: payResult.id }, request, { recovered: false });
   }
 
   // Lets this agent buy `url` again after fetchL402 stopped doing so: the
@@ -2875,6 +2875,7 @@ export class SparkAgent {
       preimage: pass.preimage,
       amountSats: pass.amountSats,
       invoiceHash: pass.invoiceHash ?? (pass.invoice ? invoicePaymentHash(pass.invoice) ?? undefined : undefined),
+      sendId: pass.sendId ?? undefined,
       ...(repeatable ? {} : { sentOnce: true, reqBody }),
     });
     // The pass is paid for: hold it BEFORE the first attempt, so a throw
@@ -2959,7 +2960,11 @@ export class SparkAgent {
           `To send it again with the same pass (no new payment), call fetchL402 with { resend: true }. `) +
       `Do NOT buy this resource another way.`,
       {
+        // The ids a restarted agent finds the payment by in getTransfers():
+        // the pass itself lives only in this process (ToB review 2026-10-28).
         settled: true, op: "l402",
+        invoiceHash: pass.invoiceHash ?? (pass.invoice ? invoicePaymentHash(pass.invoice) ?? undefined : undefined),
+        sendId: pass.sendId ?? undefined,
         nextStep: (repeatable
           ? "Paid, not yet delivered: call fetchL402 again with the same URL and method to present the paid pass without paying."
           : `Paid, and the ${String(method).toUpperCase()} was sent once: check with the service whether it acted on it; to send it again with the same pass (no new payment), call fetchL402 with { resend: true }.`) +
@@ -3189,6 +3194,18 @@ export class SparkAgent {
     return this.#deliverL402(url, key, held, request, { recovered: true, paid: paidHere });
   }
 
+  // The held L402 purchases by method, host and path, and why each is held:
+  // never the macaroon, preimage or query string (it can carry keys). `paid`
+  // has a pass not yet delivered; `pending` a payment in doubt, or failed
+  // with its sats possibly locked; otherwise the block's reason.
+  #l402HeldSummary() {
+    return [...this.#l402Held].map(([k, entry]) => {
+      const at = k.indexOf(" ");
+      const reason = entry.blocked ? entry.blocked.reason : entry.preimage ? "paid" : "pending";
+      return { method: k.slice(0, at), ...l402Target(k.slice(at + 1)), reason };
+    });
+  }
+
   // Never evicts: a dropped hold or block lets the next call buy that URL again
   // on nobody's say-so (ToB reviews of 7ec89b9 and of 9bc0f22..f88fbec). The
   // map is bounded by fetchL402 refusing new purchases at L402_MAX_HELD.
@@ -3342,14 +3359,21 @@ export class SparkAgent {
       : { state: settingsRead.value?.privateEnabled === true ? "on" : "off", checkedAt: new Date(settingsRead.at).toISOString() };
     if (privacy.state === "off") problems.add("PRIVACY_OFF");
     for (const code of budgetRead.problems) problems.add(code);
+    const l402 = { held: closed ? [] : this.#l402HeldSummary() };
+    if (l402.held.length) problems.add("L402_HELD");
 
     const severity = Object.keys(STATUS_PROBLEMS);
     const sorted = [...problems].sort((a, b) => severity.indexOf(a) - severity.indexOf(b));
+    let nextStep = sorted.length ? STATUS_PROBLEMS[sorted[0]].nextStep : null;
+    // A restart forgets held L402 purchases, so advice to restart waits for them.
+    if (nextStep && problems.has("L402_HELD") && sorted[0] !== "L402_HELD" && nextStep.includes(RESTART)) {
+      nextStep += " But first finish the held L402 purchases (status.l402.held) with fetchL402 in this process: a restart forgets them.";
+    }
     return {
       schema: "sparkbtcbot.status.v1",
       usable: !sorted.some((code) => STATUS_PROBLEMS[code].blocking),
       problems: sorted,
-      nextStep: sorted.length ? STATUS_PROBLEMS[sorted[0]].nextStep : null,
+      nextStep,
       checkedAt: new Date(now).toISOString(),
       network: this.#network ?? null,
       address: this.#address,
@@ -3358,6 +3382,7 @@ export class SparkAgent {
       backup,
       budget: budgetRead.budget,
       limits: budgetRead.limits,
+      l402,
       connections: { spark: t.spark, lightning },
     };
   }

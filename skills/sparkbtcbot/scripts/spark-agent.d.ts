@@ -169,6 +169,13 @@ export interface SparkAgentStatus {
   };
   /** The user's spending limits (`sparkbtcbot limits`); "unreadable" refuses every send (LIMITS_UNREADABLE). */
   limits: ({ state: "set" } & SpendingLimits) | { state: "none" | "unreadable" };
+  /**
+   * L402 purchases this process holds (memory only): `paid` has a pass not yet
+   * delivered, `pending` a payment in doubt or failed with its sats possibly
+   * locked, otherwise the block's reason. Never the macaroon, preimage or query
+   * string. Any entry is the L402_HELD problem: finish them before a restart.
+   */
+  l402: { held: Array<{ method: string; host: string; path: string; reason: string }> };
   connections: {
     spark: "connected" | "connecting" | "disconnected" | "closed" | "unknown";
     lightning: "reachable" | "unreachable" | "unchecked";
