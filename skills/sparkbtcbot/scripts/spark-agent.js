@@ -852,6 +852,12 @@ export class SparkAgent {
   // or finishes the pending payment, instead of buying another. Memory only —
   // never on disk, in a log, or on an error object — so it ends with the process.
   #l402Held = new Map();
+  // fetchL402 calls still running, keyed like #l402Held: { promise, sig }.
+  // #l402Held only exists once a payment has returned, so without this two
+  // overlapping calls for one URL (a duplicated tool call, a host timeout
+  // retried while the first call still runs) each fetched a fresh challenge
+  // and each paid it: a new invoice every time, which no dedup can catch.
+  #l402InFlight = new Map();
   // status(): the wallet's stream state and incoming/locked times (create()
   // replaces this with one that saw the wallet open), whether cleanup() has
   // run, and the address, so a closed agent can still report it.
@@ -1056,7 +1062,18 @@ export class SparkAgent {
     });
     this.#spendChain = run.then(() => {}, () => {});
     const entry = await run;
-    return { undo: () => this.#ledger.unrecord(entry.id) };
+    // The undo is a read-modify-write of the same file, so it takes the same
+    // queue. Run outside it, a failed send's unrecord could read the ledger,
+    // let a concurrent real payment record, then write back without it: the
+    // real payment vanished from the budget (a sealed ledger was re-signed
+    // with it missing, so the tamper check passed).
+    return {
+      undo: () => {
+        const u = this.#spendChain.then(() => this.#ledger.unrecord(entry.id));
+        this.#spendChain = u.then(() => {}, () => {});
+        return u;
+      },
+    };
   }
 
   // Rolling-window spend against SPARK_DAILY_BUDGET_SATS, or { disabled: true }
@@ -2461,7 +2478,42 @@ export class SparkAgent {
 
   // --- L402 paywalls (see references/l402.md) ---
 
+  // One purchase per method + URL at a time in this process. The check and
+  // the set run before the first await, so even simultaneous calls can't both
+  // pass. A duplicate of the running request (same body, same resend) joins
+  // its outcome, result or error; a different body is refused before anything
+  // is fetched or paid.
   async fetchL402(url, options = {}) {
+    const key = l402RequestKey(options?.method ?? "GET", url);
+    let sig = null;
+    try { sig = JSON.stringify([options?.body ?? null, options?.resend ?? false]); } catch { /* unserializable body: never joins */ }
+    const running = this.#l402InFlight.get(key);
+    if (running) {
+      if (sig === null || running.sig !== sig) {
+        let target = String(url);
+        try { const t = l402Target(url); target = `${t.host}${t.path}`; } catch { /* report the raw url */ }
+        throw annotateError(
+          new Error(
+            `L402: another fetchL402 for ${String(options?.method ?? "GET").toUpperCase()} ${target} is still running in this ` +
+            `process with a different body. Nothing was paid by this call.`,
+          ),
+          "CONCURRENT_PAYMENT_ATTEMPT",
+          { retryable: "check-first", nextStep: "Nothing was paid by this call. Wait for the other fetchL402 for this URL to return, then decide whether to call again." },
+        );
+      }
+      const result = await running.promise;
+      return { ...result, paid: false, joined: true };
+    }
+    const entry = { promise: this.#fetchL402Run(url, options), sig };
+    this.#l402InFlight.set(key, entry);
+    try {
+      return await entry.promise;
+    } finally {
+      if (this.#l402InFlight.get(key) === entry) this.#l402InFlight.delete(key);
+    }
+  }
+
+  async #fetchL402Run(url, options = {}) {
     const { decode } = await import("light-bolt11-decoder");
     const { method = "GET", headers = {}, body, maxFeeSats, maxAmountSats = 10_000, resend = false, ...rest } = options;
     // Same strictness as every other money-moving method: an ignored option

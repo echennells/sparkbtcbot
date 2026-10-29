@@ -392,9 +392,11 @@ export interface WithdrawPreview {
 export type L402Result =
   | { paid: false; data: unknown }
   | {
-      /** false when this call presented a pass an earlier call paid for (`recovered`). */
+      /** false when this call presented a pass an earlier call paid for (`recovered`), or joined a call still running for the same URL (`joined`). */
       paid: boolean;
       recovered?: true;
+      /** This call overlapped a fetchL402 for the same method + URL and shares its outcome; it paid nothing itself. */
+      joined?: true;
       status: number;
       amountSats: number | null;
       macaroon: string;
@@ -807,7 +809,10 @@ export declare class SparkAgent {
    * deliver is held in this process, and the next call for the same URL and
    * method finishes it instead of buying again. So is one whose payment failed
    * while its sats may still be locked (LIGHTNING_PAYMENT_FAILED, check-first):
-   * the next call buys again only once that send reads USER_SWAP_RETURNED. No
+   * the next call buys again only once that send reads USER_SWAP_RETURNED. A
+   * call that overlaps one still running for the same method + URL joins it
+   * (`joined: true`, `paid: false`); with a different body it is refused with
+   * CONCURRENT_PAYMENT_ATTEMPT before anything is fetched or paid. No
    * dry run: previewL402(url) shows the price.
    * @sideEffect spend
    * @throws {AgentError} BAD_INPUT

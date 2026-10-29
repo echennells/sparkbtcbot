@@ -477,7 +477,11 @@ describe("spark-agent.d.ts ↔ the shipped SparkAgent", () => {
     let checked = 0;
     for (const [name, sigs] of members) {
       const unit = units.get(unitOf(name));
-      const src = sourceKeys(unit);
+      // A public wrapper that hands its whole options object to a private
+      // member (fetchL402 → #fetchL402Run) accepts what that member accepts.
+      const ownBag = /const \{[^\n]*\} = options/.test(unit.text);
+      const delegate = !ownBag && unit.text.match(/this\.(#\w+)\([^)]*\boptions\)/)?.[1];
+      const src = sourceKeys(delegate && units.has(delegate) ? units.get(delegate) : unit);
       if (!src) continue;
       checked++;
       const accepted = new Set(src.keys);

@@ -152,4 +152,29 @@ describe("SparkAgent spend budget (SPARK_DAILY_BUDGET_SATS)", () => {
     expect(status.spentSats).toBe(900);     // ledger did not undercount
     expect(status.spentSats).toBeLessThanOrEqual(1000);
   });
+
+  // Review 2026-10-28 C1: a failed send's undo (load, drop its entry, write)
+  // ran outside #spendChain, so a real payment recorded in between was written
+  // back out of the ledger — real spends vanished from the budget. Sends that
+  // fail pre-send alongside real ones are the natural trigger (a burst runs
+  // the balance short) and a deliberate one (a manipulated agent mixing in
+  // failing calls).
+  it("a burst of real and failing sends keeps every real one in the budget", async () => {
+    process.env.SPARK_DAILY_BUDGET_SATS = "1000000";
+    const wallet = mkWallet();
+    wallet.transfer = async ({ amountSats }) => {
+      await new Promise((r) => setTimeout(r, Math.random() * 5));
+      if (Number(amountSats) === 7) throw new SparkValidationError("Total target amount exceeds available balance", { field: "targetAmounts" });
+      wallet.calls.transfers++;
+      return { id: `t${wallet.calls.transfers}` };
+    };
+    const agent = new SparkAgent(wallet, "MAINNET");
+    for (let round = 0; round < 5; round++) {
+      await Promise.allSettled(
+        Array.from({ length: 20 }, (_, i) => agent.transfer({ to: "sp1x", amount: i % 2 ? 7 : 1000 })),
+      );
+    }
+    expect(wallet.calls.transfers).toBe(50);
+    expect((await agent.spendStatus()).spentSats).toBe(50 * 1000); // every real send counted, every failed one refunded
+  });
 });

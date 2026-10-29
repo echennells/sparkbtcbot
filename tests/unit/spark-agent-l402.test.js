@@ -216,6 +216,55 @@ describe("fetchL402 after payment: in-process recovery", () => {
     expect(seen.slice(1).map(auth)).toEqual(["L402 mac1:abc123preimage", "L402 mac1:abc123preimage"]);
   });
 
+  // Review 2026-10-28 F01: nothing marked a URL as being bought until the
+  // payment returned, so a second call during the payment (a duplicated tool
+  // call, a host timeout retried while the first still ran) fetched its own
+  // challenge — a different invoice — and paid it too.
+  it("two overlapping calls for one URL buy once: the second joins the first", async () => {
+    const inv = await invoice2000();
+    const seen = stubFetch([resp(402, { invoice: inv, macaroon: "mac1" }), resp(200, { ok: true })]);
+    const { agent, pay } = mk();
+    pay.mockImplementation(() => new Promise((r) => setTimeout(() => r({ settled: true, paymentPreimage: "abc123preimage", id: "pay-1" }), 5_000)));
+    const first = agent.fetchL402(URL_, { maxAmountSats: 3000 });
+    const second = agent.fetchL402(URL_, { maxAmountSats: 3000 }); // starts while the first is paying
+    const [a, b] = await Promise.all([run(first), run(second)]);
+    expect(a.value).toMatchObject({ paid: true, status: 200, data: { ok: true } });
+    expect(b.value).toMatchObject({ paid: false, joined: true, status: 200, data: { ok: true } });
+    expect(pay).toHaveBeenCalledTimes(1);
+    expect(seen).toHaveLength(2); // one challenge, one delivery: the second call fetched nothing
+  });
+
+  it("an overlapping call with a different body is refused before anything is fetched or paid", async () => {
+    const inv = await invoice2000();
+    stubFetch([resp(402, { invoice: inv, macaroon: "mac1" }), resp(200, { ok: true })]);
+    const { agent, pay } = mk();
+    pay.mockImplementation(() => new Promise((r) => setTimeout(() => r({ settled: true, paymentPreimage: "abc123preimage", id: "pay-1" }), 5_000)));
+    const first = agent.fetchL402(URL_, { method: "POST", body: { order: 1 }, maxAmountSats: 3000 });
+    const { error } = await run(agent.fetchL402(URL_, { method: "POST", body: { order: 2 }, maxAmountSats: 3000 }));
+    expect(error).toMatchObject({ code: "CONCURRENT_PAYMENT_ATTEMPT", retryable: "check-first" });
+    expect(error.message).toMatch(/Nothing was paid by this call/);
+    expect((await run(first)).value).toMatchObject({ paid: true, data: { ok: true } });
+    expect(pay).toHaveBeenCalledTimes(1);
+  });
+
+  it("an overlapping call shares the first call's error, and the URL is free again afterwards", async () => {
+    const inv = await invoice2000();
+    stubFetch([resp(402, { invoice: inv, macaroon: "mac1" })]);
+    const { agent, pay } = mk();
+    pay.mockImplementation(() => new Promise((_, reject) => setTimeout(() => reject(Object.assign(new Error("over budget"), { code: "SPEND_BUDGET_EXCEEDED" })), 5_000)));
+    const first = agent.fetchL402(URL_, { maxAmountSats: 3000 });
+    const second = agent.fetchL402(URL_, { maxAmountSats: 3000 });
+    const [a, b] = await Promise.all([run(first), run(second)]);
+    expect(a.error).toMatchObject({ code: "SPEND_BUDGET_EXCEEDED" });
+    expect(b.error).toBe(a.error);
+    expect(pay).toHaveBeenCalledTimes(1);
+    // Nothing still marks the URL as in progress: a later call is a fresh attempt.
+    pay.mockResolvedValue({ settled: true, paymentPreimage: "abc123preimage", id: "pay-2" });
+    stubFetch([resp(402, { invoice: inv, macaroon: "mac2" }), resp(200, { ok: true })]);
+    expect((await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }))).value).toMatchObject({ paid: true });
+    expect(pay).toHaveBeenCalledTimes(2);
+  });
+
   it("a 5xx on delivery is retried with the same pass", async () => {
     const inv = await invoice2000();
     stubFetch([resp(402, { invoice: inv, macaroon: "mac1" }), resp(503, { busy: true }), resp(200, { ok: true })]);
