@@ -21,10 +21,11 @@ beforeEach(async () => {
 });
 afterEach(() => rm(dir, { recursive: true, force: true }));
 
-const limits = (...args) =>
+const limitsWith = (env, ...args) =>
   run("node", [CLI, "limits", ...args], {
-    env: { ...process.env, SPARK_LIMITS_PATH: path, SPARK_SEED_PATH: join(dir, "no-seed.enc"), SPARK_DAILY_BUDGET_SATS: "" },
+    env: { ...process.env, SPARK_LIMITS_PATH: path, SPARK_SEED_PATH: join(dir, "no-seed.enc"), SPARK_DAILY_BUDGET_SATS: "", ...env },
   }).then((r) => ({ code: 0, ...r }), (e) => ({ code: e.code, stdout: e.stdout ?? "", stderr: e.stderr ?? "" }));
+const limits = (...args) => limitsWith({}, ...args);
 const onDisk = async () => JSON.parse(await readFile(path, "utf8"));
 const exists = () => access(path).then(() => true, () => false);
 
@@ -96,6 +97,19 @@ describe("sparkbtcbot limits", () => {
     await writeFile(path, "{ not json");
     expect((await limits("clear")).code).toBe(0);
     expect(await exists()).toBe(false);
+  });
+
+  // Eval 59 (2026-10-29) caught the docs saying "the tightest budget applies":
+  // a sealed budget overrides SPARK_DAILY_BUDGET_SATS outright; the daily
+  // limit here tightens whichever is in force.
+  it("says which other budgets apply: the env one, or a sealed one that overrides it", async () => {
+    let r = await limitsWith({ SPARK_DAILY_BUDGET_SATS: "50000" });
+    expect(r.stdout).toMatch(/Also in force: SPARK_DAILY_BUDGET_SATS=50000\. The tighter of it and the daily budget here applies\./);
+    const sealedSeed = join(dir, "sealed.enc");
+    await writeFile(sealedSeed, Buffer.from([0x02, 0, 0, 0])); // the plaintext version byte is all it reads
+    r = await limitsWith({ SPARK_DAILY_BUDGET_SATS: "50000", SPARK_SEED_PATH: sealedSeed });
+    expect(r.stdout).toMatch(/Also in force: a budget sealed in the seed \(set-policy\)\. The tighter of it and the daily budget here applies\./);
+    expect(r.stdout).toMatch(/SPARK_DAILY_BUDGET_SATS=50000 is ignored: the sealed budget overrides it\./);
   });
 
   it("--help prints usage and changes nothing", async () => {

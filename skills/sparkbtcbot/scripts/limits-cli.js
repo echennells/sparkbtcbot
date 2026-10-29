@@ -87,9 +87,16 @@ function describe(limits, path) {
   if (l.allowedRecipients && (!l.allowedOps || l.allowedOps.includes("lightning_pay"))) {
     lines.push("  (Lightning payments have no address to check; leave lightning_pay out of --ops to stop them.)");
   }
+  // A sealed budget overrides the env one (spark-agent.js spendLedgerFromEnv);
+  // the daily budget here tightens whichever is in force.
   const raw = env.SPARK_DAILY_BUDGET_SATS;
-  if (raw != null && String(raw).trim() !== "") lines.push(`  Also in force: SPARK_DAILY_BUDGET_SATS=${raw}. The tighter budget applies.`);
-  if (seedFileIsSealed(env.SPARK_SEED_PATH || undefined)) lines.push("  Also in force: a budget sealed in the seed (set-policy). The tighter budget applies.");
+  const sealed = seedFileIsSealed(env.SPARK_SEED_PATH || undefined);
+  if (sealed) lines.push("  Also in force: a budget sealed in the seed (set-policy). The tighter of it and the daily budget here applies.");
+  if (raw != null && String(raw).trim() !== "") {
+    lines.push(sealed
+      ? `  SPARK_DAILY_BUDGET_SATS=${raw} is ignored: the sealed budget overrides it.`
+      : `  Also in force: SPARK_DAILY_BUDGET_SATS=${raw}. The tighter of it and the daily budget here applies.`);
+  }
   return lines.join("\n") + "\n";
 }
 

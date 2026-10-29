@@ -449,9 +449,9 @@ export declare class SparkAgent {
   ): Promise<{ agent: SparkAgent; mnemonic: string | undefined }>;
 
   /**
-   * The rolling-window spend against the tightest budget in force (seed-bound,
-   * SPARK_DAILY_BUDGET_SATS, or the user's daily limit), or { disabled: true }
-   * when none is set.
+   * The rolling-window spend against the budget in force (seed-bound, which
+   * overrides SPARK_DAILY_BUDGET_SATS, else the env one), tightened by the
+   * user's daily limit, or { disabled: true } when none is set.
    * @sideEffect read
    * @throws {AgentError} LIMITS_UNREADABLE
    * @throws {AgentError} SPEND_LEDGER_MISSING

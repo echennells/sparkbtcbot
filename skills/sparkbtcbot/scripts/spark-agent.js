@@ -1207,9 +1207,9 @@ export class SparkAgent {
     };
   }
 
-  // Rolling-window spend against the tightest budget set (seed-bound,
-  // SPARK_DAILY_BUDGET_SATS, or the user's daily limit), or { disabled: true }
-  // when none is (parallels vaultHealth()).
+  // Rolling-window spend against the budget in force (seed-bound, which
+  // overrides SPARK_DAILY_BUDGET_SATS, else the env one), tightened by the
+  // user's daily limit, or { disabled: true } when none is (parallels vaultHealth()).
   async spendStatus() {
     const { ledger, limitSats } = this.#activeLedger(await readLimits());
     if (!ledger) return { disabled: true };
@@ -3549,10 +3549,10 @@ export class SparkAgent {
 
   // status().budget and status().limits, plus the problems they mean:
   // LIMITS_UNREADABLE (every send refuses), BUDGET_EXHAUSTED, or the
-  // SPEND_LEDGER_* code every send would throw now. The budget is the
-  // tightest in force (seed-bound, SPARK_DAILY_BUDGET_SATS, or the user's
-  // daily limit); `sealed` says whether one is sealed in the seed (the
-  // ledger's `bound`). nextReleaseAt is when the oldest spend in the window
+  // SPEND_LEDGER_* code every send would throw now. The budget is the one in
+  // force (seed-bound, which overrides SPARK_DAILY_BUDGET_SATS, else the env
+  // one), tightened by the user's daily limit; `sealed` says whether one is
+  // sealed in the seed (the ledger's `bound`). nextReleaseAt is when the oldest spend in the window
   // leaves it.
   async #budgetStatus() {
     const problems = [];

@@ -125,7 +125,7 @@ export const LIMIT_OPS: readonly LimitOp[];
  * the only hard limit.
  */
 export interface SpendingLimits {
-  /** Rolling-24h budget; the tightest of this, a seed-bound and an env budget applies. */
+  /** Rolling-24h budget, on top of the budget in force (a seed-bound one, which overrides SPARK_DAILY_BUDGET_SATS, else the env one): the tighter wins. */
   dailyBudgetSats?: number;
   /** Cap on each sats payment (not token transfers or fees). */
   maxPaymentSats?: number;
