@@ -62,7 +62,7 @@ Some errors carry facts too: `field` (the argument or setting at fault), `osCode
 | `LIGHTNING_PAYMENT_FAILED` | `check-first` (or `yes`) | The Lightning payment failed for good and the payee wasn't paid (`err.status`). Only `USER_SWAP_RETURNED` means the sats are back (`fundsReturned: true`, `yes`); after any other status they may still be locked. | The payee was probably not paid, but the sats may not be back yet: check getBalance().lockedSats (and getLightningSendRequest(err.sendId) when set) before paying this invoice again or another for the same thing. |
 | `PREIMAGE_MISMATCH` | `check-first` | The preimage that came back doesn't hash to this invoice's payment hash, so the invoice isn't proven paid. | This invoice is not proven paid: don't report it paid and don't pay it again yet. Check getTransfers() and getLightningSendRequest(err.sendId), and never reuse a transferId across invoices. |
 | `SPARK_UNAVAILABLE` | `yes` | Spark couldn't be reached (a connection failure) on a call that moves no money. The withdrawal quote (`getWithdrawalFeeQuote`, and `withdraw`'s, dry run included) is `check-first`: the SDK may have started a leaf swap with the SSP to price it. | Nothing moved: Spark couldn't be reached. Call the same method again later; tell the user if it keeps failing. |
-| `SPARK_REFUSED` | `no` | Spark answered a call that moves no money with a refusal. | Spark refused the request, so the same call gets the same answer. Fix the input the message names, or tell the user. |
+| `SPARK_REFUSED` | `no` | Spark answered a call that moves no money with a refusal. The withdrawal quote is `check-first` here too (a failed leaf swap reads as a refusal); only the SDK's own pre-send refusals there keep their code, such as `INSUFFICIENT_FUNDS`. | Spark refused the request, so the same call gets the same answer. Fix the input the message names, or tell the user. |
 | `SERVICE_UNAVAILABLE` | `yes` | The paid-content service couldn't be reached, before any payment. A POST or PATCH is `no`: the service may have received it. | Nothing was paid. Call again later; tell the user if it keeps failing. |
 | `SERVICE_RESPONSE_INVALID` | `no` | The service answered without a 402 challenge, in a form that can't be read, before any payment. | Nothing was paid. The service answered without a payment challenge, in a form that can't be read; check with the service before sending the request again. |
 | `PRICE_UNAVAILABLE` | `yes` | No fiat price source answered, or the sources disagree by more than the tolerance (3%). | Don't quote a fiat figure; call fetchBtcPrice() again later. |
@@ -239,19 +239,26 @@ async function sparkRead(call) {
 // included). Not a pure read: the SDK first selects leaves for the amount, and
 // with no exact set it swaps leaves with the SSP (selectLeavesWithSwap), so a
 // connection lost mid-call can leave value in flight between the wallet and
-// the SSP. Never paid to anyone, but not "nothing moved" either: a connection
-// failure here is SPARK_UNAVAILABLE check-first, not "yes".
+// the SSP. Never paid to anyone, but not "nothing moved" either. Only the
+// SDK's own pre-send refusals (raised before any leaf leaves the wallet) keep
+// their code and retryable; anything else, a connection failure or a refusal
+// (a failed swap is not a connection failure), is check-first: read as "no",
+// "fix the input" started a second swap and locked the rest of the wallet
+// (ToB review 2026-10-28).
 async function withdrawalQuoteRead(call) {
   try {
     return await call();
   } catch (err) {
     const e = classifySdkError(err);
-    if (e?.code === "SPARK_UNAVAILABLE") {
-      annotateError(e, "SPARK_UNAVAILABLE", {
-        retryable: "check-first",
-        nextStep: "Spark couldn't be reached while pricing the withdrawal, after the SDK may have started a leaf swap with the SSP to fit the amount: nothing was sent to the address, but check getBalance() (lockedSats can stay above 0 for a few minutes) before calling withdraw or getWithdrawalFeeQuote again.",
-      });
-    }
+    if (provesNothingSent(err)) throw e;
+    annotateError(e, e.code, {
+      retryable: "check-first",
+      nextStep:
+        (e.code === "SPARK_UNAVAILABLE" ? "Spark couldn't be reached while pricing the withdrawal. " : "Spark refused or failed while pricing the withdrawal. ") +
+        "Nothing was sent to the address, but the SDK may have started a leaf swap with the SSP to fit the amount: check getBalance(). " +
+        "If sats are lower than before, or lockedSats or incomingSats is above 0, wait a few minutes and check again before calling withdraw or getWithdrawalFeeQuote; " +
+        "if the balance is unchanged, the quote itself was refused: fix the input the message names, or tell the user.",
+    });
     throw e;
   }
 }

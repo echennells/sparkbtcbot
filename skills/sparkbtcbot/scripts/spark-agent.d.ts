@@ -750,10 +750,12 @@ export declare class SparkAgent {
 
   /**
    * The SSP's quote for a cooperative exit. Moves no value out, though the
-   * SDK may restructure leaves to price it: a connection lost mid-call is
-   * SPARK_UNAVAILABLE with retryable "check-first" (a leaf swap with the SSP
-   * may be in flight), not "yes". withdraw's quote fetch, dry run included,
-   * is the same.
+   * SDK may restructure leaves to price it: a connection lost mid-call
+   * (SPARK_UNAVAILABLE) and a refusal or failed swap (SPARK_REFUSED) are
+   * retryable "check-first" (a leaf swap with the SSP may be in flight), not
+   * "yes" or "no". Only the SDK's pre-send refusals (INSUFFICIENT_FUNDS,
+   * BAD_INPUT) keep theirs. withdraw's quote fetch, dry run included, is the
+   * same.
    * @sideEffect read
    * @throws {AgentError} BAD_INPUT
    * @throws {AgentError} INSUFFICIENT_FUNDS

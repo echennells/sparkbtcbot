@@ -109,19 +109,26 @@ async function sparkRead(call) {
 // included). Not a pure read: the SDK first selects leaves for the amount, and
 // with no exact set it swaps leaves with the SSP (selectLeavesWithSwap), so a
 // connection lost mid-call can leave value in flight between the wallet and
-// the SSP. Never paid to anyone, but not "nothing moved" either: a connection
-// failure here is SPARK_UNAVAILABLE check-first, not "yes".
+// the SSP. Never paid to anyone, but not "nothing moved" either. Only the
+// SDK's own pre-send refusals (raised before any leaf leaves the wallet) keep
+// their code and retryable; anything else, a connection failure or a refusal
+// (a failed swap is not a connection failure), is check-first: read as "no",
+// "fix the input" started a second swap and locked the rest of the wallet
+// (ToB review 2026-10-28).
 async function withdrawalQuoteRead(call) {
   try {
     return await call();
   } catch (err) {
     const e = classifySdkError(err);
-    if (e?.code === "SPARK_UNAVAILABLE") {
-      annotateError(e, "SPARK_UNAVAILABLE", {
-        retryable: "check-first",
-        nextStep: "Spark couldn't be reached while pricing the withdrawal, after the SDK may have started a leaf swap with the SSP to fit the amount: nothing was sent to the address, but check getBalance() (lockedSats can stay above 0 for a few minutes) before calling withdraw or getWithdrawalFeeQuote again.",
-      });
-    }
+    if (provesNothingSent(err)) throw e;
+    annotateError(e, e.code, {
+      retryable: "check-first",
+      nextStep:
+        (e.code === "SPARK_UNAVAILABLE" ? "Spark couldn't be reached while pricing the withdrawal. " : "Spark refused or failed while pricing the withdrawal. ") +
+        "Nothing was sent to the address, but the SDK may have started a leaf swap with the SSP to fit the amount: check getBalance(). " +
+        "If sats are lower than before, or lockedSats or incomingSats is above 0, wait a few minutes and check again before calling withdraw or getWithdrawalFeeQuote; " +
+        "if the balance is unchanged, the quote itself was refused: fix the input the message names, or tell the user.",
+    });
     throw e;
   }
 }

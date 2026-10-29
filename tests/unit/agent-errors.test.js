@@ -468,9 +468,20 @@ describe("SparkAgent: SDK errors on calls that move no money", () => {
       expect(err.nextStep).toMatch(/leaf swap with the SSP.*check getBalance\(\)/);
       expect(err.nextStep.endsWith(CHECK_FIRST_TAIL)).toBe(true);
     }
-    // A refusal is still SPARK_REFUSED ("no"), as on any read.
-    expect(await rejection(mkAgent({ getWithdrawalFeeQuote: async () => { throw sspRefused(); } }).getWithdrawalFeeQuote(5_000, L1)))
-      .toMatchObject({ code: "SPARK_REFUSED", retryable: "no" });
+    // A refusal or failed swap is SPARK_REFUSED, check-first too: by then the
+    // SDK may have handed leaves to the SSP (ToB review 2026-10-28).
+    const refused = mkAgent({ getWithdrawalFeeQuote: async () => { throw sspRefused(); } });
+    for (const call of [() => refused.getWithdrawalFeeQuote(5_000, L1), () => refused.withdraw({ to: L1, amount: 5_000, dryRun: true })]) {
+      const err = await rejection(call());
+      expect(err).toMatchObject({ code: "SPARK_REFUSED", retryable: "check-first" });
+      expect(err.nextStep).toMatch(/^Spark refused or failed while pricing the withdrawal\. Nothing was sent to the address.*leaf swap with the SSP.*check getBalance\(\)/);
+      expect(err.nextStep).toMatch(/if the balance is unchanged, the quote itself was refused/);
+      expect(err.nextStep.endsWith(CHECK_FIRST_TAIL)).toBe(true);
+    }
+    // The SDK's own pre-send refusal (before any leaf is selected) keeps its
+    // code and "no".
+    const short = mkAgent({ getWithdrawalFeeQuote: async () => { throw new SparkValidationError("Total target amount exceeds available balance", { field: "targetAmounts" }); } });
+    expect(await rejection(short.getWithdrawalFeeQuote(5_000, L1))).toMatchObject({ code: "INSUFFICIENT_FUNDS", retryable: "no" });
   });
 
   it("the same outage on the send itself is PAYMENT_COMMITTED, never 'yes'", async () => {
