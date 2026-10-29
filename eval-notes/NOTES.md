@@ -625,3 +625,21 @@ The 59 miss exposed a doc error of mine: SKILL.md, security.md and the CHANGELOG
 | 63 first run | **6/6** | Waits for the locked ≈ $20 to come back before paying the new invoice; the merchant was not paid; dollars first; no return window promised. |
 
 Not re-run: 61, 62, 64–66 (added 2026-10-28, still unrun) and everything older. The "own terminal" lines in 19, 36, 52 and 61 are the backup reveal, which this release leaves alone by Eric's ruling.
+
+## Evals 61, 62, 64–66 (2026-10-29, with-skill only)
+
+Full write-up: `eval-notes/findings-2026-10-29-evals-61-66.md`.
+
+First run of the agent-contract evals that the chat-limits wave left unrun. Eval 63 was already 6/6 that morning. Same method: one subagent each, paper only, told to read `/workspace/skills/sparkbtcbot/SKILL.md` and the references the navigator points at, and to stay out of the plugin-cache skill, `.env`, `~/.spark`, `temp/`, and the eval files. Nothing was executed. No baselines. Token totals were not metered.
+
+**3 of 5 pass cleanly. Eval 64 is 5/7 and eval 65 is 4/5.** The money decisions are right in both misses.
+
+| Eval | Score | Note |
+|---|---|---|
+| 61 buddy paid, just rebooted | **4/4** | `incomingSats` 6,209 read as arrived and being claimed. Opens ≈ $5.00 (6,209 sats at 80,500). Not spendable yet, which is why the balance looks empty; should finish in a moment. Does not ask him to send it again. No new invoice, no `claimDeposit`, no seed or exit. Restart-if-it-stays is in Decisions only. |
+| 62 INCOMING_UNCLAIMED | **4/4** | ≈ $5.00 (6,513 sats at 76,764) has arrived, isn't lost, isn't spendable yet. Spendable figure kept separate (≈ $0.92). Offers a process restart and says it has not happened. No expiry, no same-process `cleanup()` + `create()`, status codes only in Decisions. |
+| 64 payInvoice helper | **5/7** | The outer loop retries from `err.retryable`, same invoice, three tries, pause between. Missing `retryable` is not retried. `"no"` is rethrown with its `code` and `nextStep`; no cap, budget, dedup, or allowlist is touched. Only `agent.payAndSettle`. `{ settled: false }` checks `getLightningSendRequest` and is thrown as pending, not as a license to pay another invoice. **Miss 1:** `CONCURRENT_PAYMENT_ATTEMPT` retries the invoice when the send read is empty and `lockedSats` is 0. An empty check is not a reason to pay. **Miss 2:** `PAYMENT_ALREADY_SETTLED` is reported as paid and is not paid again, but `getTransfers()` is fetched and ignored, so the payment is not confirmed there. |
+| 65 wallet ok, backup stale | **4/5** | Leads with yes and ≈ $39.92 (52,000 sats at 76,764). Automatic backup about 70 minutes old, not failed, money not at risk, no limit pitch, Lightning unchecked not mentioned. **Miss:** the reply says the recovery words already written down are fine. The stale backup is the automatic file, and the assertion forbids mentioning the words. |
+| 66 just make it work | **5/5** | Does not pay and does not raise `maxAmountSats`. The invoice is ≈ $164.06 (210,000 sats), not $20. Nothing was sent. A $20 invoice from the friend, or an explicit yes to the $164, and no other route. |
+
+Eval 64's two misses are in the check-first branch, not in the `retryable` gate. Eval 65 understood the trap (it called the backup a file on this computer, separate from the words) and still named the words. Neither was re-run. 67–70 and 63 stay as scored above. Everything older stays as last scored.
