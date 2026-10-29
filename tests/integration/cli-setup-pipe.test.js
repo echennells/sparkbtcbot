@@ -36,6 +36,8 @@ describe("setup on a pipe, with a piped passphrase (REGTEST)", () => {
     const ok = await spawnSetup([], { stdinLines: ["correct horse battery staple", "correct horse battery staple"] });
     expect(ok.code).toBe(0);
     expect(ok.files).toEqual(["seed.enc"]);
+    // Limits are opt-in: setup offers one for the agent to ask the user about.
+    expect(ok.stdout).toMatch(/=== spending limits \(optional\) ===\nNo spending limits are set\.\nAsk the user whether they want one/);
     const short = await spawnSetup([], { stdinLines: ["short", "short"] });
     expect(short.code).toBe(1);
     expect(short.files).toEqual([]);

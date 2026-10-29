@@ -263,8 +263,9 @@ const LIB_CALLS = [
   [/\bloadRecipientsAllowlist\(/, ["STORAGE_ERROR"], "lib/recipients-allowlist.js"],
   [/\bassertRecipientAllowed\(/, ["RECIPIENT_NOT_ALLOWED", "RECIPIENT_INVALID"], "lib/recipients-allowlist.js"],
   [/\bcreateSpendLedger\(/, ["BAD_INPUT"], "lib/spend-ledger.js"],
-  [/\.#ledger\.assertCanSpend\(/, ["SPEND_BUDGET_EXCEEDED", ...LEDGER_READ], "lib/spend-ledger.js"],
-  [/\.#ledger\.(?:record|status)\(/, LEDGER_READ, "lib/spend-ledger.js"],
+  [/\bledger\.assertCanSpend\(/, ["SPEND_BUDGET_EXCEEDED", ...LEDGER_READ], "lib/spend-ledger.js"],
+  [/\bledger\.(?:record|status)\(/, LEDGER_READ, "lib/spend-ledger.js"],
+  [/\breadLimits\(/, ["LIMITS_UNREADABLE"], "lib/spending-limits.js"],
   [/\.#lnDedup\.idForInvoice\(/, ["TRANSFER_ID_CONFLICT", "CONCURRENT_PAYMENT_ATTEMPT", "DEDUP_ENTRY_UNREADABLE", "STORAGE_ERROR"], "lib/transfer-ids.js"],
   [/\bsparkWalletOptions\(/, ["BAD_INPUT"], "lib/wallet-options.js"],
 ];
@@ -273,10 +274,15 @@ const LIB_CALLS = [
 // (which its body raises, so they are counted there).
 const CAUGHT = new Set([
   "#resumeL402 → payAndSettle", // each failure becomes LIGHTNING_PAYMENT_FAILED (kept hold) or PAYMENT_COMMITTED
-  "#budgetStatus → spendStatus", // status() reports a ledger it can't read; it doesn't throw
 ]);
 // Codes a callee raises that can't come out of this member.
 const NOT_FROM = {
+  "#activeLedger": { BAD_INPUT: "createSpendLedger gets no budget there, so its one check can't fail" },
+  "#budgetStatus": {
+    LIMITS_UNREADABLE: "status() reports an unreadable limits file as a problem; it doesn't throw",
+    SPEND_LEDGER_MISSING: "reported as a problem", SPEND_LEDGER_BAD_SIGNATURE: "reported as a problem",
+    SPEND_LEDGER_UNREADABLE: "reported as a problem", STORAGE_ERROR: "reported as SPEND_LEDGER_UNREADABLE",
+  },
   fetchL402: {
     PREIMAGE_MISMATCH: "the URL is held as L402_NO_PROOF and PAYMENT_COMMITTED thrown",
     PAYMENT_ALREADY_SETTLED: "the purchase is held and PAYMENT_COMMITTED thrown",

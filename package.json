@@ -83,7 +83,8 @@
     "test:all": "node tests/check-dev-deps.js && vitest run",
     "reveal-mnemonic": "node skills/sparkbtcbot/scripts/reveal-mnemonic.js",
     "set-policy": "node skills/sparkbtcbot/scripts/set-policy.js",
-    "reset-ledger": "node skills/sparkbtcbot/scripts/reset-ledger.js"
+    "reset-ledger": "node skills/sparkbtcbot/scripts/reset-ledger.js",
+    "limits": "node skills/sparkbtcbot/scripts/limits-cli.js"
   },
   "dependencies": {
     "@buildonspark/issuer-sdk": "0.2.1",

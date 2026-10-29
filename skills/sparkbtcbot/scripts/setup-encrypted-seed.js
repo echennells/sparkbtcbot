@@ -20,6 +20,7 @@ import "dotenv/config";
 import { stdout, stderr, exit, env } from "node:process";
 import { saveEncryptedMnemonic, DEFAULT_SEED_PATH, MIN_PASSPHRASE_CHARS } from "../../../lib/encrypted-seed.js";
 import { ensureWalletPrivacy, privacyPreferenceFromEnv } from "../../../lib/wallet-privacy.js";
+import { readLimits } from "../../../lib/spending-limits.js";
 import { existsSync, realpathSync } from "node:fs";
 
 const SEED_PATH = env.SPARK_SEED_PATH || DEFAULT_SEED_PATH;
@@ -234,6 +235,22 @@ export async function main() {
   stdout.write("  import { loadMnemonicFromEnv } from \"sparkbtcbot-skill\";\n");
   stdout.write("  import { SparkAgent } from \"sparkbtcbot-skill/agent\";\n");
   stdout.write(`  const { agent } = await SparkAgent.create(await loadMnemonicFromEnv(), "${NETWORK}");\n`);
+
+  // Limits are opt-in, so setup offers one rather than setting one: the
+  // agent reading this asks the user, and sets only what they answer.
+  const limits = await readLimits().catch(() => undefined);
+  stdout.write("\n=== spending limits (optional) ===\n");
+  if (limits) {
+    stdout.write("Spending limits are already set: `npm exec --no -- sparkbtcbot limits` shows them.\n");
+  } else {
+    stdout.write(limits === undefined
+      ? "The spending limits file can't be read, so every payment is refused until they are set again.\n"
+      : "No spending limits are set.\n");
+    stdout.write("Ask the user whether they want one, for example a daily budget and a cap per\n");
+    stdout.write("payment, and set only what they answer:\n");
+    stdout.write("  npm exec --no -- sparkbtcbot limits set --daily-budget 20000 --max-payment 5000\n");
+    stdout.write("Limits stop mistakes and loops, not a hijacked agent: keep the balance small.\n");
+  }
 }
 
 // Run main() only when executed directly (node script.js), not when this

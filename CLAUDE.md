@@ -36,6 +36,7 @@ lib/
   transfer-ids.js                     # persisted per-invoice Lightning dedup transferId (safe retries)
   wallet-privacy.js                   # SDK-free: turn the operators' per-wallet privacy setting on (wallets are public by default)
   recipients-allowlist.js             # opt-in outbound allowlist guardrail
+  spending-limits.js                  # the user's limits, set in chat: daily budget, per-payment cap, ops, recipients (~/.spark/limits.json)
   wallet-options.js                   # sparkWalletOptions: every wallet opens with the SDK's fee ladders OFF (default ON since 0.13)
   index.js / index.d.ts               # npm entry (also exports ./leaf-vault subpaths)
 skills/
@@ -53,6 +54,7 @@ skills/
       leaf-vault.js                   # snapshotLeafVault / verifyVault / enableLeafVault (library)
       leaf-vault-cli.js               # `npm run leaf-vault [-- verify]` — snapshot/verify CLI
       viewer-key.js                   # `sparkbtcbot viewer` — read-only access to a private wallet: status/grant(y/N)/revoke/pubkey/balance
+      limits-cli.js                   # `sparkbtcbot limits [show|set|clear]` — no TTY; says when a change loosens a limit
       balance-and-deposits.js
       payment-flow.js
       token-operations.js
@@ -98,6 +100,7 @@ SPARK_NETWORK=MAINNET
 # SPARK_LEAF_VAULT_PATH=/custom/path.json # recovery-bundle location (default ~/.spark/leaf-vault/current.json)
 # SPARK_DAILY_BUDGET_SATS=50000           # opt-in rolling-24h cumulative spend budget (bounds send loops)
 # SPARK_SPEND_LEDGER_PATH=/custom/path    # spend-ledger location (default ~/.spark/spend-ledger.json)
+# SPARK_LIMITS_PATH=/custom/path          # the user's spending limits (default ~/.spark/limits.json; set with `sparkbtcbot limits`)
 # SPARK_LN_DEDUP=off                      # opt out of the persisted Lightning payment-dedup transferId
 # SPARK_LN_DEDUP_PATH=/custom/dir         # dedup-store directory (default ~/.spark/ln-dedup/)
 ```

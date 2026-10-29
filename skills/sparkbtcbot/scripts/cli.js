@@ -25,6 +25,7 @@ export const COMMANDS = {
   "set-policy":      { module: "./set-policy.js",           summary: "bind/change/remove the seed-bound spending budget (operator ceremony)" },
   "reset-ledger":    { module: "./reset-ledger.js",         summary: "write a fresh signed spend ledger — the legitimate reset (operator ceremony)" },
   "viewer":          { module: "./viewer-key.js",           summary: "read-only access to a PRIVATE wallet without its seed: status, grant, revoke, pubkey, balance" },
+  "limits":          { module: "./limits-cli.js",           summary: "show/set/clear the user's spending limits (set only on the user's own message)" },
 };
 
 export function usage() {

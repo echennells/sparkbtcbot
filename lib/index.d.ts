@@ -112,6 +112,51 @@ export function assertRecipientAllowed(
 /** ~/.spark/recipients.allow (resolved from os.homedir() at module load time) */
 export const DEFAULT_ALLOWLIST_PATH: string;
 
+// --- Spending limits the user sets in chat (`sparkbtcbot limits`) ---
+
+/** The operations `allowedOps` can list: the names the spend ledger records. */
+export type LimitOp = "spark_transfer" | "lightning_pay" | "fulfill_spark_invoice" | "token_transfer" | "l1_withdraw" | "claim_deposit";
+export const LIMIT_OPS: readonly LimitOp[];
+
+/**
+ * The user's spending limits (~/.spark/limits.json). Every rule is optional.
+ * The agent sets them when the user asks in chat, and only then. They guard
+ * against mistakes and casual injection, not a hijacked agent: the balance is
+ * the only hard limit.
+ */
+export interface SpendingLimits {
+  /** Rolling-24h budget; the tightest of this, a seed-bound and an env budget applies. */
+  dailyBudgetSats?: number;
+  /** Cap on each sats payment (not token transfers or fees). */
+  maxPaymentSats?: number;
+  /** Only these operations may run; claim_deposit (inbound) included. */
+  allowedOps?: LimitOp[];
+  /** Only these recipients (Spark or L1 addresses). Lightning payments have no address: leave lightning_pay out of allowedOps to stop them. */
+  allowedRecipients?: string[];
+  /** ISO time of the last write. */
+  updatedAt?: string;
+}
+
+/** SPARK_LIMITS_PATH, else ~/.spark/limits.json. */
+export function limitsPath(): string;
+export const DEFAULT_LIMITS_PATH: string;
+/** Normalized limits, or null for none; throws BAD_INPUT on an unknown key or unreadable value. */
+export function validateLimits(limits: unknown): SpendingLimits | null;
+/** null when there is no file; throws LIMITS_UNREADABLE for one that can't be read or doesn't validate. */
+export function readLimits(path?: string): Promise<SpendingLimits | null>;
+/** Atomic write (mode 0600), or removal for null / no rules. Returns what was written. */
+export function writeLimits(limits: SpendingLimits | null, path?: string): Promise<SpendingLimits | null>;
+export function checkLimits(
+  ctx: { op: LimitOp; recipients?: string[]; amountsSats?: Array<number | null> },
+  limits: SpendingLimits | null,
+  options?: { matchRecipient?: (recipient: string, list: string[]) => boolean },
+): { allow: true } | { allow: false; rule: "allowedOps" | "allowedRecipients" | "maxPaymentSats"; reason: string };
+/** What changed; `looser` when it lets the agent spend more, on more, or to more recipients. */
+export function limitsChanges(
+  before: SpendingLimits | null,
+  after: SpendingLimits | null,
+): Array<{ rule: string; from: unknown; to: unknown; looser: boolean }>;
+
 // --- Fee guardrails (bound the fee on sends, claims, and withdrawals) ---
 
 /** An SDK CurrencyAmount, or a bare number of sats. */
@@ -337,7 +382,8 @@ export interface SpendLedger {
   path: string;
   budgetSats: number | null;
   windowMs: number;
-  status(): Promise<{
+  /** limitSats: the user's daily limit; the tighter of it and budgetSats applies. */
+  status(options?: { limitSats?: number | null }): Promise<{
     spentSats: number;
     budgetSats: number | null;
     remainingSats: number | null;
@@ -345,7 +391,7 @@ export interface SpendLedger {
     entries: SpendLedgerEntry[];
   }>;
   /** Throws (code SPEND_BUDGET_EXCEEDED) when the spend would bust the budget. */
-  assertCanSpend(sats: number | bigint, operation?: string): Promise<SpendBudgetCheck>;
+  assertCanSpend(sats: number | bigint, operation?: string, options?: { limitSats?: number | null }): Promise<SpendBudgetCheck>;
   /** Append a spend and persist atomically; prunes aged-out entries. */
   record(sats: number | bigint, operation?: string): Promise<SpendLedgerEntry>;
   /** Best-effort refund for a send that provably never happened. */
@@ -558,6 +604,8 @@ export type AgentErrorCode =
   | "QUOTE_UNREADABLE"
   | "INSUFFICIENT_FUNDS"
   | "RECIPIENT_NOT_ALLOWED"
+  | "LIMIT_DENIED"
+  | "LIMITS_UNREADABLE"
   | "SPEND_BUDGET_EXCEEDED"
   | "SPEND_LEDGER_MISSING"
   | "SPEND_LEDGER_BAD_SIGNATURE"
@@ -660,6 +708,7 @@ export type StatusProblemCode =
   | "SPARK_UNREACHABLE"
   | "NETWORK_MISMATCH"
   // Degraded: the agent works, with this caveat
+  | "LIMITS_UNREADABLE"
   | "SPEND_LEDGER_MISSING"
   | "SPEND_LEDGER_BAD_SIGNATURE"
   | "SPEND_LEDGER_UNREADABLE"

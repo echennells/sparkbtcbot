@@ -101,6 +101,7 @@ describe("status(): a healthy agent", () => {
       privacy: { state: "on", checkedAt: new Date(T0).toISOString() },
       backup: { state: "ok", ageMinutes: 0, lastError: null },
       budget: { state: "none", sealed: false, budgetSats: null, spentSats: null, remainingSats: null, windowHours: null, nextReleaseAt: null },
+      limits: { state: "none" },
       connections: { spark: "connected", lightning: "unchecked" },
     });
   });
@@ -498,6 +499,36 @@ describe("status(): the spend budget", () => {
   });
 });
 
+describe("status(): the user's spending limits", () => {
+  const limitsAt = async (doc) => {
+    const path = join(await mkdtemp(join(scratch, "limits-")), "limits.json");
+    if (doc !== undefined) await writeFile(path, typeof doc === "string" ? doc : JSON.stringify(doc));
+    process.env.SPARK_LIMITS_PATH = path;
+  };
+  const before = process.env.SPARK_LIMITS_PATH;
+  afterEach(() => { process.env.SPARK_LIMITS_PATH = before; });
+
+  it("shows the rules; a daily limit is the budget, the tighter of it and the env budget", async () => {
+    await limitsAt({ dailyBudgetSats: 600, maxPaymentSats: 200, allowedOps: ["spark_transfer"] });
+    process.env.SPARK_SPEND_LEDGER_PATH = join(await mkdtemp(join(scratch, "ledger-")), "ledger.json");
+    let s = await (await connected()).agent.status();
+    expect(s.problems).toEqual([]);
+    expect(s.limits).toEqual({ state: "set", dailyBudgetSats: 600, maxPaymentSats: 200, allowedOps: ["spark_transfer"] });
+    expect(s.budget).toMatchObject({ state: "ok", sealed: false, budgetSats: 600, spentSats: 0, remainingSats: 600 });
+    process.env.SPARK_DAILY_BUDGET_SATS = "400";
+    s = await (await connected()).agent.status();
+    expect(s.budget).toMatchObject({ budgetSats: 400, remainingSats: 400 });
+  });
+
+  it("LIMITS_UNREADABLE: degraded, and its nextStep says to ask the user, not to delete the file", async () => {
+    await limitsAt("{ not json");
+    const s = await (await connected()).agent.status();
+    expect(s).toMatchObject({ usable: true, problems: ["LIMITS_UNREADABLE"], limits: { state: "unreadable" } });
+    expect(s.nextStep).toMatch(/ask them to state their limits again/);
+    expect(s.nextStep).toMatch(/Don't delete the file/);
+  });
+});
+
 describe("status(): order, nextStep, and never throwing for what it finds", () => {
   it("lists problems most severe first, and gives the first one's nextStep", async () => {
     process.env.SPARK_DAILY_BUDGET_SATS = "1000";
@@ -548,7 +579,7 @@ describe("status(): order, nextStep, and never throwing for what it finds", () =
     expect(Object.entries(STATUS_PROBLEMS).filter(([, p]) => p.blocking).map(([c]) => c)).toEqual(["AGENT_CLOSED", "SPARK_UNREACHABLE", "NETWORK_MISMATCH"]);
     expect(Object.keys(STATUS_PROBLEMS).sort()).toEqual([
       "AGENT_CLOSED", "BACKUP_BROKEN", "BACKUP_STALE", "BALANCE_LOCKED", "BUDGET_EXHAUSTED", "INCOMING_UNCLAIMED",
-      "LIGHTNING_UNREACHABLE", "NETWORK_MISMATCH", "PRIVACY_OFF", "SPARK_STREAM_DOWN", "SPARK_UNREACHABLE",
+      "LIGHTNING_UNREACHABLE", "LIMITS_UNREADABLE", "NETWORK_MISMATCH", "PRIVACY_OFF", "SPARK_STREAM_DOWN", "SPARK_UNREACHABLE",
       "SPEND_LEDGER_BAD_SIGNATURE", "SPEND_LEDGER_MISSING", "SPEND_LEDGER_UNREADABLE",
     ]);
   });

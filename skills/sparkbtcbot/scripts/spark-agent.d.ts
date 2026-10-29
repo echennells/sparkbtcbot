@@ -30,6 +30,7 @@ import type {
   SparkNetworkName,
   SpendLedgerEntry,
   SeedPolicy,
+  SpendingLimits,
   StatusProblemCode,
 } from "../../../lib/index.js";
 
@@ -166,6 +167,8 @@ export interface SparkAgentStatus {
     /** ISO time the oldest spend in the window leaves it. */
     nextReleaseAt: string | null;
   };
+  /** The user's spending limits (`sparkbtcbot limits`); "unreadable" refuses every send (LIMITS_UNREADABLE). */
+  limits: ({ state: "set" } & SpendingLimits) | { state: "none" | "unreadable" };
   connections: {
     spark: "connected" | "connecting" | "disconnected" | "closed" | "unknown";
     lightning: "reachable" | "unreachable" | "unchecked";
@@ -439,15 +442,27 @@ export declare class SparkAgent {
   ): Promise<{ agent: SparkAgent; mnemonic: string | undefined }>;
 
   /**
-   * The rolling-window spend against the budget, or { disabled: true } when
-   * no budget is set.
+   * The rolling-window spend against the tightest budget in force (seed-bound,
+   * SPARK_DAILY_BUDGET_SATS, or the user's daily limit), or { disabled: true }
+   * when none is set.
    * @sideEffect read
+   * @throws {AgentError} LIMITS_UNREADABLE
    * @throws {AgentError} SPEND_LEDGER_MISSING
    * @throws {AgentError} SPEND_LEDGER_BAD_SIGNATURE
    * @throws {AgentError} SPEND_LEDGER_UNREADABLE
    * @throws {AgentError} STORAGE_ERROR
    */
   spendStatus(): Promise<SpendStatus>;
+
+  /**
+   * The user's spending limits as every money call reads them (fresh each
+   * time, so a change applies without a restart); limits is null when none
+   * are set. They change only with `sparkbtcbot limits set`, on the user's
+   * own message.
+   * @sideEffect read
+   * @throws {AgentError} LIMITS_UNREADABLE
+   */
+  limits(): Promise<{ path: string; limits: SpendingLimits | null }>;
 
   /**
    * @sideEffect read
@@ -495,6 +510,8 @@ export declare class SparkAgent {
    * the allowlist applies to a dry run too.
    * @sideEffect spend
    * @dryRun read
+   * @throws {AgentError} LIMIT_DENIED
+   * @throws {AgentError} LIMITS_UNREADABLE
    * @throws {AgentError} BAD_INPUT
    * @throws {AgentError} RECIPIENT_INVALID
    * @throws {AgentError} RECIPIENT_NOT_ALLOWED
@@ -578,6 +595,8 @@ export declare class SparkAgent {
    * with one persisted dedup id per invoice. Most callers want payAndSettle.
    * @sideEffect spend
    * @dryRun read
+   * @throws {AgentError} LIMIT_DENIED
+   * @throws {AgentError} LIMITS_UNREADABLE
    * @throws {AgentError} BAD_INPUT
    * @throws {AgentError} INVOICE_INVALID
    * @throws {AgentError} PAYMENT_HASH_MISMATCH
@@ -625,6 +644,8 @@ export declare class SparkAgent {
    * getLightningSendRequest(result.id) before anything else.
    * @sideEffect spend
    * @dryRun read
+   * @throws {AgentError} LIMIT_DENIED
+   * @throws {AgentError} LIMITS_UNREADABLE
    * @throws {AgentError} BAD_INPUT
    * @throws {AgentError} INVOICE_INVALID
    * @throws {AgentError} PAYMENT_HASH_MISMATCH
@@ -674,6 +695,8 @@ export declare class SparkAgent {
    * invoice's receiver, in a dry run too; the budget counts the sats ones.
    * @sideEffect spend
    * @dryRun read
+   * @throws {AgentError} LIMIT_DENIED
+   * @throws {AgentError} LIMITS_UNREADABLE
    * @throws {AgentError} BAD_INPUT
    * @throws {AgentError} INVOICE_INVALID
    * @throws {AgentError} AMOUNT_MISMATCH
@@ -698,6 +721,8 @@ export declare class SparkAgent {
    * Returns the transaction hash.
    * @sideEffect spend
    * @dryRun read
+   * @throws {AgentError} LIMIT_DENIED
+   * @throws {AgentError} LIMITS_UNREADABLE
    * @throws {AgentError} BAD_INPUT
    * @throws {AgentError} RECIPIENT_INVALID
    * @throws {AgentError} RECIPIENT_NOT_ALLOWED
@@ -716,6 +741,8 @@ export declare class SparkAgent {
    * the batch. Returns the transaction hash.
    * @sideEffect spend
    * @dryRun read
+   * @throws {AgentError} LIMIT_DENIED
+   * @throws {AgentError} LIMITS_UNREADABLE
    * @throws {AgentError} BAD_INPUT
    * @throws {AgentError} RECIPIENT_INVALID
    * @throws {AgentError} RECIPIENT_NOT_ALLOWED
@@ -734,6 +761,8 @@ export declare class SparkAgent {
    * comes out of the deposit, under a size-aware ceiling.
    * @sideEffect receive
    * @dryRun read
+   * @throws {AgentError} LIMIT_DENIED
+   * @throws {AgentError} LIMITS_UNREADABLE
    * @throws {AgentError} BAD_INPUT
    * @throws {AgentError} DEPOSIT_NOT_FOUND
    * @throws {AgentError} DEPOSIT_LOOKUP_INCOMPLETE
@@ -769,6 +798,8 @@ export declare class SparkAgent {
    * allowlist and the budget (amount + fee) apply.
    * @sideEffect spend
    * @dryRun read
+   * @throws {AgentError} LIMIT_DENIED
+   * @throws {AgentError} LIMITS_UNREADABLE
    * @throws {AgentError} BAD_INPUT
    * @throws {AgentError} RECIPIENT_INVALID
    * @throws {AgentError} RECIPIENT_NOT_ALLOWED
@@ -817,6 +848,8 @@ export declare class SparkAgent {
    * CONCURRENT_PAYMENT_ATTEMPT before anything is fetched or paid. No
    * dry run: previewL402(url) shows the price.
    * @sideEffect spend
+   * @throws {AgentError} LIMIT_DENIED
+   * @throws {AgentError} LIMITS_UNREADABLE
    * @throws {AgentError} BAD_INPUT
    * @throws {AgentError} SERVICE_UNAVAILABLE
    * @throws {AgentError} SERVICE_RESPONSE_INVALID
