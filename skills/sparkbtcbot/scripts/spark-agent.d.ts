@@ -392,7 +392,7 @@ export interface WithdrawPreview {
 export type L402Result =
   | { paid: false; data: unknown }
   | {
-      /** false when this call presented a pass an earlier call paid for (`recovered`), or joined a call still running for the same URL (`joined`). */
+      /** Whether THIS call made the payment: false when it presented a pass an earlier call paid for (`recovered`) or joined a call still running for the same URL (`joined`). True with `recovered` when the earlier call was refused before sending anything and this call made the purchase's only payment. */
       paid: boolean;
       recovered?: true;
       /** This call overlapped a fetchL402 for the same method + URL and shares its outcome; it paid nothing itself. */

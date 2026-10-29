@@ -677,7 +677,7 @@ describe("fetchL402 after payment: in-process recovery", () => {
     const second = await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }));
     expect(second.error).toMatchObject({ code: "PAYMENT_COMMITTED", settled: null, cause: drained });
     expect(second.error.message).toMatch(/settling it again failed.*Nothing new was paid/s);
-    expect(pay.mock.calls[1][1][Object.getOwnPropertySymbols(pay.mock.calls[1][1]).find((k) => String(k).includes("Resuming"))]).toBe(true);
+    expect(pay.mock.calls[1][1][Object.getOwnPropertySymbols(pay.mock.calls[1][1]).find((k) => String(k).includes("Resuming"))]).toBeTypeOf("object");
 
     const seen = stubFetch([resp(200, { ok: true })]); // still held: settled, then delivered
     const third = await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }));
@@ -932,5 +932,83 @@ describe("fetchL402 settling a held payment counts the spend once", () => {
     expect(r).toMatchObject({ recovered: true, data: { ok: true } });
     expect(await agent.spendStatus()).toMatchObject({ spentSats: 2000 });
     expect(attempt).toBe(2);
+  });
+
+  // ToB review 2026-10-28: a first attempt refused because another payment of
+  // the hash was open sent nothing, dropped its id and undid its spend; the
+  // resume then skipped the budget, so the purchase's only payment was never
+  // counted (and read paid: false).
+  const preimageRequestExists = () => Object.assign(
+    new Error("Failed to initiate preimage swap: rpc error: code = AlreadyExists desc = preimage request already exists for paymentHash 0f1e"),
+    { name: "SparkRequestError" },
+  );
+  const refusedThenPaid = () => {
+    let attempt = 0;
+    const done = { id: "send-1", encodedInvoice: KNOWN_INVOICE, status: "TRANSFER_COMPLETED", paymentPreimage: KNOWN_PREIMAGE };
+    const wallet = {
+      getSparkAddress: async () => "sp1from",
+      getLightningSendFeeEstimate: async () => 5,
+      payLightningInvoice: vi.fn(async () => {
+        if (attempt++ === 0) throw preimageRequestExists();
+        return done;
+      }),
+      getLightningSendRequest: async () => done,
+      transfer: async () => ({ id: "t1" }),
+    };
+    return { wallet, agent: new SparkAgent(wallet, "MAINNET") };
+  };
+
+  it("after EARLIER_ATTEMPT_OPEN the settling call is the real purchase: counted once, paid: true", async () => {
+    const { wallet, agent } = refusedThenPaid();
+    const queue = [resp(402, { invoice: KNOWN_INVOICE, macaroon: "mac1" }), resp(200, { ok: true })];
+    vi.stubGlobal("fetch", async () => queue.shift());
+
+    await expect(agent.fetchL402("https://api.example/paid", { maxAmountSats: 3000 }))
+      .rejects.toMatchObject({ code: "PAYMENT_COMMITTED", cause: { reason: "EARLIER_ATTEMPT_OPEN" } });
+    expect(await agent.spendStatus()).toMatchObject({ spentSats: 0 });
+    const r = await agent.fetchL402("https://api.example/paid", { maxAmountSats: 3000 });
+    expect(r).toMatchObject({ paid: true, recovered: true, data: { ok: true } });
+    expect(await agent.spendStatus()).toMatchObject({ spentSats: 2000 });
+    expect(wallet.payLightningInvoice).toHaveBeenCalledTimes(2);
+  });
+
+  it("if that call's own payment is in doubt, it says so (paid: true), and the next call settles it uncounted", async () => {
+    const { wallet, agent } = refusedThenPaid();
+    const done = await wallet.getLightningSendRequest();
+    wallet.payLightningInvoice
+      .mockImplementationOnce(async () => { throw preimageRequestExists(); })
+      .mockImplementationOnce(async () => { throw new Error("deadline exceeded"); })
+      .mockImplementationOnce(async () => done);
+    const queue = [resp(402, { invoice: KNOWN_INVOICE, macaroon: "mac1" }), resp(200, { ok: true })];
+    vi.stubGlobal("fetch", async () => queue.shift());
+
+    await expect(agent.fetchL402("https://api.example/paid", { maxAmountSats: 3000 })).rejects.toMatchObject({ code: "PAYMENT_COMMITTED" });
+    const err = await agent.fetchL402("https://api.example/paid", { maxAmountSats: 3000 }).catch((e) => e);
+    expect(err).toMatchObject({ code: "PAYMENT_COMMITTED", paid: true, settled: null });
+    expect(err.message).toMatch(/sent nothing, so this call paid its invoice/);
+    expect(err.message).not.toMatch(/Nothing new was paid/);
+    expect(await agent.spendStatus()).toMatchObject({ spentSats: 2000 });
+    const r = await agent.fetchL402("https://api.example/paid", { maxAmountSats: 3000 });
+    expect(r).toMatchObject({ paid: false, recovered: true, data: { ok: true } });
+    expect(await agent.spendStatus()).toMatchObject({ spentSats: 2000 });
+    expect(wallet.payLightningInvoice).toHaveBeenCalledTimes(3);
+  });
+
+  it("the budget can refuse that call: nothing is paid and the purchase stays held", async () => {
+    process.env.SPARK_DAILY_BUDGET_SATS = "3000";
+    const { wallet, agent } = refusedThenPaid();
+    let fetches = 0;
+    vi.stubGlobal("fetch", async () => { fetches++; return resp(402, { invoice: KNOWN_INVOICE, macaroon: "mac1" }); });
+
+    await expect(agent.fetchL402("https://api.example/paid", { maxAmountSats: 3000 })).rejects.toMatchObject({ code: "PAYMENT_COMMITTED" });
+    await agent.transfer({ to: "sp1x", amount: 1500 });
+    for (let i = 0; i < 2; i++) {
+      const err = await agent.fetchL402("https://api.example/paid", { maxAmountSats: 3000 }).catch((e) => e);
+      expect(err).toMatchObject({ code: "SPEND_BUDGET_EXCEEDED", retryable: "no" });
+      expect(err.nextStep).toMatch(/^Nothing was paid: the earlier attempt to buy this resource sent nothing/);
+    }
+    expect(await agent.spendStatus()).toMatchObject({ spentSats: 1500 });
+    expect(wallet.payLightningInvoice).toHaveBeenCalledTimes(1);
+    expect(fetches).toBe(1); // held: no new challenge was fetched
   });
 });

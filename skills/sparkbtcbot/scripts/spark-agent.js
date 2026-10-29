@@ -236,8 +236,11 @@ const LN_SETTLING = Symbol("sparkagent.lightningSettling");
 // fetchL402's flag to payAndSettle: skip the fee reads. Its paid pass is
 // waiting to be presented, and it reports no fee.
 const LN_NO_FEE_READS = Symbol("sparkagent.noFeeReads");
-// fetchL402's flag when it settles a purchase an earlier call already
-// attempted: that attempt counted the spend, so this one doesn't again.
+// fetchL402's channel when it settles a purchase an earlier call already
+// attempted (an object). If that attempt's dedup id is still on record, it
+// counted the spend and this call doesn't again. If the id is gone, the
+// earlier attempt sent nothing (it was refused, its spend undone), so this
+// call is the real purchase: counted, and it sets `fresh` on the object.
 const LN_RESUMING = Symbol("sparkagent.lightningResuming");
 
 // A tracked invoice's receive status, as a state a shop can act on. The order
@@ -660,6 +663,9 @@ const L402_FEE_STEP =
 // fetchL402's PAYMENT_COMMITTED while a held purchase can still be finished.
 const L402_RESUME_STEP =
   "Call fetchL402 again with the same URL and method in this process: it finishes this payment and presents its proof without paying again.";
+// The budget refused a held purchase whose earlier attempt sent nothing.
+const L402_BUDGET_STEP =
+  "Nothing was paid: the earlier attempt to buy this resource sent nothing, and the spend budget has no room for it now. Tell the user what was blocked; spendStatus() shows when room returns, and fetchL402 for this URL buys it then. Don't change SPARK_DAILY_BUDGET_SATS or the ledger file yourself; only the user changes the budget.";
 
 // The paid-content server's first request failed before any payment. A
 // connection failure is SERVICE_UNAVAILABLE: "yes" for a request that is safe
@@ -1695,9 +1701,14 @@ export class SparkAgent {
       if ((this.#lnInFlight.get(dedupKey) ?? 0) > 1) return;
       await this.#lnDedup.forget(bolt11, resolved.transferId).catch(() => {});
     };
+    // A resume skips the count only under the earlier attempt's own id. Once
+    // that id was dropped, skipping paid outside the budget, once per
+    // purchase (ToB review 2026-10-28).
+    const resuming = rest[LN_RESUMING];
+    if (resuming && !resolved?.reused) resuming.fresh = true;
     let spend;
     try {
-      spend = rest[LN_RESUMING] ? NO_SPEND : await this.#recordSpend(amt, "lightning_pay");
+      spend = resuming && resolved?.reused ? NO_SPEND : await this.#recordSpend(amt, "lightning_pay");
     } catch (err) {
       await forgetIfMinted(); // the budget refused before the SDK was called
       leaveInFlight();
@@ -2773,7 +2784,7 @@ export class SparkAgent {
   // once, and sent again only with { resend: true }: the service may already
   // have acted on it. A 401 or 402 means the service refused a paid pass;
   // any other status is its answer, returned as is with `status`.
-  async #deliverL402(url, key, pass, { method, headers, reqBody }, { recovered }) {
+  async #deliverL402(url, key, pass, { method, headers, reqBody }, { recovered, paid = !recovered }) {
     const { host, path } = l402Target(url);
     const repeatable = L402_REPEATABLE.has(String(method).toUpperCase());
     const attempts = repeatable ? L402_DELIVERY_ATTEMPTS : 1;
@@ -2847,7 +2858,7 @@ export class SparkAgent {
       }
       this.#l402Held.delete(key);
       return {
-        paid: !recovered, // false when this call delivered a pass an earlier call bought
+        paid, // false when this call delivered a pass an earlier call bought
         ...(recovered ? { recovered: true } : {}),
         status: res.status,
         amountSats: pass.amountSats,
@@ -2915,6 +2926,7 @@ export class SparkAgent {
       return l402BlockedError(blocked);
     };
 
+    let paidHere = false; // this call made the purchase's payment (an earlier attempt sent nothing)
     if (!held.preimage && !held.sendId) {
       // The earlier pay call failed ambiguously, so there is no send id to ask
       // about. Settle THIS invoice again: with the dedup store its persisted
@@ -2941,10 +2953,19 @@ export class SparkAgent {
         });
       }
       let settled;
+      // `fresh` is set if the earlier attempt's id is gone: it sent nothing,
+      // so this call makes the purchase's payment (and counts it).
+      const resume = {};
       try {
-        // The spend was counted when this purchase was first attempted.
-        settled = await this.payAndSettle(held.invoice, { ...held.payOptions, [LN_RESUMING]: true });
+        settled = await this.payAndSettle(held.invoice, { ...held.payOptions, [LN_RESUMING]: resume });
       } catch (err) {
+        // Refused by the budget or its ledger before sending. Only a fresh
+        // resume is counted, so the earlier attempt sent nothing either. The
+        // hold stays: a later call buys once there is room.
+        if (String(err?.code ?? "").startsWith("SPEND_")) {
+          if (err.code === "SPEND_BUDGET_EXCEEDED") annotateError(err, "SPEND_BUDGET_EXCEEDED", { nextStep: L402_BUDGET_STEP });
+          throw err;
+        }
         if (err?.code === "LIGHTNING_PAYMENT_FAILED") {
           // The operators' record of this payment ended in failure.
           if (err.fundsReturned === true) {
@@ -2973,6 +2994,19 @@ export class SparkAgent {
           });
         }
         if (err?.sendId) held.sendId = err.sendId;
+        // The earlier attempt sent nothing and THIS call's payment may have
+        // gone through: "nothing new was paid" would be false. Its id stays
+        // on record, so the next call settles it without paying again.
+        if (resume.fresh && ((err instanceof PaymentCommittedError && err.reason !== "EARLIER_ATTEMPT_OPEN") || err?.code === "PREIMAGE_MISMATCH")) {
+          throw Object.assign(
+            new PaymentCommittedError(
+              `L402: the earlier attempt to buy ${host}${path} sent nothing, so this call paid its invoice, and that ` +
+              `payment may have gone through (${String(err?.message ?? err).slice(0, 160)}). Do NOT buy this resource another way.`,
+              { settled: null, op: "l402", invoiceHash, sendId: held.sendId ?? undefined, cause: err, nextStep: `${L402_RESUME_STEP} ${L402_MEMORY_NOTE}` },
+            ),
+            { paid: true },
+          );
+        }
         throw pending(
           `may have gone through; settling it again failed (${String(err?.message ?? err).slice(0, 160)}). ` +
           `Call fetchL402 again later, or check agent.getTransfers().`,
@@ -2981,9 +3015,20 @@ export class SparkAgent {
       }
       if (!settled.paymentPreimage) {
         if (settled.id) held.sendId = settled.id;
+        if (resume.fresh) {
+          throw Object.assign(
+            new PaymentCommittedError(
+              `L402: the earlier attempt to buy ${host}${path} sent nothing, so this call paid its invoice; the payment ` +
+              `is still pending (status ${settled.lastStatus ?? "unknown"}). Do NOT buy this resource another way.`,
+              { settled: null, op: "l402", invoiceHash, sendId: settled.id ?? undefined, nextStep: `${L402_RESUME_STEP} ${L402_MEMORY_NOTE}` },
+            ),
+            { paid: true },
+          );
+        }
         throw pending(`is still pending (status ${settled.lastStatus ?? "unknown"}). Call fetchL402 again later.`, { sendId: settled.id });
       }
       held.preimage = settled.paymentPreimage;
+      paidHere = resume.fresh === true;
     }
     if (!held.preimage) {
       let status;
@@ -3058,7 +3103,7 @@ export class SparkAgent {
       e.paid = true;
       throw e;
     }
-    return this.#deliverL402(url, key, held, request, { recovered: true });
+    return this.#deliverL402(url, key, held, request, { recovered: true, paid: paidHere });
   }
 
   // Never evicts: a dropped hold or block lets the next call buy that URL again
