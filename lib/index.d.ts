@@ -275,8 +275,12 @@ export function createTransferIdStore(options?: {
   ): Promise<{ transferId: string; reused: boolean }>;
   /** The transferId recorded for this invoice, or null when no attempt was recorded. Never mints. */
   peek(bolt11: string): Promise<{ transferId: string; createdAt: string | null } | null>;
-  /** Remove the entry for an invoice whose payment terminally failed. Returns whether one was removed. */
-  forget(bolt11: string): Promise<boolean>;
+  /**
+   * Remove the entry for an invoice whose payment terminally failed. With
+   * `expectedId`, only while the entry still records that id. Returns whether
+   * one was removed.
+   */
+  forget(bolt11: string, expectedId?: string): Promise<boolean>;
   /** Remove entries whose recorded expiry has passed. Best-effort; returns the count removed. */
   prune(): Promise<number>;
 };

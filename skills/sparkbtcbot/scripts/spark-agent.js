@@ -29,7 +29,7 @@ import {
   withdrawalTotalFee,
 } from "../../../lib/fee-guards.js";
 import { createSpendLedger } from "../../../lib/spend-ledger.js";
-import { createTransferIdStore } from "../../../lib/transfer-ids.js";
+import { createTransferIdStore, invoiceDedupKey } from "../../../lib/transfer-ids.js";
 import { ensureWalletPrivacy, privacyPreferenceFromEnv } from "../../../lib/wallet-privacy.js";
 import { enableLeafVault } from "./leaf-vault.js";
 import { sparkWalletOptions } from "../../../lib/wallet-options.js";
@@ -858,6 +858,12 @@ export class SparkAgent {
   // retried while the first call still runs) each fetched a fresh challenge
   // and each paid it: a new invoice every time, which no dedup can catch.
   #l402InFlight = new Map();
+  // payLightningInvoice attempts in flight, per invoice dedup key. Two
+  // attempts of one invoice share its dedup id (the second reuses what the
+  // first minted); when the minter is refused before sending, it must not
+  // delete the entry the other is still paying under, or that payment's
+  // retry would mint a fresh id: a second payment on the Spark-direct rail.
+  #lnInFlight = new Map();
   // status(): the wallet's stream state and incoming/locked times (create()
   // replaces this with one that saw the wallet open), whether cleanup() has
   // run, and the address, so a closed agent can still report it.
@@ -1653,6 +1659,13 @@ export class SparkAgent {
     // SDK mints per call — today's double-pay-on-retry gamble.
     let sdkTransferId;
     let resolved; // kept in scope: `reused` proves a later AlreadyExists means SETTLED
+    let dedupKey = null; // this attempt's #lnInFlight slot, released once the SDK call is over
+    const leaveInFlight = () => {
+      if (dedupKey === null) return;
+      const n = (this.#lnInFlight.get(dedupKey) ?? 1) - 1;
+      if (n > 0) this.#lnInFlight.set(dedupKey, n); else this.#lnInFlight.delete(dedupKey);
+      dedupKey = null;
+    };
     if (this.#lnDedup) {
       resolved = await this.#lnDedup.idForInvoice(
         bolt11,
@@ -1660,6 +1673,8 @@ export class SparkAgent {
         { explicitId: explicitTransferId },
       );
       sdkTransferId = UUID.parse(resolved.transferId);
+      dedupKey = invoiceDedupKey(bolt11);
+      this.#lnInFlight.set(dedupKey, (this.#lnInFlight.get(dedupKey) ?? 0) + 1);
     } else if (explicitTransferId !== undefined) {
       sdkTransferId = UUID.parse(explicitTransferId);
     }
@@ -1672,14 +1687,20 @@ export class SparkAgent {
     // sent nothing: left behind, it later reads as "an earlier attempt may have
     // paid" (the expired-invoice refusal above), and blocks a legitimate
     // purchase (ToB review of 9bc0f22..f88fbec).
+    // Not while another attempt of this invoice in this process is still
+    // paying under the same id (#lnInFlight), and only while the entry still
+    // records the id this attempt minted.
     const forgetIfMinted = async () => {
-      if (resolved && !resolved.reused) await this.#lnDedup.forget(bolt11).catch(() => {});
+      if (!resolved || resolved.reused) return;
+      if ((this.#lnInFlight.get(dedupKey) ?? 0) > 1) return;
+      await this.#lnDedup.forget(bolt11, resolved.transferId).catch(() => {});
     };
     let spend;
     try {
       spend = rest[LN_RESUMING] ? NO_SPEND : await this.#recordSpend(amt, "lightning_pay");
     } catch (err) {
       await forgetIfMinted(); // the budget refused before the SDK was called
+      leaveInFlight();
       throw err;
     }
     let result;
@@ -1746,14 +1767,22 @@ export class SparkAgent {
         );
       }
       if (provesNothingSent(err)) await forgetIfMinted();
+      // Promise a safe retry only while the entry still records this
+      // attempt's id: without it, a retry mints a fresh one.
+      const stillDeduped = Boolean(resolved) &&
+        (await this.#lnDedup.peek(bolt11).catch(() => null))?.transferId === resolved.transferId;
       throw await this.#spendFailed(err, spend, {
         method: "payLightningInvoice",
         op: "lightning_pay",
         invoiceHash: invoicePaymentHash(bolt11) ?? undefined,
-        next: this.#lnDedup
+        next: stillDeduped
           ? "Retrying THIS invoice through payLightningInvoice is safe: the dedup store reuses its transferId, so the operators refuse a second payment. For anything else, check agent.getTransfers() first."
-          : "SPARK_LN_DEDUP is off, so even retrying this same invoice may pay twice: check agent.getTransfers() first.",
+          : this.#lnDedup
+            ? "This invoice's dedup record no longer holds this attempt's transferId, so even retrying this same invoice may pay twice: check agent.getTransfers() first."
+            : "SPARK_LN_DEDUP is off, so even retrying this same invoice may pay twice: check agent.getTransfers() first.",
       });
+    } finally {
+      leaveInFlight();
     }
     if (!result || typeof result !== "object") return result;
     // A copy, so a frozen SDK result can't lose the fields added here.
@@ -1765,7 +1794,7 @@ export class SparkAgent {
     if (resolved) out.dedupReused = resolved.reused;
     const settling = rest[LN_SETTLING];
     if (settling) {
-      Object.assign(settling, { amountSats: amt, capSats: cap });
+      Object.assign(settling, { amountSats: amt, capSats: cap, transferId: resolved?.transferId });
       return out;
     }
     const fee = await this.#lightningFee(out, { amountSats: amt, capSats: cap, settled: Boolean(out.paymentPreimage), pollMs: LIGHTNING_FEE_POLL_MS });
@@ -1840,7 +1869,7 @@ export class SparkAgent {
   // payment of this invoice is still open, locked or paid: PAYMENT_COMMITTED
   // with reason EARLIER_ATTEMPT_OPEN (payLightningInvoice).
   async payAndSettle(bolt11, { pollMs = 2000, maxPolls = 30, ...payOptions } = {}) {
-    const sent = {}; // filled by payLightningInvoice: { amountSats, capSats }
+    const sent = {}; // filled by payLightningInvoice: { amountSats, capSats, transferId }
     const result = await this.payLightningInvoice(bolt11, { ...payOptions, [LN_SETTLING]: sent });
     if (payOptions.dryRun) return result;
     // Spark-direct: the SDK paid the invoice's Spark fallback as a plain
@@ -1891,7 +1920,12 @@ export class SparkAgent {
         // ToB sharp-edges F5. Dropping it can't pay twice: while the sats are
         // still locked, the operators refuse a re-pay under a fresh id
         // ("preimage request already exists", reported as EARLIER_ATTEMPT_OPEN).
-        if (this.#lnDedup) await this.#lnDedup.forget(bolt11);
+        // Only this send's own id, and not while another attempt of the
+        // invoice is mid-send in this process: a stale poll must not delete
+        // the id a newer attempt is paying under.
+        if (this.#lnDedup && !this.#lnInFlight.get(invoiceDedupKey(bolt11))) {
+          await this.#lnDedup.forget(bolt11, sent.transferId);
+        }
         throw lightningPaymentFailed(status.status, { sendId: result.id, invoiceHash: invoicePaymentHash(bolt11) ?? undefined });
       }
     }
@@ -2979,7 +3013,7 @@ export class SparkAgent {
       } else if (isTerminalLightningFailure(status?.status)) {
         // As in payAndSettle: the dead dedup id goes, and only
         // USER_SWAP_RETURNED says the sats are back.
-        if (this.#lnDedup) await this.#lnDedup.forget(held.invoice);
+        if (this.#lnDedup && !this.#lnInFlight.get(invoiceDedupKey(held.invoice))) await this.#lnDedup.forget(held.invoice);
         if (status.status !== LIGHTNING_SATS_RETURNED) throw returning(status.status, held.sendId);
         this.#l402Held.delete(key);
         return null;

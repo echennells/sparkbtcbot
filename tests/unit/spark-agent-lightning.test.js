@@ -144,6 +144,55 @@ describe("payLightningInvoice transferId dedup", () => {
     await agent.payLightningInvoice(INVOICE_2000_SATS, { dryRun: true });
     await expect(readdir(dir)).resolves.toEqual([]);
   });
+
+  // Review 2026-10-28 F05: two attempts of one invoice share its id (the second
+  // reuses what the first minted). When the minter was refused before sending
+  // while the other was still paying, it deleted the entry by invoice key, and
+  // the payment in flight lost its dedup record: its retry minted a fresh id.
+  it("an attempt refused before sending keeps the entry another attempt is paying under", async () => {
+    const { dir } = await mkIsolated();
+    const { SparkValidationError } = await import("@buildonspark/spark-sdk");
+    const { createTransferIdStore } = await import("../../lib/transfer-ids.js");
+    mkAgent(); // sets SPARK_LEAF_VAULT=off for the agent below
+    let reachedSdk = 0;
+    let secondArrived;
+    const second = new Promise((r) => { secondArrived = r; });
+    let releaseSecond;
+    const wallet = {
+      getSparkAddress: async () => "sp1from",
+      getLightningSendFeeEstimate: async () => 5,
+      payLightningInvoice: async () => {
+        reachedSdk++;
+        if (reachedSdk === 1) { // the minter: refused pre-send once the other attempt is mid-send
+          await second;
+          throw new SparkValidationError("Total target amount exceeds available balance", { field: "amount" });
+        }
+        secondArrived();
+        return new Promise((r) => { releaseSecond = () => r({ id: "pay-2" }); });
+      },
+    };
+    const payer = new SparkAgent(wallet, "MAINNET");
+    const a = payer.payLightningInvoice(AMOUNTLESS, { amountSats: 500 });
+    while (reachedSdk < 1) await new Promise((r) => setTimeout(r, 1));
+    const b = payer.payLightningInvoice(AMOUNTLESS, { amountSats: 500 }); // reuses the minted id
+    await expect(a).rejects.toMatchObject({ name: "SparkValidationError" });
+    const store = createTransferIdStore({ dir });
+    expect(await store.peek(AMOUNTLESS)).not.toBeNull(); // still there while the other attempt pays
+    releaseSecond();
+    await b;
+    expect(await store.peek(AMOUNTLESS)).not.toBeNull();
+  });
+
+  it("forget(bolt11, expectedId) leaves an entry that records a different id", async () => {
+    const { dir } = await mkIsolated();
+    const { createTransferIdStore } = await import("../../lib/transfer-ids.js");
+    const store = createTransferIdStore({ dir });
+    const { transferId } = await store.idForInvoice(AMOUNTLESS, () => "01890000-0000-7000-8000-000000000001");
+    expect(await store.forget(AMOUNTLESS, "01890000-0000-7000-8000-000000000002")).toBe(false);
+    expect((await store.peek(AMOUNTLESS)).transferId).toBe(transferId);
+    expect(await store.forget(AMOUNTLESS, transferId)).toBe(true);
+    expect(await store.peek(AMOUNTLESS)).toBeNull();
+  });
 });
 
 // 2026-08-31 ToB audit fixes at the wrapper: translate the fallback rail's raw
