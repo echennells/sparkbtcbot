@@ -460,8 +460,10 @@ describe("SparkAgent: SDK errors on calls that move no money", () => {
   it("the withdrawal quote during an outage is SPARK_UNAVAILABLE check-first, for the quote and withdraw's (dry run too)", async () => {
     const agent = mkAgent({ getWithdrawalFeeQuote: async () => { throw sspDown(); } });
     const L1 = "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq";
-    for (const p of [agent.getWithdrawalFeeQuote(5_000, L1), agent.withdraw({ to: L1, amount: 5_000, dryRun: true }), agent.withdraw({ to: L1, amount: 5_000 })]) {
-      const err = await rejection(p);
+    // One call at a time: a rejection that lands while the loop awaits an
+    // earlier one is briefly unhandled, and vitest reports it.
+    for (const call of [() => agent.getWithdrawalFeeQuote(5_000, L1), () => agent.withdraw({ to: L1, amount: 5_000, dryRun: true }), () => agent.withdraw({ to: L1, amount: 5_000 })]) {
+      const err = await rejection(call());
       expect(err).toMatchObject({ name: "SparkRequestError", code: "SPARK_UNAVAILABLE", retryable: "check-first" });
       expect(err.nextStep).toMatch(/leaf swap with the SSP.*check getBalance\(\)/);
       expect(err.nextStep.endsWith(CHECK_FIRST_TAIL)).toBe(true);
