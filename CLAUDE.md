@@ -56,6 +56,7 @@ skills/
       leaf-vault-cli.js               # `npm run leaf-vault [-- verify]` — snapshot/verify CLI
       viewer-key.js                   # `sparkbtcbot viewer` — read-only access to a private wallet: status/grant(y/N)/revoke/pubkey/balance
       limits-cli.js                   # `sparkbtcbot limits [show|set|clear]` — no TTY; says when a change loosens a limit
+      rotate.js                       # `sparkbtcbot rotate [--execute|--resume|--check-old [--sweep]]` — sweep to a fresh seed, old one kept
       balance-and-deposits.js
       payment-flow.js
       token-operations.js

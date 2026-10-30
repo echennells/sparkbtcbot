@@ -26,6 +26,7 @@ export const COMMANDS = {
   "reset-ledger":    { module: "./reset-ledger.js",         summary: "write a fresh signed spend ledger — the legitimate reset (operator ceremony)" },
   "viewer":          { module: "./viewer-key.js",           summary: "read-only access to a PRIVATE wallet without its seed: status, grant, revoke, pubkey, balance" },
   "limits":          { module: "./limits-cli.js",           summary: "show/set/clear the user's spending limits (set only on the user's own message)" },
+  "rotate":          { module: "./rotate.js",               summary: "move everything to a fresh wallet when the words may have leaked (dry run first; --check-old later)" },
 };
 
 export function usage() {
