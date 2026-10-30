@@ -185,8 +185,8 @@ const mnemonic = await loadMnemonicFromEnv(); // reads SPARK_PASSPHRASE, decrypt
 const { agent } = await SparkAgent.create(mnemonic, process.env.SPARK_NETWORK || "MAINNET", { optimizeLeaves: false });
 
 const { address, publicKey } = await agent.getIdentity();
-const { sats } = await agent.getBalance();
-console.log("Spark Address:", address, "| Identity Key:", publicKey, "| Available:", sats, "sats");
+const { sats, incomingSats } = await agent.getBalance(); // incoming: arrived, not claimed yet
+console.log("Spark Address:", address, "| Identity Key:", publicKey, "| Available:", sats, "| Arriving:", incomingSats);
 
 await agent.cleanup();
 ```

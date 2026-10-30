@@ -51,9 +51,12 @@ export interface SeedContext {
 }
 
 /**
- * Sats as decimal strings. `incomingSats` > 0 (or `lockedSats` right after
- * boot) is a payment that has ARRIVED and is being claimed: never report it as
- * "nothing arrived".
+ * Sats as decimal strings. `incomingSats` > 0 is a payment that has ARRIVED
+ * and is being claimed: never report it as "nothing arrived". `lockedSats` is
+ * owned but not spendable; right after boot it can be a payment mid-claim
+ * (read again in a second) or this wallet's own send or lock from before the
+ * restart, so on its own it proves no arrival: check getTransfers() for a
+ * pending INCOMING transfer of about the right size.
  */
 export interface SatsFigures {
   /** Spendable now. */

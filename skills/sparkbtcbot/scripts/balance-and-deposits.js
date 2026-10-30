@@ -20,7 +20,14 @@ async function main() {
   // Check BTC balance
   const { satsBalance, tokenBalances } = await wallet.getBalance();
   console.log("=== Balance ===");
-  console.log("BTC:", satsBalance.available.toString(), "sats");
+  console.log("Spendable:", satsBalance.available.toString(), "sats");
+  // Arrived but not claimed yet: a payment made while the wallet was closed
+  // shows here first. Never read it as "nothing arrived".
+  if (satsBalance.incoming > 0n) console.log("Arriving (being claimed, not spendable yet):", satsBalance.incoming.toString(), "sats");
+  // Owned but not spendable: a payment mid-claim, or this wallet's own send or
+  // a failed payment's lock. On its own it proves no arrival.
+  const locked = satsBalance.owned - satsBalance.available;
+  if (locked > 0n) console.log("Locked (owned, not spendable now):", locked.toString(), "sats");
 
   // Check token balances
   if (tokenBalances.size > 0) {
@@ -67,7 +74,7 @@ async function main() {
     }
   }
   if (!anyPending) {
-    console.log("  none yet — nothing confirmed-and-unclaimed (keep waiting after you send).");
+    console.log("  none yet on L1 — nothing confirmed-and-unclaimed at the deposit addresses (Spark and Lightning payments show in the balance above).");
   }
 
   // List recent transfers
@@ -79,7 +86,7 @@ async function main() {
       // share; the deprecated totalValue is the whole transfer across every
       // receiver and over-reports on multi-receiver transfers.
       const sats = tx.valueReceivedByWallet || tx.valueSentByWallet || 0;
-      console.log(`  ${tx.id}: ${sats} sats [${tx.status}]`);
+      console.log(`  ${tx.id}: ${tx.transferDirection === "OUTGOING" ? "sent" : "received"} ${sats} sats [${tx.status}]`);
     }
   } else {
     console.log("\nNo transfers yet.");

@@ -1291,8 +1291,12 @@ export class SparkAgent {
   // --- Balance ---
 
   // { sats, incomingSats, lockedSats, tokens }: see satsFigures for what each
-  // sats figure means. incomingSats > 0 (or lockedSats right after boot) is a
-  // payment that has ARRIVED and is being claimed, never "nothing arrived".
+  // sats figure means. incomingSats > 0 is a payment that has ARRIVED and is
+  // being claimed, never "nothing arrived". lockedSats is owned but not
+  // spendable: right after boot it can be a payment mid-claim (clears within
+  // about a second: read again) or this wallet's own send, swap or failed-
+  // payment lock from before the restart, so it alone never proves an
+  // arrival (ToB review 2026-10-28).
   // NOTE: a confirmed L1 deposit that hasn't been claimed yet is invisible
   // here — call listPendingDeposits() to answer "did my on-chain deposit
   // arrive?" (kept off this hot path to avoid a deposit-address query on every
