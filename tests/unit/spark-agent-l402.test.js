@@ -2,12 +2,13 @@
 // existed in the reference doc — a deployed bot got `TypeError: not a function`.
 // Now they ship on SparkAgent; these tests pin the 402 flow with a stubbed fetch.
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { readFile, mkdtemp, rm, stat } from "node:fs/promises";
+import { readFile, readdir, mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { inspect } from "node:util";
 import { SparkAgent } from "../../skills/sparkbtcbot/scripts/spark-agent.js";
 import { freshInvoice } from "../helpers/bolt11.js";
+import { createL402HoldStore } from "../../lib/l402-holds.js";
 
 // Amount-ful sample (2,000 sats embedded) from light-bolt11-decoder's README.
 const invoice2000 = async () => {
@@ -891,6 +892,178 @@ describe("fetchL402 after payment: in-process recovery", () => {
     await run(agent.fetchL402(URL_, { method: "POST", body: { q: 1 }, maxAmountSats: 3000 }));
     expect(seen[0].headers.Authorization).toBeUndefined();
     expect(pay).toHaveBeenCalledTimes(2);
+  });
+
+  // ToB review 2026-10-28 (F33): a recovered POST was marked sent once only by
+  // the hold after a failed delivery, and no test reached it. It is now also
+  // marked before it goes out, so a process that dies mid-request can't leave
+  // the next one sending it again.
+  it.each([
+    ["its preimage arrived later", "pending"],
+    ["its first pay call may have paid", "committed"],
+  ])("a recovered POST (%s) whose delivery fails is held as sent once: sent again only with { resend: true }", async (_label, how) => {
+    stubFetch([resp(402, { invoice: KNOWN_INVOICE, macaroon: "mac1" })]);
+    const { agent, wallet, pay } = mk();
+    if (how === "pending") {
+      pay.mockResolvedValueOnce({ settled: false, paymentPreimage: null, id: "send-1", lastStatus: "LIGHTNING_PAYMENT_INITIATED" });
+      wallet.getLightningSendRequest = async () => ({ status: "TRANSFER_COMPLETED", paymentPreimage: KNOWN_PREIMAGE });
+    } else {
+      pay.mockRejectedValueOnce(Object.assign(new Error("outcome unknown"), { code: "PAYMENT_COMMITTED", settled: null }));
+      pay.mockResolvedValueOnce({ settled: true, paymentPreimage: KNOWN_PREIMAGE, id: "send-1" });
+    }
+    const post = { method: "POST", body: { order: 7 }, maxAmountSats: 3000 };
+    expect((await run(agent.fetchL402(URL_, post))).error).toMatchObject({ code: "PAYMENT_COMMITTED", settled: null });
+
+    const onDisk = [];
+    const posts = [];
+    vi.stubGlobal("fetch", async (url, opts) => {
+      posts.push(opts);
+      onDisk.push(...(await createL402HoldStore({ dir: process.env.SPARK_L402_HOLDS_PATH }).list()).map((r) => r.sentOnce));
+      return resp(503, {});
+    });
+    const second = await run(agent.fetchL402(URL_, post));
+    expect(second.error).toMatchObject({ code: "PAYMENT_COMMITTED", settled: true, sendId: "send-1" });
+    expect(second.error.message).toMatch(/after 1 attempt \(HTTP 503\).*resend: true/s);
+    expect(onDisk).toEqual([true]); // on disk as sent once while the request was out
+
+    stubFetch([]); // without resend: nothing is sent
+    expect((await run(agent.fetchL402(URL_, post))).error.message).toMatch(/already sent once/);
+    expect(posts.map(auth)).toEqual([`L402 mac1:${KNOWN_PREIMAGE}`]);
+
+    const resent = stubFetch([resp(200, { placed: true })]);
+    expect((await run(agent.fetchL402(URL_, { ...post, resend: true }))).value).toMatchObject({ recovered: true, data: { placed: true } });
+    expect(resent.map(auth)).toEqual([`L402 mac1:${KNOWN_PREIMAGE}`]);
+    expect(pay).toHaveBeenCalledTimes(how === "pending" ? 1 : 2);
+  });
+
+  // F34: the proof check on a preimage read back by the send's id is the only
+  // check on that path; #deliverL402 doesn't check again.
+  it("a held send whose status read returns a preimage that doesn't prove the invoice: blocked (L402_NO_PROOF), nothing presented", async () => {
+    stubFetch([resp(402, { invoice: KNOWN_INVOICE, macaroon: "mac1" })]);
+    const { agent, wallet, pay } = mk();
+    pay.mockResolvedValueOnce({ settled: false, paymentPreimage: null, id: "send-1", lastStatus: "LIGHTNING_PAYMENT_INITIATED" });
+    await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }));
+
+    const asked = [];
+    wallet.getLightningSendRequest = async (id) => { asked.push(id); return { status: "TRANSFER_COMPLETED", paymentPreimage: "aa".repeat(32) }; };
+    const seen = stubFetch([resp(401, {})]); // what the service would answer an unproven pass
+    const r = await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }));
+    expect(r.error).toMatchObject({ code: "PAYMENT_COMMITTED", reason: "L402_NO_PROOF", settled: null, sendId: "send-1" });
+    expect(seen).toHaveLength(0);
+    expect((await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }))).error).toMatchObject({ reason: "L402_NO_PROOF" });
+    expect(asked).toEqual(["send-1"]); // blocked: not asked again
+    expect(pay).toHaveBeenCalledTimes(1);
+  });
+
+  // F35: settling a held payment again can learn its send id; the hold must
+  // keep it, or every later call settles again instead of reading the send.
+  const committed = () => Object.assign(new Error("outcome unknown"), { code: "PAYMENT_COMMITTED", settled: null });
+
+  it("settling a held payment again that comes back with an unproven preimage keeps the send id: the next call reads it and blocks", async () => {
+    stubFetch([resp(402, { invoice: KNOWN_INVOICE, macaroon: "mac1" })]);
+    const { agent, wallet, pay } = mk();
+    pay.mockRejectedValueOnce(committed());
+    await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }));
+
+    pay.mockRejectedValueOnce(Object.assign(new Error("preimage does not prove the invoice"), { code: "PREIMAGE_MISMATCH", sendId: "send-7" }));
+    stubFetch([]);
+    expect((await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }))).error).toMatchObject({ code: "PAYMENT_COMMITTED", settled: null, sendId: "send-7" });
+
+    wallet.getLightningSendRequest = async (id) => (id === "send-7" ? { status: "TRANSFER_COMPLETED", paymentPreimage: "aa".repeat(32) } : null);
+    expect((await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }))).error).toMatchObject({ reason: "L402_NO_PROOF", sendId: "send-7" });
+    expect(pay).toHaveBeenCalledTimes(2);
+  });
+
+  it("settling a held payment again that is still pending holds it on the send id: a later call delivers by it, even after the invoice expired", async () => {
+    stubFetch([resp(402, { invoice: KNOWN_INVOICE, macaroon: "mac1" })]);
+    const { agent, wallet, pay } = mk();
+    pay.mockRejectedValueOnce(committed());
+    await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }));
+
+    pay.mockResolvedValueOnce({ settled: false, paymentPreimage: null, id: "send-5", lastStatus: "LIGHTNING_PAYMENT_INITIATED" });
+    stubFetch([]);
+    const second = await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }));
+    expect(second.error).toMatchObject({ code: "PAYMENT_COMMITTED", settled: null, sendId: "send-5" });
+    expect(second.error.message).toMatch(/still pending/);
+
+    // The send settles after the invoice's expiry: settling the expired
+    // invoice again would be refused, so the proof must come from the send.
+    const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 2 * 3600_000);
+    try {
+      wallet.getLightningSendRequest = async (id) => (id === "send-5" ? { status: "TRANSFER_COMPLETED", paymentPreimage: KNOWN_PREIMAGE } : null);
+      const seen = stubFetch([resp(200, { ok: true })]);
+      expect((await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }))).value).toMatchObject({ paid: false, recovered: true, data: { ok: true } });
+      expect(seen.map(auth)).toEqual([`L402 mac1:${KNOWN_PREIMAGE}`]);
+      expect(pay).toHaveBeenCalledTimes(2);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it("a held payment settled again but not delivered is saved with its send id: a new process reads the proof back, without settling again", async () => {
+    stubFetch([resp(402, { invoice: KNOWN_INVOICE, macaroon: "mac1" })]);
+    const { agent, pay } = mk();
+    pay.mockRejectedValueOnce(committed());
+    await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }));
+
+    pay.mockResolvedValueOnce({ settled: true, paymentPreimage: KNOWN_PREIMAGE, id: "send-3" });
+    stubFetch(Array.from({ length: 3 }, () => new TypeError("fetch failed")));
+    expect((await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }))).error).toMatchObject({ code: "PAYMENT_COMMITTED", settled: true, sendId: "send-3" });
+
+    const next = mk(); // a new process: the disk hold, which never has the preimage
+    next.wallet.getLightningSendRequest = async (id) => (id === "send-3" ? { status: "TRANSFER_COMPLETED", paymentPreimage: KNOWN_PREIMAGE } : null);
+    const seen = stubFetch([resp(200, { ok: true })]);
+    expect((await run(next.agent.fetchL402(URL_, { maxAmountSats: 3000 }))).value).toMatchObject({ paid: false, recovered: true, data: { ok: true } });
+    expect(seen.map(auth)).toEqual([`L402 mac1:${KNOWN_PREIMAGE}`]);
+    expect(next.pay).not.toHaveBeenCalled();
+  });
+
+  // F42: a payment the operators say already went through is held like one in
+  // doubt, and reported settled.
+  it("a pay call refused as already settled is held (settled: true): the next call settles THE SAME invoice, no new challenge", async () => {
+    const inv = await invoice2000();
+    stubFetch([resp(402, { invoice: inv, macaroon: "mac1" })]);
+    const { agent, pay } = mk();
+    pay.mockRejectedValueOnce(Object.assign(new Error("this invoice was already paid"), { code: "PAYMENT_ALREADY_SETTLED", transferId: "tr-1" }));
+    const first = await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }));
+    expect(first.error).toMatchObject({ code: "PAYMENT_COMMITTED", settled: true, op: "l402", paid: true });
+
+    const seen = stubFetch([resp(200, { ok: true })]); // no 402 fetch: straight to delivery
+    expect((await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }))).value).toMatchObject({ paid: false, recovered: true, data: { ok: true } });
+    expect(pay.mock.calls.map((c) => c[0])).toEqual([inv, inv]);
+    expect(seen.map(auth)).toEqual(["L402 mac1:abc123preimage"]);
+  });
+
+  // F43: a held send found failed on a later call drops its dead dedup id,
+  // so the next payment of that invoice doesn't replay the failure.
+  it("a held send found failed later drops the invoice's dead dedup id", async () => {
+    const inv = await invoice2000();
+    const sendStatus = { status: "LIGHTNING_PAYMENT_INITIATED" };
+    const wallet = {
+      getSparkAddress: async () => "sp1from",
+      getLightningSendFeeEstimate: async () => 5,
+      payLightningInvoice: vi.fn(async () => ({ id: "send-1", status: "LIGHTNING_PAYMENT_INITIATED" })),
+      getLightningSendRequest: vi.fn(async () => sendStatus),
+    };
+    const agent = new SparkAgent(wallet, "MAINNET");
+    stubFetch([resp(402, { invoice: inv, macaroon: "mac1" })]);
+    // The real payAndSettle polls until it gives up (30 polls, 2 s apart).
+    let done = false;
+    const pending = agent.fetchL402(URL_, { maxAmountSats: 3000 }).then((value) => ({ value }), (error) => ({ error }));
+    pending.finally(() => { done = true; });
+    for (const end = Date.now() + 20_000; !done && Date.now() < end;) {
+      await new Promise((r) => setImmediate(r));
+      await vi.advanceTimersByTimeAsync(2_000);
+    }
+    expect((await pending).error).toMatchObject({ code: "PAYMENT_COMMITTED", settled: null, sendId: "send-1" });
+    const dedup = process.env.SPARK_LN_DEDUP_PATH;
+    expect(await readdir(dedup)).not.toEqual([]);
+
+    sendStatus.status = "LIGHTNING_PAYMENT_FAILED";
+    stubFetch([]);
+    expect((await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }))).error).toMatchObject({ code: "LIGHTNING_PAYMENT_FAILED", retryable: "check-first", sendId: "send-1" });
+    expect(await readdir(dedup)).toEqual([]);
+    expect(wallet.payLightningInvoice).toHaveBeenCalledTimes(1);
   });
 });
 

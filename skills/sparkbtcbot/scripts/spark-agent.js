@@ -3083,8 +3083,10 @@ export class SparkAgent {
     });
     // The pass is paid for: hold it BEFORE the first attempt, so a throw
     // nobody planned for still leaves the next call presenting it instead of
-    // buying again. A recovered pass is held already.
-    if (!recovered) {
+    // buying again. A recovered pass is held already, but a recovered POST is
+    // marked sent once here too: if the process dies while the request is in
+    // flight, the next one must not send it again without { resend: true }.
+    if (!recovered || !repeatable) {
       holdPass();
       await this.#syncL402(key); // on disk with its send id before the first attempt
     }
