@@ -30,12 +30,30 @@ function wordsToBytesPadded(words) {
   return Uint8Array.from(out);
 }
 
-export function freshInvoice(bolt11, nowSec = Math.floor(Date.now() / 1000)) {
-  const { prefix, words } = bech32.decode(bolt11, 10_000);
+export function freshInvoice(bolt11, nowSec = Math.floor(Date.now() / 1000), { prefix: newPrefix, paymentHash } = {}) {
+  const { prefix: oldPrefix, words } = bech32.decode(bolt11, 10_000);
+  const prefix = newPrefix ?? oldPrefix;
   const timestamp = Array.from({ length: 7 }, (_, i) => Math.floor(nowSec / 2 ** (5 * (6 - i))) % 32);
-  const data = [...timestamp, ...words.slice(7, words.length - SIG_WORDS)];
+  const tagged = words.slice(7, words.length - SIG_WORDS);
+  if (paymentHash) {
+    // Tagged fields: type (5 bits), data length (10 bits), data. 'p' (1) is the payment hash.
+    for (let i = 0; i < tagged.length;) {
+      const len = tagged[i + 1] * 32 + tagged[i + 2];
+      if (tagged[i] === 1) tagged.splice(i + 3, len, ...bech32.toWords(Buffer.from(paymentHash, "hex")));
+      i += 3 + len;
+    }
+  }
+  const data = [...timestamp, ...tagged];
   const digest = createHash("sha256").update(Buffer.concat([Buffer.from(prefix, "utf8"), wordsToBytesPadded(data)])).digest();
   const sig = secp256k1.sign(digest, TEST_KEY);
   const sigBytes = new Uint8Array([...sig.toCompactRawBytes(), sig.recovery]);
   return bech32.encode(prefix, [...data, ...bech32.toWords(sigBytes)], 10_000);
+}
+
+// A real amountless invoice: `bolt11` re-signed with the amount dropped from
+// its prefix ("lnbc20u" -> "lnbc"), under its own payment hash so its dedup
+// entries never meet the original's.
+export function amountlessInvoice(bolt11, paymentHash = createHash("sha256").update(`amountless:${bolt11}`).digest("hex")) {
+  const { prefix } = bech32.decode(bolt11, 10_000);
+  return freshInvoice(bolt11, undefined, { prefix: prefix.replace(/^(lnbcrt|lntbs|lntb|lnbc)\d+[munp]?$/, "$1"), paymentHash });
 }

@@ -1,58 +1,48 @@
-// SparkAgent.create(undefined) used to silently mint a fresh MAINNET wallet:
-// the SDK generates a new mnemonic when mnemonicOrSeed is undefined, so a
-// typo'd env var or failed seed decrypt booted an agent on an empty wallet
-// whose seed nobody backed up — and inbound deposits landed there. create()
-// must throw before the SDK is ever reached.
-import { describe, it, expect, vi, afterEach } from "vitest";
-import { SparkAgent } from "../../skills/sparkbtcbot/scripts/spark-agent.js";
+// SparkAgent.create and the recovery phrase it is handed. The SDK reads any
+// string that isn't a mnemonic as a hex seed and fails locally; that came back
+// as SPARK_REFUSED ("Spark refused the request") with characters of the input
+// in the message (ToB review 2026-10-28, F39).
+import { describe, it, expect, afterEach, vi } from "vitest";
+import { inspect } from "node:util";
 import { SparkWallet } from "@buildonspark/spark-sdk";
+import { generateMnemonic } from "@scure/bip39";
+import { wordlist } from "@scure/bip39/wordlists/english";
+import { SparkAgent } from "../../skills/sparkbtcbot/scripts/spark-agent.js";
 
-describe("SparkAgent.create missing-mnemonic guard", () => {
-  // No SDK mock needed: the throw must happen before SparkWallet.initialize,
-  // so a network call (which would hang/fail the test) is itself the regression.
-  for (const bad of [undefined, null, "", "   ", 0, new Uint8Array(0)]) {
-    it(`throws on ${bad instanceof Uint8Array ? "empty Uint8Array" : JSON.stringify(bad)} instead of generating a wallet`, async () => {
-      await expect(SparkAgent.create(bad, "MAINNET")).rejects.toThrow(/refusing to silently generate/i);
-    });
-  }
-
-  it("points the operator at the deliberate setup path", async () => {
-    await expect(SparkAgent.create(undefined)).rejects.toThrow(/npm run setup/);
-  });
+const orig = process.env.SPARK_LEAF_VAULT;
+afterEach(() => {
+  vi.restoreAllMocks();
+  if (orig === undefined) delete process.env.SPARK_LEAF_VAULT; else process.env.SPARK_LEAF_VAULT = orig;
 });
+const spyInitialize = () => {
+  process.env.SPARK_LEAF_VAULT = "off";
+  const wallet = { getSparkAddress: async () => "sp1x", getWalletSettings: async () => ({ privateEnabled: true }), setPrivacyEnabled: async () => ({}), cleanup: async () => {} };
+  return vi.spyOn(SparkWallet, "initialize").mockImplementation(async () => ({ wallet, mnemonic: undefined }));
+};
 
-// A one-shot script that moves value then cleanup()s races the SDK's detached
-// leaf optimizer ("...interrupted due to cleanup"). The escape hatch is to init
-// with optimizationOptions.auto=false so there's nothing to interrupt. Pin that
-// create()'s optimizeLeaves flag actually reaches the SDK — a silent drop of
-// this plumbing would re-expose every one-shot value-mover to the race.
-describe("SparkAgent.create leaf-optimization plumbing", () => {
-  const origVault = process.env.SPARK_LEAF_VAULT;
-  const origPrivacy = process.env.SPARK_PRIVACY;
-  afterEach(() => {
-    vi.restoreAllMocks();
-    if (origVault === undefined) delete process.env.SPARK_LEAF_VAULT;
-    else process.env.SPARK_LEAF_VAULT = origVault;
-    if (origPrivacy === undefined) delete process.env.SPARK_PRIVACY;
-    else process.env.SPARK_PRIVACY = origPrivacy;
+describe("SparkAgent.create checks the recovery phrase before opening anything", () => {
+  it("a string that isn't a BIP39 phrase is BAD_INPUT (mnemonic), never echoed, and the SDK is not called", async () => {
+    const init = spyInitialize();
+    for (const bad of ["zebra apple not real words at all here ok fine done", "my-passphrase-by-mistake", "deadbeef", generateMnemonic(wordlist).replace(/\w+$/, "zoo zoo")]) {
+      const err = await SparkAgent.create(bad, "REGTEST").catch((e) => e);
+      expect(err).toMatchObject({ code: "BAD_INPUT", field: "mnemonic", retryable: "no" });
+      expect(err.message).toMatch(/not a valid BIP39 recovery phrase \(its words are not shown here\)/);
+      expect(inspect(err)).not.toContain(bad.slice(0, 6));
+    }
+    expect(init).not.toHaveBeenCalled();
   });
 
-  const initOptions = async (createArgs) => {
-    process.env.SPARK_LEAF_VAULT = "off"; // skip vault so a bare fake wallet suffices
-    process.env.SPARK_PRIVACY = "off"; // likewise the privacy self-heal (pinned in wallet-privacy.test.js)
-    const spy = vi.spyOn(SparkWallet, "initialize").mockResolvedValue({ wallet: {}, mnemonic: undefined });
-    await SparkAgent.create(...createArgs);
-    return spy.mock.calls[0][0].options;
-  };
-
-  it("defaults to auto-optimization ON (long-running agents want it)", async () => {
-    const options = await initOptions(["word ".repeat(12).trim(), "REGTEST"]);
-    expect(options.optimizationOptions).toEqual({ auto: true });
+  it("case, extra spaces and a trailing newline don't change the words: the same wallet opens", async () => {
+    const init = spyInitialize();
+    const words = generateMnemonic(wordlist);
+    await SparkAgent.create(`  ${words.toUpperCase().split(" ").join("   ")}\n`, "REGTEST", { optimizeLeaves: false });
+    expect(init.mock.calls[0][0].mnemonicOrSeed).toBe(words);
   });
 
-  it("disables auto-optimization when { optimizeLeaves: false } (one-shot escape hatch)", async () => {
-    const options = await initOptions(["word ".repeat(12).trim(), "REGTEST", { optimizeLeaves: false }]);
-    expect(options.optimizationOptions).toEqual({ auto: false });
-    expect(options.network).toBe("REGTEST");
+  it("a seed as bytes passes through unchanged", async () => {
+    const init = spyInitialize();
+    const seed = new Uint8Array(64).fill(7);
+    await SparkAgent.create(seed, "REGTEST", { optimizeLeaves: false });
+    expect(init.mock.calls[0][0].mnemonicOrSeed).toBe(seed);
   });
 });

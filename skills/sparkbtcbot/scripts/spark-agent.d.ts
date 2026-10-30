@@ -499,6 +499,7 @@ export declare class SparkAgent {
   /**
    * Confirmed L1 deposits not claimed yet; an empty array means nothing to claim.
    * @sideEffect read
+   * @throws {AgentError} BAD_INPUT
    * @throws {AgentError} SPARK_UNAVAILABLE
    * @throws {AgentError} SPARK_REFUSED
    */
@@ -632,6 +633,7 @@ export declare class SparkAgent {
   /**
    * The SSP's fee estimate for paying an invoice, in sats.
    * @sideEffect read
+   * @throws {AgentError} INVOICE_INVALID
    * @throws {AgentError} BAD_INPUT
    * @throws {AgentError} SPARK_UNAVAILABLE
    * @throws {AgentError} SPARK_REFUSED
@@ -893,6 +895,7 @@ export declare class SparkAgent {
    * user's say-so. Removes the hold's file too (~/.spark/l402-holds/), so no
    * later process finishes it either. Returns whether anything was held.
    * @sideEffect read
+   * @throws {AgentError} BAD_INPUT
    * @throws {AgentError} STORAGE_ERROR
    */
   forgetL402(url: string, options?: ForgetL402Options): boolean;

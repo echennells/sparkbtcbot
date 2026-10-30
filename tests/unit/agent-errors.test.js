@@ -28,7 +28,7 @@ import { createTransferIdStore } from "../../lib/transfer-ids.js";
 import { saveEncryptedMnemonic, loadSeedPayload } from "../../lib/encrypted-seed.js";
 import { checkL402Amount } from "../../lib/fee-guards.js";
 import { SparkAgent } from "../../skills/sparkbtcbot/scripts/spark-agent.js";
-import { freshInvoice } from "../helpers/bolt11.js";
+import { freshInvoice, amountlessInvoice } from "../helpers/bolt11.js";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "../..");
 
@@ -66,7 +66,7 @@ const INVOICE_2000_SATS =
   freshInvoice("lnbc20u1p3y0x3hpp5743k2g0fsqqxj7n8qzuhns5gmkk4djeejk3wkp64ppevgekvc0jsdqcve5kzar2v9nr5gpqd4hkuetesp5ez2g297jduwc20t6lmqlsg3man0vf2jfd8ar9fh8fhn2g8yttfkqxqy9gcqcqzys9qrsgqrzjqtx3k77yrrav9hye7zar2rtqlfkytl094dsp0ms5majzth6gt7ca6uhdkxl983uywgqqqqlgqqqvx5qqjqrzjqd98kxkpyw0l9tyy8r8q57k7zpy9zjmh6sez752wj6gcumqnj3yxzhdsmg6qq56utgqqqqqqqqqqqeqqjq7jd56882gtxhrjm03c93aacyfy306m4fq0tskf83c0nmet8zc2lxyyg3saz8x6vwcp26xnrlagf9semau3qm2glysp7sv95693fphvsp54l567");
 const EXPIRED_INVOICE =
   "lnbc20u1p3y0x3hpp5743k2g0fsqqxj7n8qzuhns5gmkk4djeejk3wkp64ppevgekvc0jsdqcve5kzar2v9nr5gpqd4hkuetesp5ez2g297jduwc20t6lmqlsg3man0vf2jfd8ar9fh8fhn2g8yttfkqxqy9gcqcqzys9qrsgqrzjqtx3k77yrrav9hye7zar2rtqlfkytl094dsp0ms5majzth6gt7ca6uhdkxl983uywgqqqqlgqqqvx5qqjqrzjqd98kxkpyw0l9tyy8r8q57k7zpy9zjmh6sez752wj6gcumqnj3yxzhdsmg6qq56utgqqqqqqqqqqqeqqjq7jd56882gtxhrjm03c93aacyfy306m4fq0tskf83c0nmet8zc2lxyyg3saz8x6vwcp26xnrlagf9semau3qm2glysp7sv95693fphvsp54l567";
-const AMOUNTLESS = "lnbc1notarealinvoice";
+const AMOUNTLESS = amountlessInvoice(INVOICE_2000_SATS); // a real zero-amount invoice
 
 // SDK error shapes seen on REGTEST (scratch probes, 2026-10-28): an operator
 // outage arrives as SparkAuthenticationError over a gRPC ClientError code 14;

@@ -48,7 +48,7 @@ describe("transfer({ dryRun }) checks the recipient like the send does", () => {
 
   it("refuses an empty recipient", async () => {
     await expect(agentOn("MAINNET").transfer({ to: "", amount: 1000, dryRun: true }))
-      .rejects.toThrow(/is not a MAINNET Spark address/);
+      .rejects.toMatchObject({ code: "RECIPIENT_INVALID", field: "to", message: expect.stringMatching(/`to` \(the receiver's Spark address\) is required/) });
   });
 });
 

@@ -4,6 +4,7 @@
 // forward it as amountSatsToSend ONLY in the amountless case — a bot's real
 // payment failed because the wrapper estimated with the amount, then dropped it
 // on the actual send.
+import { createHash } from "node:crypto";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync } from "node:fs";
 import { mkdtemp, readdir } from "node:fs/promises";
@@ -13,13 +14,16 @@ import { UUID, SparkWallet, decodeSparkAddress } from "@buildonspark/spark-sdk";
 import { decode } from "light-bolt11-decoder";
 import { decodeInvoiceSats, invoicePaymentHash, paymentHashMatches } from "../../lib/bolt11.js";
 import { SparkAgent } from "../../skills/sparkbtcbot/scripts/spark-agent.js";
-import { freshInvoice } from "../helpers/bolt11.js";
+import { freshInvoice, amountlessInvoice } from "../helpers/bolt11.js";
 
 // Amount-ful sample (2,000 sats embedded) from light-bolt11-decoder's README.
 const INVOICE_2000_SATS =
   freshInvoice("lnbc20u1p3y0x3hpp5743k2g0fsqqxj7n8qzuhns5gmkk4djeejk3wkp64ppevgekvc0jsdqcve5kzar2v9nr5gpqd4hkuetesp5ez2g297jduwc20t6lmqlsg3man0vf2jfd8ar9fh8fhn2g8yttfkqxqy9gcqcqzys9qrsgqrzjqtx3k77yrrav9hye7zar2rtqlfkytl094dsp0ms5majzth6gt7ca6uhdkxl983uywgqqqqlgqqqvx5qqjqrzjqd98kxkpyw0l9tyy8r8q57k7zpy9zjmh6sez752wj6gcumqnj3yxzhdsmg6qq56utgqqqqqqqqqqqeqqjq7jd56882gtxhrjm03c93aacyfy306m4fq0tskf83c0nmet8zc2lxyyg3saz8x6vwcp26xnrlagf9semau3qm2glysp7sv95693fphvsp54l567");
 
-const AMOUNTLESS = "lnbc1notarealinvoice"; // undecodable => treated as amountless
+// A real zero-amount invoice (an undecodable string is INVOICE_INVALID now).
+const AMOUNTLESS = amountlessInvoice(INVOICE_2000_SATS);
+// The same, under the payment hash of the preimage "aa" × 32 the polling tests return.
+const AMOUNTLESS_AA = amountlessInvoice(INVOICE_2000_SATS, createHash("sha256").update(Buffer.from("aa".repeat(32), "hex")).digest("hex"));
 
 // A 2,000-sat invoice whose preimage is known (sha256(0x42 × 32) is its payment
 // hash; the same sample as spark-agent-l402.test.js), so payAndSettle's proof
@@ -410,6 +414,30 @@ describe("getLightningSendRequest passthrough", () => {
 
 // payAndSettle wraps the initiated->preimage poll loop; its timeout contract is
 // "report unsettled, never retry-pay" (hold invoices stay pending legitimately).
+// ToB review 2026-10-28 (F28): a truncated or mangled invoice fell through to
+// "the invoice carries no amount: pass amountSats", an invitation to supply an
+// amount for a string nobody can check.
+describe("an invoice that doesn't decode", () => {
+  it("is INVOICE_INVALID (field bolt11) before any wallet call, in a dry run too, and for the fee estimate", async () => {
+    process.env.SPARK_LEAF_VAULT = "off";
+    const calls = [];
+    const wallet = new Proxy({}, { get: (_, name) => (name === "then" ? undefined : async () => { calls.push(name); return {}; }) });
+    const agent = new SparkAgent(wallet, "MAINNET");
+    const truncated = INVOICE_2000_SATS.slice(0, -12);
+    for (const p of [
+      () => agent.payLightningInvoice(truncated),
+      () => agent.payLightningInvoice(truncated, { amountSats: 500, dryRun: true }),
+      () => agent.payAndSettle(truncated, { amountSats: 500 }),
+      () => agent.estimateLightningFee(truncated, 500),
+    ]) {
+      const err = await p().catch((e) => e);
+      expect(err).toMatchObject({ code: "INVOICE_INVALID", field: "bolt11", retryable: "no" });
+      expect(err.message).not.toMatch(/amountSats/);
+    }
+    expect(calls.filter((n) => n !== "getSparkAddress")).toEqual([]);
+  });
+});
+
 describe("payAndSettle", () => {
   const mk = (sendRequestScript) => {
     process.env.SPARK_LEAF_VAULT = "off";
@@ -425,7 +453,7 @@ describe("payAndSettle", () => {
 
   it("polls until the preimage appears and reports settled", async () => {
     const { agent } = mk((n) => (n < 2 ? { status: "LIGHTNING_PAYMENT_INITIATED" } : { paymentPreimage: "aa".repeat(32) }));
-    const r = await agent.payAndSettle(AMOUNTLESS, { amountSats: 500, pollMs: 1 });
+    const r = await agent.payAndSettle(AMOUNTLESS_AA, { amountSats: 500, pollMs: 1 });
     expect(r.settled).toBe(true);
     expect(r.paymentPreimage).toBe("aa".repeat(32));
   });
@@ -452,7 +480,7 @@ describe("payAndSettle", () => {
       if (n === 0) throw new Error("UNAVAILABLE: try again");
       return n < 2 ? { status: "LIGHTNING_PAYMENT_INITIATED" } : { paymentPreimage: "aa".repeat(32) };
     });
-    const r = await agent.payAndSettle(AMOUNTLESS, { amountSats: 500, pollMs: 1 });
+    const r = await agent.payAndSettle(AMOUNTLESS_AA, { amountSats: 500, pollMs: 1 });
     expect(r).toMatchObject({ settled: true, paymentPreimage: "aa".repeat(32) });
   });
 

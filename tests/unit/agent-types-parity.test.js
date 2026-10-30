@@ -407,7 +407,9 @@ describe("spark-agent.d.ts ↔ the shipped SparkAgent", () => {
     const problems = [];
     for (const [name, sigs] of members) {
       const text = units.get(unitOf(name)).text;
-      const takes = /\bdryRun\s*=\s*false\b/.test(text.split("\n")[0]) || /\bpayOptions\.dryRun\b/.test(text);
+      // In the signature, or in the options bag the body destructures (F29).
+      const takes = /\bdryRun\s*=\s*false\b/.test(text.split("\n")[0]) || /const \{[^\n]*\bdryRun\s*=\s*false\b[^\n]*\} = options;/.test(text) ||
+        /\bpayOptions\.dryRun\b/.test(text);
       const tagged = tagsOf(sigs[0].doc).dryRun;
       if (takes !== (tagged.length === 1 && tagged[0] === "read")) problems.push(`${name}: takes dryRun ${takes}, tagged ${tagged.join(",") || "none"}`);
     }

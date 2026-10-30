@@ -35,6 +35,8 @@ import { createTransferIdStore, invoiceDedupKey } from "../../../lib/transfer-id
 import { ensureWalletPrivacy, privacyPreferenceFromEnv } from "../../../lib/wallet-privacy.js";
 import { enableLeafVault } from "./leaf-vault.js";
 import { sparkWalletOptions } from "../../../lib/wallet-options.js";
+import { validateMnemonic } from "@scure/bip39";
+import { wordlist as englishWordlist } from "@scure/bip39/wordlists/english";
 import { l402TokenExpiry } from "../../../lib/l402-token.js";
 import { PaymentCommittedError, provesNothingSent, preSendCode, classifySdkError } from "../../../lib/payment-outcome.js";
 import { annotateError, isConnectionFailure, STATUS_PROBLEMS } from "../../../lib/agent-errors.js";
@@ -74,13 +76,39 @@ function rejectUnknownOptions(method, rest) {
 // Strictness about values lives here in the wrapper, next to strictness about
 // keys. undefined/null means "not provided" and is fine — absent is a choice,
 // garbage is a bug. Returns the finite number, or undefined when absent.
+// A value for an error message. JSON.stringify throws on a BigInt (a declared
+// type for amounts), and then the coded error was never built (ToB review
+// 2026-10-28, F29).
+function show(value) {
+  if (typeof value === "bigint") return `${value}n`;
+  try {
+    return JSON.stringify(value) ?? String(value);
+  } catch {
+    return String(value);
+  }
+}
+
+// The options bag a method takes: null or missing reads as "no options" where
+// the bag is optional, and BAD_INPUT (field "options") where it is required or
+// isn't an object. Destructuring null threw a raw TypeError with no code.
+function optionsBag(method, options, { required = false } = {}) {
+  if (options === undefined || options === null) {
+    if (!required) return {};
+    throw annotateError(new TypeError(`SparkAgent.${method}: pass an options object, like ${method}({ … }); got ${show(options)}.`), "BAD_INPUT", { field: "options" });
+  }
+  if (typeof options !== "object" || Array.isArray(options)) {
+    throw annotateError(new TypeError(`SparkAgent.${method}: the options must be an object, got ${show(options)}.`), "BAD_INPUT", { field: "options" });
+  }
+  return options;
+}
+
 function requireNumericOption(method, name, value) {
   if (value === undefined || value === null) return undefined;
   const n = Number(value);
   if (!Number.isFinite(n)) {
     throw annotateError(
       new Error(
-        `SparkAgent.${method}: ${name} must be a number, got ${JSON.stringify(value)} — ` +
+        `SparkAgent.${method}: ${name} must be a number, got ${show(value)} — ` +
         `an unreadable ceiling silently disables the guard it's meant to set.`,
       ),
       "BAD_INPUT",
@@ -439,7 +467,7 @@ function spendLedgerFromEnv(seedCtx = getLoadedSeedContext()) {
   if (!Number.isFinite(budgetSats) || budgetSats <= 0) {
     throw annotateError(
       new Error(
-        `SPARK_DAILY_BUDGET_SATS is set but is not a positive number of sats: ${JSON.stringify(raw)}. ` +
+        `SPARK_DAILY_BUDGET_SATS is set but is not a positive number of sats: ${show(raw)}. ` +
           `Refusing to run with a budget that would be silently ignored; it changes only on the user's say-so.`,
       ),
       "BAD_CONFIG",
@@ -583,7 +611,7 @@ function canonicalTokenId(value, network, method) {
   } catch {
     throw badInput(
       new Error(
-        `SparkAgent.${method}: tokenIdentifier ${JSON.stringify(value)} is not a ${network} token identifier ` +
+        `SparkAgent.${method}: tokenIdentifier ${show(value)} is not a ${network} token identifier ` +
           "(btkn1… on mainnet, btknrt1… on regtest).",
       ),
       "tokenIdentifier",
@@ -1005,7 +1033,9 @@ export class SparkAgent {
   // "...interrupted due to cleanup". No funds are lost (the op already settled;
   // optimization resumes on next init), but disabling it removes the race
   // entirely. See references/wallet.md → Cleanup.
-  static async create(mnemonic, network = "MAINNET", { optimizeLeaves = true } = {}) {
+  static async create(mnemonic, network = "MAINNET", opts) {
+    const options = optionsBag("create", opts);
+    const { optimizeLeaves = true } = options;
     // A missing mnemonic must fail LOUDLY, not mint a wallet: the SDK happily
     // generates a fresh wallet for an undefined mnemonicOrSeed, so a typo'd
     // env var or a failed seed decrypt used to silently boot a brand-new
@@ -1028,6 +1058,25 @@ export class SparkAgent {
         },
       );
     }
+    // The SDK reads any string that isn't a mnemonic as a hex seed and fails
+    // locally, which came back as SPARK_REFUSED ("Spark refused the request")
+    // with characters of the input in the message (ToB review 2026-10-28). A
+    // string must be a BIP39 phrase; case, extra spaces and a trailing newline
+    // don't change the words, so they are normalized first. Seeds as bytes
+    // (Uint8Array) pass through. The words are never echoed.
+    let seed = mnemonic;
+    if (typeof mnemonic === "string") {
+      seed = mnemonic.normalize("NFKD").trim().toLowerCase().split(/\s+/).join(" ");
+      if (!validateMnemonic(seed, englishWordlist)) {
+        throw badInput(
+          new Error("SparkAgent.create: that is not a valid BIP39 recovery phrase (its words are not shown here)."),
+          "mnemonic",
+          {
+            nextStep: "Open the wallet with SparkAgent.create(await loadMnemonicFromEnv(), network), so the words never leave the process; never print, edit or retype the words, and tell the user if that fails.",
+          },
+        );
+      }
+    }
     // Opening a wallet sends nothing (it claims inbound transfers), so an SDK
     // error is classified like a read's (sparkRead). The tracker's events go
     // in at construction, before the stream can connect (status()).
@@ -1035,7 +1084,7 @@ export class SparkAgent {
     let opened;
     try {
       opened = await SparkWallet.initialize({
-        mnemonicOrSeed: mnemonic,
+        mnemonicOrSeed: seed,
         options: sparkWalletOptions(network, { optimizationOptions: { auto: optimizeLeaves }, events: track.events }),
       });
     } catch (err) {
@@ -1132,7 +1181,7 @@ export class SparkAgent {
         ? " It looks like a silent payment address, which is an L1 destination: use withdraw({ to, amount })."
         : "";
       throw annotateError(
-        new Error(`SparkAgent.${method}: ${JSON.stringify(to)} is not a ${this.#network} Spark address (${err.message}).${hint}`),
+        new Error(`SparkAgent.${method}: ${show(to)} is not a ${this.#network} Spark address (${err.message}).${hint}`),
         "RECIPIENT_INVALID",
         { field: "to" },
       );
@@ -1284,7 +1333,9 @@ export class SparkAgent {
   // tests/integration/funded/single-use-deposit.test.js). The SDK gives only
   // { txid, vout } per UTXO (no amount or confirmations); to learn the credit,
   // dry-run a claim.
-  async listPendingDeposits({ limit = 100 } = {}) {
+  async listPendingDeposits(opts) {
+    const options = optionsBag("listPendingDeposits", opts);
+    const { limit = 100 } = options;
     const deposits = [];
     for (const [type, address] of await this.#depositAddresses()) {
       // 4th arg excludeClaimed=true -> only UTXOs not yet claimed on Spark
@@ -1379,8 +1430,13 @@ export class SparkAgent {
   // Allowlist enforcement applies in BOTH modes (so dry-runs can't be used
   // to silently confirm a send to a disallowed address).
 
-  async transfer({ to, amount, dryRun = false, ...rest }) {
+  async transfer(opts) {
+    const options = optionsBag("transfer", opts, { required: true });
+    const { to, amount, dryRun = false, ...rest } = options;
     rejectUnknownOptions("transfer", rest);
+    // transfer({}) used to reach the SDK with undefined values.
+    if (!to) throw annotateError(new Error("SparkAgent.transfer: `to` (the receiver's Spark address) is required."), "RECIPIENT_INVALID", { field: "to" });
+    if (amount === undefined || amount === null) throw badInput(new Error("SparkAgent.transfer: `amount` (sats) is required."), "amount");
     await this.#assertAllowed(to);
     const sats = toSats(amount, "transfer"); // number|bigint -> safe-int Number (dry-run + live agree)
     await this.#authorize("transfer", { op: "spark_transfer", recipients: [to], amountsSats: [sats] });
@@ -1417,7 +1473,7 @@ export class SparkAgent {
   async getTransfers(limit = 10, offset = 0, createdAfter, createdBefore) {
     for (const [name, d] of [["createdAfter", createdAfter], ["createdBefore", createdBefore]]) {
       if (d !== undefined && !(d instanceof Date && Number.isFinite(d.getTime()))) {
-        throw badInput(new TypeError(`SparkAgent.getTransfers: ${name} must be a Date, got ${JSON.stringify(d)}.`), name);
+        throw badInput(new TypeError(`SparkAgent.getTransfers: ${name} must be a Date, got ${show(d)}.`), name);
       }
     }
     // The SDK takes one bound or the other, not both.
@@ -1438,11 +1494,13 @@ export class SparkAgent {
   // orders by UUIDv7 id descending, takes the page, reverses it), but no doc
   // or proto promises it; tests/integration/funded/token-transactions.test.js
   // fails if it changes.
-  async getTokenTransactions({ tokenIdentifier, limit = 20, ...rest } = {}) {
+  async getTokenTransactions(opts) {
+    const options = optionsBag("getTokenTransactions", opts);
+    const { tokenIdentifier, limit = 20, ...rest } = options;
     rejectUnknownOptions("getTokenTransactions", rest);
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > TOKEN_TX_MAX_LIMIT) {
       throw badInput(
-        new RangeError(`SparkAgent.getTokenTransactions: limit must be a whole number from 1 to ${TOKEN_TX_MAX_LIMIT}, got ${JSON.stringify(limit)}.`),
+        new RangeError(`SparkAgent.getTokenTransactions: limit must be a whole number from 1 to ${TOKEN_TX_MAX_LIMIT}, got ${show(limit)}.`),
         "limit",
       );
     }
@@ -1462,7 +1520,7 @@ export class SparkAgent {
   async getTokenTransaction(hash) {
     if (typeof hash !== "string" || !/^[0-9a-fA-F]{64}$/.test(hash)) {
       throw badInput(
-        new TypeError(`SparkAgent.getTokenTransaction: pass the 64-character hex hash a token send returned, got ${JSON.stringify(hash)}.`),
+        new TypeError(`SparkAgent.getTokenTransaction: pass the 64-character hex hash a token send returned, got ${show(hash)}.`),
         "hash",
       );
     }
@@ -1491,13 +1549,15 @@ export class SparkAgent {
   // INVOICE_CREATED). Every payer pays it over Lightning, Spark wallets
   // included, with the fee on the payer. Keep `id`; getInvoiceStatus(id) says
   // whether it was paid.
-  async createTrackedInvoice(amountSats, memo, { expirySeconds = 3600, ...rest } = {}) {
+  async createTrackedInvoice(amountSats, memo, opts) {
+    const options = optionsBag("createTrackedInvoice", opts);
+    const { expirySeconds = 3600, ...rest } = options;
     rejectUnknownOptions("createTrackedInvoice", rest);
     const sats = toSats(amountSats, "createTrackedInvoice");
     // An amountless invoice lets the payer pick the amount, and `paid` would
     // then mark a priced order paid for 1 sat.
     if (!(sats >= 1)) {
-      throw badInput(new RangeError(`SparkAgent.createTrackedInvoice: amountSats must be at least 1, got ${JSON.stringify(amountSats)}.`), "amountSats");
+      throw badInput(new RangeError(`SparkAgent.createTrackedInvoice: amountSats must be at least 1, got ${show(amountSats)}.`), "amountSats");
     }
     const request = await sparkRead(() => this.#wallet.createLightningInvoice({
       amountSats: sats,
@@ -1552,7 +1612,9 @@ export class SparkAgent {
   // before paying when stakes warrant it. A Spark-backed invoice settles
   // Spark-direct (free) unless `expectedPaymentHash` binds it or
   // `preferSpark: false` is passed; both pay over Lightning.
-  async payLightningInvoice(bolt11, { maxFeeSats, amountSats, maxAmountSats = 10_000, transferId, preferSpark, expectedPaymentHash, dryRun = false, ...rest } = {}) {
+  async payLightningInvoice(bolt11, opts) {
+    const options = optionsBag("payLightningInvoice", opts);
+    const { maxFeeSats, amountSats, maxAmountSats = 10_000, transferId, preferSpark, expectedPaymentHash, dryRun = false, ...rest } = options;
     // The raw SDK takes ONE object ({ invoice, ... }); this wrapper takes a bare
     // BOLT11 string + options. The raw layer crashes opaquely on the mix-up
     // ("Cannot read properties of undefined (reading 'toLowerCase')" — no
@@ -1581,7 +1643,7 @@ export class SparkAgent {
       } catch {
         throw badInput(
           new Error(
-            `SparkAgent.payLightningInvoice: transferId must be a UUID string, got ${JSON.stringify(transferId)} — ` +
+            `SparkAgent.payLightningInvoice: transferId must be a UUID string, got ${show(transferId)} — ` +
             `an unreadable dedup identity would forfeit the retry safety it exists to provide.`,
           ),
           "transferId",
@@ -1599,7 +1661,19 @@ export class SparkAgent {
     // the binding here, before any I/O, and pays over Lightning; preferSpark:
     // false alone is for a caller that needs the preimage (fetchL402).
     if (preferSpark !== undefined && typeof preferSpark !== "boolean") {
-      throw badInput(new TypeError(`SparkAgent.payLightningInvoice: preferSpark must be a boolean, got ${JSON.stringify(preferSpark)}.`), "preferSpark");
+      throw badInput(new TypeError(`SparkAgent.payLightningInvoice: preferSpark must be a boolean, got ${show(preferSpark)}.`), "preferSpark");
+    }
+    // A string that doesn't decode as BOLT11 (truncated, mangled, not an
+    // invoice) used to fall through to "pass amountSats", a request for an
+    // amount the user would then supply for a string no one can check (ToB
+    // review 2026-10-28). Refuse it as what it is, before anything else.
+    const hashCount = invoicePaymentHashCount(bolt11);
+    if (hashCount === null) {
+      throw annotateError(
+        new Error("Payment blocked: that string doesn't decode as a Lightning invoice (BOLT11). Nothing was sent."),
+        "INVOICE_INVALID",
+        { field: "bolt11", nextStep: "Nothing was sent. Don't pay this string: ask the payee (or the user) for the complete invoice, exactly as issued." },
+      );
     }
     const hashBound = expectedPaymentHash !== undefined && expectedPaymentHash !== null;
     if (hashBound) {
@@ -1607,7 +1681,7 @@ export class SparkAgent {
         throw badInput(
           new TypeError(
             `SparkAgent.payLightningInvoice: expectedPaymentHash must be a 64-character hex string, or null for ` +
-            `no binding — got ${JSON.stringify(expectedPaymentHash)}.`,
+            `no binding — got ${show(expectedPaymentHash)}.`,
           ),
           "expectedPaymentHash",
         );
@@ -1634,8 +1708,7 @@ export class SparkAgent {
     // BOLT11 allows exactly one payment hash. With two, the SDK pays under the
     // last one and no preimage can be checked against "the" hash, so payAndSettle
     // would report any preimage as proof (ToB review 2026-10-26). Refuse it.
-    const hashCount = invoicePaymentHashCount(bolt11);
-    if (hashCount !== null && hashCount !== 1) {
+    if (hashCount !== 1) {
       throw annotateError(
         new Error(
           `Payment blocked: the invoice carries ${hashCount} payment hashes; a valid BOLT11 invoice has exactly one.`,
@@ -1981,6 +2054,15 @@ export class SparkAgent {
 
 
   async estimateLightningFee(bolt11, amountSats) {
+    // As payLightningInvoice: a string that doesn't decode is not an invoice
+    // to estimate, not a Spark refusal.
+    if (invoicePaymentHashCount(bolt11) === null) {
+      throw annotateError(
+        new Error("SparkAgent.estimateLightningFee: that string doesn't decode as a Lightning invoice (BOLT11)."),
+        "INVOICE_INVALID",
+        { field: "bolt11", nextStep: "Ask the payee (or the user) for the complete invoice, exactly as issued." },
+      );
+    }
     const params = { encodedInvoice: bolt11, amountSats: toSats(amountSats, "estimateLightningFee") };
     return await sparkRead(() => this.#wallet.getLightningSendFeeEstimate(params));
   }
@@ -2018,7 +2100,9 @@ export class SparkAgent {
   // AlreadyExists, "preimage request already exists", means an earlier
   // payment of this invoice is still open, locked or paid: PAYMENT_COMMITTED
   // with reason EARLIER_ATTEMPT_OPEN (payLightningInvoice).
-  async payAndSettle(bolt11, { pollMs = 2000, maxPolls = 30, ...payOptions } = {}) {
+  async payAndSettle(bolt11, opts) {
+    const options = optionsBag("payAndSettle", opts);
+    const { pollMs = 2000, maxPolls = 30, ...payOptions } = options;
     const sent = {}; // filled by payLightningInvoice: { amountSats, capSats, transferId }
     const result = await this.payLightningInvoice(bolt11, { ...payOptions, [LN_SETTLING]: sent });
     if (payOptions.dryRun) return result;
@@ -2134,7 +2218,9 @@ export class SparkAgent {
   // scaffolding as every other outbound send: the allowlist gate (on the
   // receiver decoded from each invoice, enforced in dryRun mode too), strict
   // options, and a dryRun preview showing WHO gets paid before anything moves.
-  async fulfillInvoice(invoices, { dryRun = false, ...rest } = {}) {
+  async fulfillInvoice(invoices, opts) {
+    const options = optionsBag("fulfillInvoice", opts);
+    const { dryRun = false, ...rest } = options;
     rejectUnknownOptions("fulfillInvoice", rest);
     if (!Array.isArray(invoices)) {
       throw badInput(
@@ -2314,7 +2400,9 @@ export class SparkAgent {
   // the token id must be this network's, the amount a positive integer of base
   // units, and an error that doesn't prove nothing left throws
   // PAYMENT_COMMITTED. (The sats budget doesn't count tokens.)
-  async transferTokens({ tokenIdentifier, amount, to, dryRun = false, ...rest }) {
+  async transferTokens(opts) {
+    const options = optionsBag("transferTokens", opts, { required: true });
+    const { tokenIdentifier, amount, to, dryRun = false, ...rest } = options;
     rejectUnknownOptions("transferTokens", rest);
     if (!to) {
       throw annotateError(new Error("SparkAgent.transferTokens: `to` (the receiver's Spark address) is required."), "RECIPIENT_INVALID", { field: "to" });
@@ -2361,7 +2449,9 @@ export class SparkAgent {
   // (or to) }. They reach the SDK normalized: before, an entry written with the
   // `to` alias passed the allowlist check, then went to the SDK with no
   // receiverSparkAddress. Unknown entry keys throw.
-  async batchTransferTokens(transfers, { dryRun = false, ...rest } = {}) {
+  async batchTransferTokens(transfers, opts) {
+    const options = optionsBag("batchTransferTokens", opts);
+    const { dryRun = false, ...rest } = options;
     rejectUnknownOptions("batchTransferTokens", rest);
     if (!Array.isArray(transfers) || transfers.length === 0) {
       throw badInput(
@@ -2447,13 +2537,15 @@ export class SparkAgent {
   // it would claim it (a 2,000-sat mainnet single-use deposit quoted a
   // 1,703-sat credit, 2026-10-26), so without the lookup a dry run promised
   // money and the claim then failed with "Static deposit address … not found".
-  async claimDeposit({ txid, vout = 0, maxFeeSats, maxFeePct = 10, dryRun = false, ...rest }) {
+  async claimDeposit(opts) {
+    const options = optionsBag("claimDeposit", opts, { required: true });
+    const { txid, vout = 0, maxFeeSats, maxFeePct = 10, dryRun = false, ...rest } = options;
     rejectUnknownOptions("claimDeposit", rest);
     if (typeof txid !== "string" || !/^[0-9a-fA-F]{64}$/.test(txid)) {
-      throw badInput(new TypeError(`SparkAgent.claimDeposit: txid must be a 64-character hex transaction id, got ${JSON.stringify(txid)}.`), "txid");
+      throw badInput(new TypeError(`SparkAgent.claimDeposit: txid must be a 64-character hex transaction id, got ${show(txid)}.`), "txid");
     }
     if (!Number.isSafeInteger(vout) || vout < 0) {
-      throw badInput(new TypeError(`SparkAgent.claimDeposit: vout must be a non-negative integer, got ${JSON.stringify(vout)}.`), "vout");
+      throw badInput(new TypeError(`SparkAgent.claimDeposit: vout must be a non-negative integer, got ${show(vout)}.`), "vout");
     }
     // Garbage ceiling values throw here (requireNumericOption): a NaN maxFee
     // passed to the SDK never trips its `feeCharged > maxFee` check, which
@@ -2547,7 +2639,10 @@ export class SparkAgent {
 
   // Cooperative exit back to L1 Bitcoin. Allowlist applies to `to` (L1 BTC
   // address). dryRun returns the fee quote without broadcasting.
-  async withdraw({ to, amount, speed = "MEDIUM", maxFeeSats, maxFeePct = 10, dryRun = false, ...rest }) {
+  async withdraw(opts) {
+    const options = optionsBag("withdraw", opts, { required: true });
+    const { to, amount, speed = "MEDIUM", maxFeeSats, maxFeePct = 10, dryRun = false, ...rest } = options;
+    if (amount === undefined || amount === null) throw badInput(new Error("SparkAgent.withdraw: `amount` (sats) is required."), "amount");
     rejectUnknownOptions("withdraw", rest);
     // Garbage ceiling values throw BEFORE any I/O (requireNumericOption) — a
     // non-finite cap would silently disable the ceiling below, and the quote
@@ -2558,7 +2653,7 @@ export class SparkAgent {
     // The SDK takes exactly these. Another value used to surface as "fee
     // quote is unreadable", after the quote had already been fetched.
     if (!WITHDRAW_SPEEDS.includes(speed)) {
-      throw badInput(new RangeError(`SparkAgent.withdraw: speed must be one of ${WITHDRAW_SPEEDS.join(", ")}, got ${JSON.stringify(speed)}.`), "speed");
+      throw badInput(new RangeError(`SparkAgent.withdraw: speed must be one of ${WITHDRAW_SPEEDS.join(", ")}, got ${show(speed)}.`), "speed");
     }
     await this.#assertAllowed(to);
     const sats = toSats(amount, "withdraw"); // number|bigint -> safe-int Number (SDK rejects bigint)
@@ -2676,7 +2771,8 @@ export class SparkAgent {
   // pass. A duplicate of the running request (same body, same resend) joins
   // its outcome, result or error; a different body is refused before anything
   // is fetched or paid.
-  async fetchL402(url, options = {}) {
+  async fetchL402(url, opts) {
+    const options = optionsBag("fetchL402", opts);
     const key = l402RequestKey(options?.method ?? "GET", url);
     let sig = null;
     try { sig = JSON.stringify([options?.body ?? null, options?.resend ?? false]); } catch { /* unserializable body: never joins */ }
@@ -2706,7 +2802,7 @@ export class SparkAgent {
     }
   }
 
-  async #fetchL402Run(url, options = {}) {
+  async #fetchL402Run(url, options) {
     const { decode } = await import("light-bolt11-decoder");
     const { method = "GET", headers = {}, body, maxFeeSats, maxAmountSats = 10_000, resend = false, ...rest } = options;
     // Same strictness as every other money-moving method: an ignored option
@@ -2714,11 +2810,18 @@ export class SparkAgent {
     // the exact phantom-dryRun failure the wrapper exists to prevent.
     rejectUnknownOptions("fetchL402", rest);
     assertHttpsUrl("fetchL402", url);
-    if (typeof resend !== "boolean") throw badInput(new TypeError(`SparkAgent.fetchL402: resend must be true or false, got ${JSON.stringify(resend)}.`), "resend");
+    if (typeof resend !== "boolean") throw badInput(new TypeError(`SparkAgent.fetchL402: resend must be true or false, got ${show(resend)}.`), "resend");
     // Garbage ceiling values throw BEFORE any network I/O (requireNumericOption).
     const maxFee = requireNumericOption("fetchL402", "maxFeeSats", maxFeeSats);
     const maxAmt = requireNumericOption("fetchL402", "maxAmountSats", maxAmountSats) ?? 10_000;
-    const reqBody = body ? JSON.stringify(body) : undefined;
+    let reqBody;
+    try {
+      reqBody = body ? JSON.stringify(body) : undefined;
+    } catch (err) {
+      // A BigInt (or a cycle) can't be sent as JSON; converting it silently
+      // would change what the service receives.
+      throw annotateError(new TypeError(`SparkAgent.fetchL402: the body can't be sent as JSON (${err?.message ?? err}); convert BigInt amounts to numbers or strings first.`, { cause: err }), "BAD_INPUT", { field: "body" });
+    }
     const request = { method, headers, reqBody, resend };
 
     // An earlier call, in this process or another, already paid, or may have
@@ -2944,7 +3047,9 @@ export class SparkAgent {
   // user's say-so: if the earlier payment went through, the next fetchL402
   // for this URL is a second purchase. Also drops a held, undelivered pass.
   // Returns whether anything was held.
-  forgetL402(url, { method = "GET" } = {}) {
+  forgetL402(url, opts) {
+    const options = optionsBag("forgetL402", opts);
+    const { method = "GET" } = options;
     const key = l402RequestKey(method, url);
     const inMemory = this.#l402Held.delete(key);
     return this.#l402Store.removeSync(key) || inMemory;
@@ -3442,7 +3547,7 @@ export class SparkAgent {
       throw badInput(new Error(`SparkAgent.status: unknown option(s) [${unknown.join(", ")}]; the one option is checkLightning.`), unknown.join(", "));
     }
     if (typeof checkLightning !== "boolean") {
-      throw badInput(new Error(`SparkAgent.status: checkLightning must be true or false, got ${JSON.stringify(checkLightning)}.`), "checkLightning");
+      throw badInput(new Error(`SparkAgent.status: checkLightning must be true or false, got ${show(checkLightning)}.`), "checkLightning");
     }
     const closed = this.#closed;
     const privacyWanted = privacyPreferenceFromEnv();
