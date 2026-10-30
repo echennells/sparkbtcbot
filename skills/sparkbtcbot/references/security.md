@@ -86,7 +86,9 @@ The only revocation for a seed that may have leaked (shown in a chat transcript,
 - **An interrupted run** leaves both seeds complete on disk; `rotate --resume` moves what is still in the old wallet and finishes.
 - **It refuses while an L402 purchase is held** (`status().l402.held`): its payment can't be settled from a new wallet. Finish it, or lift it with `forgetL402` on the user's say-so.
 - **The old wallet stays reachable.** Its Spark address, static deposit address and unpaid invoices still pay it. `rotate --check-old` opens each retired wallet and reports what arrived; `--check-old --sweep` claims its deposits (fee-capped, through `SparkAgent`) and moves everything to the current wallet. Run it when the user asks, or now and then while old addresses may still be used.
-- **Afterwards the recovery words are new.** The old words no longer hold the money; the user backs up the new ones the same way as at setup. A running agent process still holds the old wallet: restart it.
+- **Afterwards the recovery words are new.** The old words no longer hold the money. A user with a terminal backs up the new ones with `reveal-mnemonic`, as at setup. A running agent process still holds the old wallet: restart it.
+
+**Chat-only users and backups.** When the chat is the user's only channel, there is no private way to hand them the recovery words: anything the agent shows stays in the chat. Rotating after a leak and then showing the new words in the same chat would put them back where the old ones leaked. So for a chat-only user the agent's wallet is spending money, kept small, and "no backup: a wiped sandbox loses it" is the honest trade at that size. What they want to keep goes to a wallet they hold, such as a phone wallet whose words go on paper and never touch the chat; that is their real backup. If they still ask for the agent wallet's words, show them once, on that explicit request, and say they now live in the chat.
 
 ## What the allowlist does and does not bound
 

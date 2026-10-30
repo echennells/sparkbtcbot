@@ -216,8 +216,12 @@ function leftBehind(h) {
 
 const AFTER =
   "What changed:\n" +
-  "  - The recovery words are NEW. The old words no longer hold the money: tell the user,\n" +
-  "    and back up the new ones the same way as at setup.\n" +
+  "  - The recovery words are NEW. The old words no longer hold the money: tell the user.\n" +
+  "    If they can only reach you through this chat, don't offer the new words as their\n" +
+  "    backup: anything you show stays in the chat, where the old ones leaked. Keep this\n" +
+  "    wallet small, and move what they want to keep to a wallet they hold (its words on\n" +
+  "    paper, never in the chat). With a terminal, they back up the new words with\n" +
+  "    reveal-mnemonic as at setup.\n" +
   "  - The old Spark address, deposit address and unpaid invoices still pay the OLD wallet.\n" +
   "    Its seed is kept for that: `sparkbtcbot rotate --check-old` looks for anything that\n" +
   "    arrives there, and `--check-old --sweep` moves it here. Run it when the user asks,\n" +

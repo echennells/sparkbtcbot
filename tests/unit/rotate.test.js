@@ -122,6 +122,8 @@ describe("sparkbtcbot rotate", () => {
     expect(await exists(`${environment.SPARK_SEED_PATH}.next`)).toBe(false);
     expect(await exists(`${environment.SPARK_SEED_PATH}.rotation.json`)).toBe(false);
     expect(report()).toMatch(/The recovery words are NEW\. The old words no longer hold the money/);
+    // A chat-only user's backup would go through the chat the old words leaked in.
+    expect(report()).toMatch(/If they can only reach you through this chat, don't offer the new words as their\s+backup/);
     expect(report()).toMatch(/rotate --check-old/);
   });
 
