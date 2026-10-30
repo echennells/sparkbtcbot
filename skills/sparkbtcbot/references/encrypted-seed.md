@@ -80,6 +80,8 @@ The script verifies by initializing a wallet from the encrypted seed and printin
 
 ## Seed-bound policy (v2 seed files)
 
+**Who can use it.** `set-policy` needs the user at a terminal on the machine where the agent runs, typing the passphrase. A user who reaches the agent only through chat can't run it; offer the daily limit the agent can set from chat instead (`npm exec --no -- sparkbtcbot limits set --daily-budget <sats>`, applies from the next payment, no restart), and say the difference plainly: the chat limit is a file the agent itself could change, the sealed budget needs the passphrase at a terminal. Both can be in force; the chat limit can only tighten the sealed one.
+
 The guard files are agent-writable — `rm ~/.spark/spend-ledger.json` used to silently restore the full daily budget, and truncating it to an empty ledger was the smarter version of the same attack. Binding the policy to the seed closes that class:
 
 - **The policy lives inside the encrypted payload.** `npm exec --no -- sparkbtcbot set-policy` (user-run, TTY-gated, needs the passphrase) rewrites `seed.enc` as **v2**: the ciphertext holds `{ mnemonic, policy: { dailyBudgetSats } }`. It inherits the seed's protections — reading needs the passphrase, tampering fails the GCM tag, and deleting it deletes the wallet. The agent can't remove the budget without removing the money. A seed-bound budget **wins over `SPARK_DAILY_BUDGET_SATS` absolutely** (the env var is agent-writable; the boot warns if they disagree).

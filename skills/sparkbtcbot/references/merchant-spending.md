@@ -84,9 +84,11 @@ Rules, in order of preference:
 
 The same applies to a `curl` against a URL that came from a directory listing (`references/l402.md`): check it parses and starts with `https://` before it is an argument to anything.
 
+When a value fails these checks, tell the user in one plain sentence ("the store sent back a broken product id, so I'm not using it") and re-search or ask. Don't quote the payload or explain shell injection to them; that detail is for your own decisions.
+
 ## 2. Know what actually bounds this spend (mostly: nothing)
 
-The recipient allowlist (`~/.spark/recipients.allow`) **cannot see Lightning** — merchant checkouts pay a node embedded in a BOLT11, not an address. Through the `SparkAgent` wrapper, two things do bound merchant spend: the per-call `maxAmountSats` ceiling (§1) and the **cumulative `SPARK_DAILY_BUDGET_SATS` budget** (rolling 24h, enforced by `lib/spend-ledger.js` across all sats paths) — the latter is what stops a *loop* of individually-valid purchases. Both live in the agent's own process: they bound mistakes and runaway loops, not a compromised process calling the raw SDK, which skips all of it. No control here survives full process compromise — the funded balance is the only spending authority that does, so when merchant spending is routine, keep the wallet at an operational float and top it up rather than parking a large balance.
+The recipient allowlist (`~/.spark/recipients.allow`) **cannot see Lightning** — merchant checkouts pay a node embedded in a BOLT11, not an address. Through the `SparkAgent` wrapper, two things do bound merchant spend: the per-call `maxAmountSats` ceiling (§1) and a **cumulative daily budget** (the user's spending limits, `SPARK_DAILY_BUDGET_SATS`, or a sealed one; rolling 24h, enforced by `lib/spend-ledger.js` across all sats paths) — the latter is what stops a *loop* of individually-valid purchases. Both live in the agent's own process: they bound mistakes and runaway loops, not a compromised process calling the raw SDK, which skips all of it. No control here survives full process compromise — the funded balance is the only spending authority that does, so when merchant spending is routine, keep the wallet at an operational float and top it up rather than parking a large balance.
 
 ## 3. Confirm before buying
 

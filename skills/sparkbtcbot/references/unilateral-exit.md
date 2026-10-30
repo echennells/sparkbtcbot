@@ -20,6 +20,20 @@ Recovery has two halves, and this skill only owns the first:
    respects TRUC confirm-and-continue sequencing, and handles the CPFP fee-bumping
    and the ~2-week CSV timelock. Do not hand-roll this.
 
+## When a user asks "what if the operators disappear?"
+
+Answer from this page, and include each of these (eval 57):
+
+- The seed restores the wallet only while the operators are online. Once they're
+  gone the seed alone can't exit: the current leaves aren't derivable from it.
+- `SparkAgent` keeps the recovery bundle at `~/.spark/leaf-vault/current.json`
+  (schema `spark.unilateral-exit-bundle.v1`); **code on the raw SDK keeps none**.
+  A `BROKEN` file beside it means there is no fresh backup. The bundle holds no
+  private keys.
+- The exit is Blink's tool, not this wallet. It is slow (about a two-week timelock)
+  and expensive (a real run spent a large share of a small balance on fees).
+  Tokens have no such path. Don't call it trustless.
+
 ## The bundle format
 
 The leaf-vault writes `spark.unilateral-exit-bundle.v1` — the schema Blink's CLI

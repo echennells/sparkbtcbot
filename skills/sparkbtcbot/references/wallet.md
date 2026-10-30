@@ -96,10 +96,11 @@ const staticAddr = await wallet.getStaticDepositAddress();
 - **Not `createLightningInvoice`.** Its invoice carries a Spark fallback by default, and a Spark wallet then pays it with a plain transfer: the money arrives, but the invoice never shows as paid (hosted REGTEST, 2026-10-26). `createTrackedInvoice` leaves the fallback out, so every payer pays over Lightning, with the routing fee on the payer.
 - **Not the on-chain address.** Everyone gets the same address, and its transactions are public on the chain, so a txid a customer sends you proves nothing: anyone can name someone else's payment. Take order payments over Lightning. Use the deposit address only where it doesn't matter who paid (topping up the wallet), or settle such payments by hand with the payer.
 
-**Coins already at a single-use address** (handed out by an older version of this skill, or by the raw SDK): `listPendingDeposits()` shows them as `type: "single-use"`, and `claimDeposit` refuses them with the reason. Tell the user they arrived and are waiting on the operators, never that nothing arrived, and two things:
+**Coins already at a single-use address** (handed out by an older version of this skill, or by the raw SDK): `listPendingDeposits()` shows them as `type: "single-use"`, and `claimDeposit` refuses them with the reason. Tell the user they arrived and are waiting on the operators, never that nothing arrived, and three things:
 
 - **Back up the recovery words now** if they haven't, in their own terminal: `npm exec --no -- sparkbtcbot reveal-mnemonic` (installed package) or `npm run reveal-mnemonic` (cloned repo). The address belongs to this wallet's key together with the operators', so if the operators switch the claim back on, only this wallet can claim the coins.
 - **Follow the operators' answer** at [buildonspark/spark#165](https://github.com/buildonspark/spark/issues/165).
+- **Give them the static deposit address for anything sent on-chain from now on**: call `agent.getDepositAddress()` and hand the address over in the same reply, rather than offering to.
 
 `listPendingDeposits()` finds them through the operators' list of unused deposit addresses, which dropped the funded mainnet address once in two hours of retries (the SDK then said "Deposit address has already been used"), so one empty answer about a single-use address isn't conclusive either. For the same reason `claimDeposit`'s `DEPOSIT_NOT_FOUND` means "not claimable here now", never "the coins went somewhere else".
 
