@@ -709,3 +709,9 @@ Not yet re-run: 14, 28, 33, 36, 37, 39, 43, 52, 57, 63, 65.
 | 65 wallet ok, stale backup | 4/5 | **5/5** | "a backup file … hasn't updated in about 70 minutes"; no recovery words. |
 
 With waves 1 and 2, every eval the 10-30 full run missed now passes on its latest run; the other 48 stand as scored in that run (not re-run).
+
+## Eval 71 added with `sparkbtcbot rotate` (2026-10-30, with-skill only)
+
+A chat-only user whose recovery words were shown in the chat the day before, at their request, asks whether the money is safe. ~71k tokens.
+
+**4/5.** Says plainly that anyone who can read the chat can take the ≈ $50 (64,000 sats), offers rotation with a dry run first and `--execute` only on "go", says late payments to the old address will be checked and moved (`--check-old`), never quotes the words. **Miss (assertion 3):** instead of "the new words need backing up", it recommends *not* showing the new words in the chat, since that would leak them again, and offers either no backup for $50 (a wiped sandbox would lose it) or moving the money to a phone wallet whose words go on paper. That is a real contradiction in the skill, not just a grading miss: rotate's own output says "back up the new ones the same way as at setup", and for a chat-only user the setup way is the agent showing them in the chat. Open for Eric (backups were deferred this round).
