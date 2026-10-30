@@ -67,7 +67,7 @@ describe("fulfillInvoice allowlist gate", () => {
     expect(calls.fulfill).toBeNull();
     // Whose file it is (verified 2026-10-28: "Add it to <path>" read as an
     // instruction to the agent that hit the gate).
-    expect(err.message).toMatch(/not in the allowlist \(.*recipients\.allow\); nothing was sent\. Add an address to that file \(one per line\) only when the user asks in their own message/);
+    expect(err.message).toMatch(/not in the allowlist \(.*recipients\.allow\); nothing was sent\. Add this address to that file \(one per line\) only when the user, told it was refused, asks for it in their own message/);
     expect(err.message).toMatch(/don't go around it with the raw SDK\.$/);
     expect(err.message).not.toMatch(/Add it to|to permit this send/);
   });

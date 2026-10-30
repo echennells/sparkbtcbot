@@ -120,12 +120,12 @@ describe("F-F: over-budget remediation matches the mode", () => {
     await initSignedLedger({ path: p, hmacKey: key });
     const ledger = createSpendLedger({ path: p, budgetSats: 100, hmacKey: key, bound: true });
     await expect(ledger.assertCanSpend(500)).rejects.toThrow(/sparkbtcbot set-policy/);
-    await expect(ledger.assertCanSpend(500)).rejects.not.toThrow(/SPARK_DAILY_BUDGET_SATS\): tell them; raise it only when the user asks/);
+    await expect(ledger.assertCanSpend(500)).rejects.not.toThrow(/SPARK_DAILY_BUDGET_SATS\): tell them; raise it only when the user, told that, asks/);
   });
 
   it("unbound: keeps the env-var advice (correct there)", async () => {
     const ledger = createSpendLedger({ path: join(dir, "l.json"), budgetSats: 100 });
-    await expect(ledger.assertCanSpend(500)).rejects.toThrow(/SPARK_DAILY_BUDGET_SATS\): tell them; raise it only when the user asks/);
+    await expect(ledger.assertCanSpend(500)).rejects.toThrow(/SPARK_DAILY_BUDGET_SATS\): tell them; raise it only when the user, told that, asks/);
   });
 });
 

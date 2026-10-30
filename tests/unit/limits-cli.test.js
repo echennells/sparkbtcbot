@@ -51,7 +51,7 @@ describe("sparkbtcbot limits", () => {
     await limits("set", "--daily-budget", "20000", "--ops", "spark_transfer,lightning_pay");
     let r = await limits("set", "--daily-budget", "50000");
     expect(r.stdout).toMatch(/Changed dailyBudgetSats: 20000 sats -> 50000 sats \(LOOSER\)/);
-    expect(r.stdout).toMatch(/only because the user asked in their own message/);
+    expect(r.stdout).toMatch(/only because the user asked for this change in their own message, after being told what it unblocks/);
     expect(r.stdout).toMatch(/put it back now: sparkbtcbot limits set --daily-budget 20000$/m);
     expect(await onDisk()).toMatchObject({ dailyBudgetSats: 50000, allowedOps: ["spark_transfer", "lightning_pay"] });
     r = await limits("set", "--ops", "all");

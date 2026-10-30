@@ -147,7 +147,7 @@ export async function main(args = process.argv.slice(2)) {
         return `${flag} ${d.from === null ? spec.off : Array.isArray(d.from) ? d.from.join(",") : d.from}`;
       });
       stdout.write(
-        "This LOOSENS the user's limits. Do it only because the user asked in their own message; " +
+        "This LOOSENS the user's limits. Do it only because the user asked for this change in their own message, after being told what it unblocks (a standing 'if it's blocked, raise it' doesn't count); " +
           `if they didn't, put it back now: sparkbtcbot limits set ${undo.join(" ")}\n`,
       );
     }
