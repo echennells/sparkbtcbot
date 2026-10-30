@@ -228,9 +228,13 @@ describe("audit hardening (wrapper)", () => {
     await first.payLightningInvoice(AMOUNTLESS, { amountSats: 500 });
     // …the retry hits the server-side dedup and must read as SETTLED
     const { agent: retry } = mkThrowing(grpcErr);
-    await expect(retry.payLightningInvoice(AMOUNTLESS, { amountSats: 500 })).rejects.toMatchObject({
-      code: "PAYMENT_ALREADY_SETTLED",
-    });
+    const err = await retry.payLightningInvoice(AMOUNTLESS, { amountSats: 500 }).catch((e) => e);
+    expect(err).toMatchObject({ code: "PAYMENT_ALREADY_SETTLED" });
+    // The id the operators refused as a duplicate is the payment's transfer
+    // id: what to find in getTransfers() (eval 64; REGTEST in
+    // tests/integration/funded/spark-direct-binding.test.js).
+    expect(err.transferId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(err.nextStep).toMatch(/the transfer whose id is err\.transferId/);
   });
 
   it("passes AlreadyExists through RAW when the id was NOT reused (no proof to vouch)", async () => {

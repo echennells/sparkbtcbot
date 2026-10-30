@@ -85,6 +85,24 @@ describeFunded("Spark-direct and the payment-hash binding (REGTEST)", () => {
     expect(await waitForSettled(wallet, BigInt(AMOUNT), { timeoutMs: 90_000 })).toEqual({ available: BigInt(AMOUNT), incoming: 0n });
   }, 180_000);
 
+  // Eval 64 (2026-10-30): PAYMENT_ALREADY_SETTLED said "confirm it in
+  // getTransfers()", and a transfer record carries no invoice to match on.
+  // The operators refuse a repeat under the recorded transferId as a
+  // duplicate transfer key, so that id IS the payment's transfer id.
+  it("paying a settled invoice again: PAYMENT_ALREADY_SETTLED, and err.transferId is the transfer's id in getTransfers()", async () => {
+    const { wallet, invoice } = await sparkBackedInvoice();
+    const first = await agent.payLightningInvoice(invoice);
+    expect(first.dedupReused).toBe(false);
+    expect(await waitForSettled(wallet, BigInt(AMOUNT), { timeoutMs: 60_000 })).toEqual({ available: BigInt(AMOUNT), incoming: 0n });
+    const err = await agent.payLightningInvoice(invoice).catch((e) => e);
+    expect(err).toMatchObject({ code: "PAYMENT_ALREADY_SETTLED", retryable: "check-first", transferId: expect.any(String) });
+    expect(err.transferId).toBe(first.id);
+    const { transfers } = await agent.getTransfers(20, 0);
+    expect(transfers.filter((t) => t.id === err.transferId)).toHaveLength(1);
+    // Paid once: the receiver holds one payment's worth, not two.
+    expect(await waitForSettled(wallet, BigInt(AMOUNT), { timeoutMs: 20_000 })).toEqual({ available: BigInt(AMOUNT), incoming: 0n });
+  }, 180_000);
+
   it("refuses a checkout hash the invoice doesn't carry, before paying", async () => {
     const { wallet, invoice } = await sparkBackedInvoice();
     await expect(agent.payAndSettle(invoice, { expectedPaymentHash: "bb".repeat(32) })).rejects.toThrow(/Payment blocked/);

@@ -56,7 +56,7 @@ Some errors carry facts too: `field` (the argument or setting at fault), `osCode
 | `L402_TOO_MANY_HELD` | `no` | This agent holds 1,000 unresolved L402 purchases, so a new one is refused before paying (`err.held`). | Nothing new was paid. Call fetchL402 again for each request in err.held (same URL and method) to finish it; call forgetL402(url) only on the user's say-so. |
 | `L402_TOKEN_EXPIRED` | `yes` | The service's token is dead or dies within 120 seconds, so the pass wasn't bought. | Nothing was paid. Call fetchL402 again for a fresh challenge; if it repeats immediately, stop: this machine's clock may be wrong. |
 | `PAYMENT_COMMITTED` | `check-first` | Money may have left: an SDK error that doesn't prove nothing was sent, or an L402 purchase paid but not delivered or not settled (`err.reason`, `err.settled`). | Check before anything else: getTransfers() (tokens: getTokenTransactions(); L402: call fetchL402 again with the same URL and method). Never pay again with a new invoice, address or method. |
-| `PAYMENT_ALREADY_SETTLED` | `check-first` | A retry under the recorded dedup id met the operators' "transfer already exists": this invoice was paid already. | Treat this invoice as paid: confirm it in getTransfers() and don't pay it again by any path, nor a new invoice for the same thing. |
+| `PAYMENT_ALREADY_SETTLED` | `check-first` | A retry under the recorded dedup id met the operators' "transfer already exists": this invoice was paid already. | Treat this invoice as paid: confirm it in getTransfers(), the transfer whose id is err.transferId, and don't pay it again by any path, nor a new invoice for the same thing. |
 | `CLAIM_OUTCOME_UNKNOWN` | `check-first` | A deposit claim failed after it was requested; the deposit may have been credited. | The deposit may already be credited. Check listPendingDeposits(): still listed means call claimDeposit again; gone means it was claimed, so check getBalance(). |
 | `DEDUP_ENTRY_UNREADABLE` | `check-first` | This invoice's dedup entry can't be read, and it may record an earlier attempt that paid. | An earlier attempt at this invoice may have paid it: check getTransfers() before anything else. Delete the dedup entry the message names only when the user asks in their own message, and only once getTransfers() shows no attempt pending. |
 | `L402_HOLD_UNREADABLE` | `check-first` | The saved record of an unfinished `fetchL402` purchase of this resource (`~/.spark/l402-holds/`) can't be read, so `fetchL402` won't buy it while that record may stand for a payment. | An earlier purchase of this resource may have been paid: check getTransfers() before anything else, and don't buy it another way. Call forgetL402(url) only when the user asks in their own message, once getTransfers() shows no payment for it. |
@@ -2041,10 +2041,15 @@ export class SparkAgent {
             `refused a second transfer under the recorded transferId (${resolved.transferId}). This is ` +
             `dedup working, not a failed payment. Do NOT retry on any rail or by any path: not with a ` +
             `fresh invoice (a new payment hash escapes dedup = a real second payment) and not via the ` +
-            `raw SDK. Verify via the balance delta or transfer list.`,
+            `raw SDK. Verify it in agent.getTransfers(): the transfer whose id is err.transferId.`,
             { cause: err },
           ),
           "PAYMENT_ALREADY_SETTLED",
+          // The operators refused this id as a duplicate transfer key, so the
+          // payment's transfer carries it as its id (REGTEST, 2026-10-30).
+          // "Confirm it in getTransfers()" gave an agent nothing to match on
+          // (eval 64): a transfer record carries no invoice.
+          { transferId: resolved.transferId, invoiceHash: invoicePaymentHash(bolt11) ?? undefined },
         );
       }
       if (provesNothingSent(err)) await forgetIfMinted();

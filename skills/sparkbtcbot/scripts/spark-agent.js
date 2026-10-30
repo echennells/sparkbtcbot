@@ -1905,10 +1905,15 @@ export class SparkAgent {
             `refused a second transfer under the recorded transferId (${resolved.transferId}). This is ` +
             `dedup working, not a failed payment. Do NOT retry on any rail or by any path: not with a ` +
             `fresh invoice (a new payment hash escapes dedup = a real second payment) and not via the ` +
-            `raw SDK. Verify via the balance delta or transfer list.`,
+            `raw SDK. Verify it in agent.getTransfers(): the transfer whose id is err.transferId.`,
             { cause: err },
           ),
           "PAYMENT_ALREADY_SETTLED",
+          // The operators refused this id as a duplicate transfer key, so the
+          // payment's transfer carries it as its id (REGTEST, 2026-10-30).
+          // "Confirm it in getTransfers()" gave an agent nothing to match on
+          // (eval 64): a transfer record carries no invoice.
+          { transferId: resolved.transferId, invoiceHash: invoicePaymentHash(bolt11) ?? undefined },
         );
       }
       if (provesNothingSent(err)) await forgetIfMinted();

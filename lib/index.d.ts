@@ -672,6 +672,8 @@ export interface AgentError<C extends AgentErrorCode = AgentErrorCode> extends E
   sendId?: string;
   /** The invoice's payment hash (hex). */
   invoiceHash?: string;
+  /** PAYMENT_ALREADY_SETTLED: the payment's transfer id (the recorded dedup id); find it in agent.getTransfers() by `id`. */
+  transferId?: string;
   /** PAYMENT_COMMITTED: why (PaymentCommittedError lists the values). */
   reason?: string;
   /** LIGHTNING_PAYMENT_FAILED: the send's final status. SERVICE_RESPONSE_INVALID, and PAYMENT_COMMITTED with reason L402_PASS_REFUSED: the HTTP status. */
