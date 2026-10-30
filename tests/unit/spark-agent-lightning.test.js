@@ -7,12 +7,13 @@
 import { createHash } from "node:crypto";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync } from "node:fs";
-import { mkdtemp, readdir } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { UUID, SparkWallet, decodeSparkAddress } from "@buildonspark/spark-sdk";
 import { decode } from "light-bolt11-decoder";
 import { decodeInvoiceSats, invoicePaymentHash, paymentHashMatches } from "../../lib/bolt11.js";
+import { invoiceDedupKey } from "../../lib/transfer-ids.js";
 import { SparkAgent } from "../../skills/sparkbtcbot/scripts/spark-agent.js";
 import { freshInvoice, amountlessInvoice } from "../helpers/bolt11.js";
 
@@ -1025,6 +1026,41 @@ describe("payment-safety edges", () => {
     }
     expect(attempts).toBe(1);
   }));
+
+  // Review 2026-10-28 (F31): the same retry when the entry recording that
+  // earlier attempt can't be read. It may record a payment that went through,
+  // so it counts as an attempt on record, not as "no earlier attempt". Two
+  // ways to break it: the OS refuses the read (a directory at the entry path,
+  // EISDIR, which root gets too), and the file isn't a valid entry.
+  for (const [how, breakIt] of [
+    ["the OS refuses to read it (EISDIR)", async (path) => { await unlink(path); await mkdir(path); }],
+    ["it is corrupt JSON", (path) => writeFile(path, "{corrupted")],
+  ]) {
+    it(`an expired invoice whose earlier attempt's entry can't be read is still PAYMENT_COMMITTED: ${how}`, () => withFreshDedup(async () => {
+      const now = Math.floor(Date.now() / 1000);
+      const inv = freshInvoice(KNOWN_INVOICE, now - 3600 + 90); // 90 s left
+      let attempts = 0;
+      process.env.SPARK_LEAF_VAULT = "off";
+      const wallet = {
+        getSparkAddress: async () => "sp1from",
+        getLightningSendFeeEstimate: async () => 5,
+        payLightningInvoice: async () => { attempts++; throw new Error("deadline exceeded"); }, // outcome unknown
+      };
+      const agent = new SparkAgent(wallet, "MAINNET");
+      await expect(agent.payLightningInvoice(inv, { maxAmountSats: 5000 })).rejects.toMatchObject({ code: "PAYMENT_COMMITTED" });
+      await breakIt(join(process.env.SPARK_LN_DEDUP_PATH, `${invoiceDedupKey(inv)}.json`));
+      const clock = vi.spyOn(Date, "now").mockReturnValue((now + 180) * 1000); // the invoice has expired
+      try {
+        await expect(agent.payLightningInvoice(inv, { maxAmountSats: 5000 })).rejects.toMatchObject({
+          code: "PAYMENT_COMMITTED", retryable: "check-first", reason: "INVOICE_EXPIRED_AFTER_ATTEMPT", settled: null,
+          message: expect.stringMatching(/transferId unreadable\).*getTransfers/s),
+        });
+      } finally {
+        clock.mockRestore();
+      }
+      expect(attempts).toBe(1);
+    }));
+  }
 
   // ToB review of 9bc0f22..f88fbec (F2): the dedup id was minted before the
   // budget check, so an attempt the budget refused (or the SDK refused before

@@ -5,11 +5,46 @@
 // CLOSED on anything ambiguous — an unreadable entry, a disagreeing explicit
 // id — because minting a fresh id for an invoice that may already have a
 // payment in flight is exactly the failure it exists to prevent.
-import { describe, it, expect } from "vitest";
-import { mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
+import { describe, it, expect, vi, afterEach } from "vitest";
+import { chmod, mkdir, mkdtemp, readFile, readdir, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createTransferIdStore, invoiceDedupKey } from "../../lib/transfer-ids.js";
+
+// A pass-through atomic-file: it counts the exclusive publishes that lost to
+// EEXIST, so the race test can show the race path really ran, and it can run a
+// step just before an exclusive publish or just after one loses, so a racer
+// can be placed exactly between the store's read and its write, or between its
+// EEXIST and its re-read. With no hook set it is the real module.
+const fsHooks = vi.hoisted(() => ({ beforeExclusive: null, afterEexist: null, eexist: 0 }));
+vi.mock("../../lib/atomic-file.js", async (importOriginal) => {
+  const real = await importOriginal();
+  return {
+    ...real,
+    atomicWriteFile: async (path, data, opts = {}) => {
+      if (opts.exclusive && fsHooks.beforeExclusive) {
+        const hook = fsHooks.beforeExclusive;
+        fsHooks.beforeExclusive = null;
+        await hook(path);
+      }
+      try {
+        return await real.atomicWriteFile(path, data, opts);
+      } catch (err) {
+        if (opts.exclusive && err?.code === "EEXIST") {
+          fsHooks.eexist++;
+          const hook = fsHooks.afterEexist;
+          fsHooks.afterEexist = null;
+          if (hook) await hook(path);
+        }
+        throw err;
+      }
+    },
+  };
+});
+afterEach(() => {
+  fsHooks.beforeExclusive = null;
+  fsHooks.afterEexist = null;
+});
 
 // Amount-ful sample (2,000 sats embedded) from light-bolt11-decoder's README —
 // decodable, so it keys by payment hash. Long expired, which must NOT stop
@@ -63,11 +98,43 @@ describe("idForInvoice", () => {
 
   it("concurrent racers converge on ONE id (the exclusive-link EEXIST path)", async () => {
     const store = createTransferIdStore({ dir: await tmp() });
+    fsHooks.eexist = 0;
     const results = await Promise.all(
       Array.from({ length: 5 }, () => store.idForInvoice(DECODABLE, mint)),
     );
     const ids = new Set(results.map((r) => r.transferId));
     expect(ids.size).toBe(1);
+    // Exactly one racer minted. A loser that reported reused:false would let
+    // its forgetIfMinted delete the winner's entry while the winner pays
+    // (review 2026-10-28, F32).
+    expect(results.filter((r) => !r.reused)).toHaveLength(1);
+    expect(fsHooks.eexist).toBeGreaterThan(0); // the losers really took the EEXIST path
+  });
+
+  // Review 2026-10-28 (F32): the same two race outcomes, placed exactly.
+  it("a racer that publishes between this attempt's read and its write wins: its id, reused", async () => {
+    const dir = await tmp();
+    const winnerId = mint();
+    fsHooks.beforeExclusive = () => createTransferIdStore({ dir }).idForInvoice(DECODABLE, () => winnerId);
+    fsHooks.eexist = 0;
+    const loser = await createTransferIdStore({ dir }).idForInvoice(DECODABLE, mint);
+    expect(fsHooks.eexist).toBe(1); // this attempt lost the exclusive publish
+    expect(loser).toEqual({ transferId: winnerId, reused: true });
+  });
+
+  it("a racer that publishes and then forgets its entry mid-race is CONCURRENT_PAYMENT_ATTEMPT, never a fresh id", async () => {
+    const dir = await tmp();
+    const winner = createTransferIdStore({ dir });
+    const winnerId = mint();
+    let forgot = null;
+    fsHooks.beforeExclusive = () => winner.idForInvoice(DECODABLE, () => winnerId); // published before the loser's write...
+    fsHooks.afterEexist = async () => { forgot = await winner.forget(DECODABLE, winnerId); }; // ...gone before its re-read
+    const err = await createTransferIdStore({ dir }).idForInvoice(DECODABLE, mint).then(() => null, (e) => e);
+    expect(forgot).toBe(true);
+    expect(err).toMatchObject({ code: "CONCURRENT_PAYMENT_ATTEMPT", retryable: "check-first", osCode: "EEXIST" });
+    expect(err.message).toMatch(/refusing to mint a fresh transferId while that attempt may be paying/);
+    expect(err.cause).toMatchObject({ code: "EEXIST" });
+    expect(await readdir(dir)).toEqual([]); // and no id of the loser's was written in its place
   });
 
   it("records an explicit id, and REFUSES a later disagreeing one", async () => {
@@ -220,5 +287,52 @@ describe("peek", () => {
     const { transferId } = await store.idForInvoice(DECODABLE, mint);
     expect(await store.peek(DECODABLE)).toMatchObject({ transferId });
     expect(await store.peek("")).toBeNull();
+  });
+});
+
+// Review 2026-10-28 (F31): the corrupt-JSON tests above take the parse branch.
+// An entry the OS refuses to read takes the other one, and must fail closed
+// the same way: it may record an attempt that paid. A directory at the entry
+// path makes readFile fail with EISDIR, which root gets too (CI runs as root,
+// and root ignores chmod).
+describe("an entry the OS refuses to read", () => {
+  const brokenEntry = async (breakIt) => {
+    const dir = await tmp();
+    const store = createTransferIdStore({ dir });
+    const { transferId } = await store.idForInvoice(DECODABLE, mint);
+    const path = join(dir, `${invoiceDedupKey(DECODABLE)}.json`);
+    await breakIt(path);
+    return { store, path, transferId };
+  };
+  const dirAtEntryPath = async (path) => { await unlink(path); await mkdir(path); };
+
+  it("idForInvoice: DEDUP_ENTRY_UNREADABLE check-first with the OS code, and no fresh id minted", async () => {
+    const { store } = await brokenEntry(dirAtEntryPath);
+    let minted = 0;
+    const err = await store.idForInvoice(DECODABLE, () => { minted++; return mint(); }).then(() => null, (e) => e);
+    expect(err).toMatchObject({ code: "DEDUP_ENTRY_UNREADABLE", retryable: "check-first", osCode: "EISDIR" });
+    expect(err.cause).toMatchObject({ code: "EISDIR" });
+    expect(err.message).toMatch(/^transfer-ids: cannot read the dedup entry .*SPARK_LN_DEDUP_PATH/s);
+    expect(err.nextStep).toMatch(/may have paid it: check getTransfers\(\)/);
+    expect(err.nextStep).not.toMatch(/^Nothing was sent/); // STORAGE_ERROR's promise is false here
+    expect(minted).toBe(0);
+  });
+
+  it("peek: DEDUP_ENTRY_UNREADABLE, never null ('no attempt on record')", async () => {
+    const { store } = await brokenEntry(dirAtEntryPath);
+    const err = await store.peek(DECODABLE).then((v) => ({ resolved: v }), (e) => e);
+    expect(err).toMatchObject({ code: "DEDUP_ENTRY_UNREADABLE", retryable: "check-first", osCode: "EISDIR" });
+  });
+
+  // chmod means nothing to root, so this one pins EACCES only where it can.
+  it.skipIf(process.getuid?.() === 0)("an unreadable-by-permission entry is DEDUP_ENTRY_UNREADABLE (EACCES), and its id survives", async () => {
+    const { store, path, transferId } = await brokenEntry((p) => chmod(p, 0o000));
+    try {
+      await expect(store.idForInvoice(DECODABLE, mint)).rejects.toMatchObject({ code: "DEDUP_ENTRY_UNREADABLE", retryable: "check-first", osCode: "EACCES" });
+      await expect(store.peek(DECODABLE)).rejects.toMatchObject({ code: "DEDUP_ENTRY_UNREADABLE", osCode: "EACCES" });
+    } finally {
+      await chmod(path, 0o600);
+    }
+    expect(JSON.parse(await readFile(path, "utf8")).transferId).toBe(transferId);
   });
 });

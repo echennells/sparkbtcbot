@@ -8,7 +8,7 @@ import { mkdtemp, rm, readFile, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SparkValidationError, SparkRequestError, decodeSparkAddress, encodeSparkAddress } from "@buildonspark/spark-sdk";
-import { PRE_SEND_VALIDATION_MESSAGES, provesNothingSent, PaymentCommittedError } from "../../lib/payment-outcome.js";
+import { PRE_SEND_VALIDATION_MESSAGES, provesNothingSent, preSendCode, PaymentCommittedError } from "../../lib/payment-outcome.js";
 import { SparkAgent } from "../../skills/sparkbtcbot/scripts/spark-agent.js";
 import { freshInvoice } from "../helpers/bolt11.js";
 
@@ -37,6 +37,27 @@ describe("provesNothingSent", () => {
     expect(provesNothingSent(new Error("Total target amount exceeds available balance"))).toBe(false); // right words, wrong type
     expect(provesNothingSent(new Error("deadline exceeded"))).toBe(false);
     expect(provesNothingSent(undefined)).toBe(false);
+  });
+
+  // Review 2026-10-28 (F36): the SDK formats a wrapped error as
+  // `${message}: ${originalError.message} [context]`, so an error raised
+  // after a request went out can quote a pre-send phrase mid-message. Only a
+  // message that STARTS with a listed phrase is proof.
+  it("matches a listed phrase only at the start, not quoted inside a post-send error", () => {
+    const quoting = [
+      new SparkValidationError("No transfer response from operator", { error: new Error("Total target amount exceeds available balance") }),
+      new SparkValidationError("No transfer response from operator: Invalid amount"),
+      new SparkValidationError("SSP coop exit response missing L1 transaction fields", { value: "Invalid exit speed" }),
+    ];
+    // the SDK's own formatter really puts the phrase after other text
+    expect(quoting[0].message).toMatch(/^No transfer response from operator: Total target amount exceeds available balance/);
+    expect(quoting[2].message).toMatch(/^SSP coop exit response missing L1 transaction fields \[value: Invalid exit speed/);
+    for (const err of quoting) {
+      expect(provesNothingSent(err), err.message).toBe(false);
+      expect(preSendCode(err), err.message).toBeNull();
+    }
+    // the same phrase at the start still proves it
+    expect(provesNothingSent(new SparkValidationError("Total target amount exceeds available balance", { error: new Error("No transfer response from operator") }))).toBe(true);
   });
 
   it("every allowlisted message is still raised by the installed SDK (re-audit on a mismatch)", async () => {
@@ -113,6 +134,47 @@ describe("an unknown payment outcome stays counted against the budget", () => {
     const agent = new SparkAgent(wallet, "MAINNET");
     await expect(agent.payLightningInvoice(inv, { maxAmountSats: 3000 })).rejects.toMatchObject({ name: "SparkValidationError" });
     expect(await agent.spendStatus()).toMatchObject({ spentSats: 0 });
+  });
+
+  // F36 through the agent: a post-send error that quotes a pre-send phrase is
+  // an unknown outcome. The spend stays counted, and for Lightning the dedup
+  // entry stays, so the retry goes out under the same transferId.
+  const quotingPostSend = () =>
+    new SparkValidationError("No transfer response from operator", { error: new Error("Total target amount exceeds available balance") });
+
+  it("transfer: a post-send error quoting a pre-send phrase is PAYMENT_COMMITTED and stays counted", async () => {
+    const to = encodeSparkAddress({ identityPublicKey: "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798", network: "MAINNET" });
+    const wallet = {
+      getSparkAddress: async () => "sp1from",
+      transfer: async () => { throw quotingPostSend(); },
+    };
+    const agent = new SparkAgent(wallet, "MAINNET");
+    await expect(agent.transfer({ to, amount: 3000 })).rejects.toMatchObject({ code: "PAYMENT_COMMITTED", retryable: "check-first", settled: null });
+    expect(await agent.spendStatus()).toMatchObject({ spentSats: 3000 });
+  });
+
+  it("payLightningInvoice: the same error keeps the dedup entry, so the retry reuses the transferId", async () => {
+    const inv = await invoice2000();
+    const ids = [];
+    const wallet = {
+      getSparkAddress: async () => "sp1from",
+      getLightningSendFeeEstimate: async () => 5,
+      payLightningInvoice: async ({ transferId }) => {
+        ids.push(String(transferId));
+        if (ids.length === 1) throw quotingPostSend();
+        return { id: "pay-2", status: "LIGHTNING_PAYMENT_SUCCEEDED" };
+      },
+    };
+    const agent = new SparkAgent(wallet, "MAINNET");
+    await expect(agent.payLightningInvoice(inv, { maxAmountSats: 3000 })).rejects.toMatchObject({
+      code: "PAYMENT_COMMITTED", retryable: "check-first", settled: null, op: "lightning_pay",
+      message: expect.stringMatching(/Retrying THIS invoice through payLightningInvoice is safe/),
+    });
+    expect(await agent.spendStatus()).toMatchObject({ spentSats: 2000 });
+    expect(await readdir(join(dir, "ln-dedup"))).toHaveLength(1);
+    await expect(agent.payLightningInvoice(inv, { maxAmountSats: 3000 })).resolves.toMatchObject({ dedupReused: true });
+    expect(ids).toHaveLength(2);
+    expect(ids[1]).toBe(ids[0]);
   });
 
   // A typo'd address used to come back as PAYMENT_COMMITTED with the amount
