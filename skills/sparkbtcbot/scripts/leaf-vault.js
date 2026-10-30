@@ -715,7 +715,9 @@ export function enableLeafVault(wallet, { path = defaultVaultPath(), networkLabe
     dispose,
     ready,
     health: () => ({
-      healthy: consecutiveFailures === 0 && lastSuccessAt != null && consecutiveTransientSkips < maxConsecutiveFailures && anchorless.length === 0,
+      // Disposed (the agent's cleanup()): nothing backs up any more.
+      healthy: !disposed && consecutiveFailures === 0 && lastSuccessAt != null && consecutiveTransientSkips < maxConsecutiveFailures && anchorless.length === 0,
+      disposed,
       lastSuccessAt,
       consecutiveFailures,
       consecutiveTransientSkips,

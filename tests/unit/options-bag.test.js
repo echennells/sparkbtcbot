@@ -67,3 +67,17 @@ describe("option bags and BigInts never throw an uncoded TypeError", () => {
     expect(err?.code).not.toBe("BAD_INPUT"); // it went on to the payment checks
   });
 });
+
+// ToB review 2026-10-28 (F15): a bad pollMs or maxPolls polled about every
+// millisecond, or not at all, and returned settled: false at once.
+describe("payAndSettle poll options", () => {
+  it.each([
+    ["pollMs", "2s"], ["pollMs", -5], ["pollMs", 1.5], ["pollMs", 2 ** 31], ["pollMs", Infinity],
+    ["maxPolls", "thirty"], ["maxPolls", -1], ["maxPolls", 2.5], ["maxPolls", NaN],
+  ])("%s: %s is BAD_INPUT before anything is sent", async (name, value) => {
+    let sent = 0;
+    const agent = new SparkAgent({ payLightningInvoice: async () => { sent++; return {}; } }, "MAINNET");
+    await expect(agent.payAndSettle("lnbc1", { [name]: value })).rejects.toMatchObject({ code: "BAD_INPUT", field: name, retryable: "no" });
+    expect(sent).toBe(0);
+  });
+});

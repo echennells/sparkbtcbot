@@ -6,7 +6,7 @@
 // helpers it calls. The checks:
 //   1. the declared members are the runtime members (prototype incl.
 //      constructor, statics), both ways
-//   2. each member has exactly one @sideEffect read|receive|spend, and @throws
+//   2. each member has exactly one @sideEffect read|receive|spend|unlock, and @throws
 //      lines (or `@throws none`)
 //   3. every @throws code is in AgentErrorCode
 //   4. the module's function exports are its `export declare` functions, each tagged
@@ -54,7 +54,7 @@ const EXISTING_CODES = [
 ];
 // Node's own error codes, which the sources compare against (never raise).
 const OS_CODES = new Set(["ENOENT", "EEXIST", "EACCES", "EPERM", "ENOTDIR", "EISDIR"]);
-const SIDE_EFFECTS = new Set(["read", "receive", "spend"]);
+const SIDE_EFFECTS = new Set(["read", "receive", "spend", "unlock"]);
 
 // --- Reading the declarations ---
 
@@ -379,7 +379,7 @@ describe("spark-agent.d.ts ↔ the shipped SparkAgent", () => {
       "static create": "receive", // opening the wallet claims inbound transfers
       constructor: "read",
       cleanup: "read",
-      forgetL402: "read", // lifts a double-pay hold: the doc says only on the user's say-so
+      forgetL402: "unlock", // lifts a double-pay hold: the doc says only on the user's say-so
       getSingleUseDepositAddress: "receive",
       getWithdrawalFeeQuote: "read",
       claimDeposit: "receive",

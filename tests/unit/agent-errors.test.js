@@ -255,6 +255,16 @@ describe("annotateError", () => {
     const os = Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
     expect(storageError(os, "cannot read x")).toMatchObject({ message: "cannot read x", code: "STORAGE_ERROR", retryable: "no", osCode: "EACCES", cause: os });
   });
+
+  // The dedup store's read path passes its own code: an entry it can't read
+  // may record a paid attempt, so "Nothing was sent" would be false (review
+  // 2026-10-28, F31).
+  it("storageError keeps a code it is given, with that code's retryable and nextStep", () => {
+    const os = Object.assign(new Error("EISDIR: illegal operation on a directory, read"), { code: "EISDIR" });
+    const err = storageError(os, "m", { code: "DEDUP_ENTRY_UNREADABLE" });
+    expect(err).toMatchObject({ message: "m", code: "DEDUP_ENTRY_UNREADABLE", retryable: "check-first", osCode: "EISDIR", cause: os });
+    expect(err.nextStep).toBe(annotateError(new Error("x"), "DEDUP_ENTRY_UNREADABLE").nextStep);
+  });
 });
 
 describe("SDK errors: classified in place, never re-wrapped", () => {
@@ -275,6 +285,19 @@ describe("SDK errors: classified in place, never re-wrapped", () => {
     expect(isConnectionFailure(sspRefused())).toBe(false);
     expect(isConnectionFailure(new SparkAuthenticationError("Authentication failed", {}))).toBe(false);
     expect(isConnectionFailure(Object.assign(new Error("x"), { name: "ClientError", code: 3, details: "INVALID_ARGUMENT" }))).toBe(false);
+  });
+
+  // Review 2026-10-28 (F38): only "fetch failed" and gRPC 14 were pinned, so
+  // dropping any one OS code, or the whole OS-code check, passed the suite.
+  it("each connection OS code counts on a bare error, and inside an AggregateError's errors", () => {
+    for (const code of ["ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "ENOTFOUND"]) {
+      const os = Object.assign(new Error(`connect ${code} 127.0.0.1:9`), { code });
+      expect(isConnectionFailure(os), code).toBe(true);
+      // The aggregate carries no code of its own here, so only its errors can answer.
+      expect(isConnectionFailure(new Error("outer", { cause: new AggregateError([new Error("other"), os], "all attempts failed") })), `aggregate ${code}`).toBe(true);
+    }
+    expect(isConnectionFailure(Object.assign(new Error("x"), { code: "EACCES" }))).toBe(false);
+    expect(isConnectionFailure(new AggregateError([new Error("a"), Object.assign(new Error("b"), { code: "EPIPE" })]))).toBe(false);
   });
 
   it("SPARK_UNAVAILABLE ('yes') for a proven outage, SPARK_REFUSED ('no') for anything else", () => {
@@ -534,6 +557,22 @@ describe("SparkAgent: SDK errors on calls that move no money", () => {
     expect(await rejection(short.getWithdrawalFeeQuote(5_000, L1))).toMatchObject({ code: "INSUFFICIENT_FUNDS", retryable: "no" });
   });
 
+  // Review 2026-10-28 (F38): on Node 24, a socket reset while the SSP's reply
+  // body is read gives undici's TypeError("terminated") with the ECONNRESET as
+  // its cause, which the SDK wraps as SparkRequestError (the reviewers' probe
+  // reproduced it against a local server). It is an outage, not a refusal.
+  it("a reply cut off by ECONNRESET (TypeError 'terminated') is SPARK_UNAVAILABLE for the withdrawal quote", async () => {
+    const terminated = new TypeError("terminated", {
+      cause: Object.assign(new Error("read ECONNRESET"), { errno: -104, code: "ECONNRESET", syscall: "read" }),
+    });
+    const sdkErr = new SparkRequestError("Failed to execute GraphQL query", { method: "POST", error: terminated });
+    expect(sdkErr.originalError).toBe(terminated); // the SDK keeps it where isConnectionFailure looks
+    const err = await rejection(mkAgent({ getWithdrawalFeeQuote: async () => { throw sdkErr; } }).getWithdrawalFeeQuote(5_000, "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq"));
+    expect(err).toBe(sdkErr);
+    expect(err).toMatchObject({ name: "SparkRequestError", code: "SPARK_UNAVAILABLE", retryable: "check-first" });
+    expect(err.nextStep).toMatch(/^Spark couldn't be reached while pricing the withdrawal/);
+  });
+
   it("the same outage on the send itself is PAYMENT_COMMITTED, never 'yes'", async () => {
     const err = await rejection(mkAgent({ payLightningInvoice: async () => { throw operatorsDown(); } }).payLightningInvoice(INVOICE_2000_SATS));
     expect(err).toBeInstanceOf(PaymentCommittedError);
@@ -570,6 +609,20 @@ describe("money in doubt is check-first", () => {
       .toMatchObject({ name: "SparkValidationError", code: "FEE_OVER_LIMIT", retryable: "no" });
     expect(await rejection(mkAgent(wallet(new Error("Failed to claim static deposit"))).claimDeposit({ txid: TX })))
       .toMatchObject({ code: "CLAIM_OUTCOME_UNKNOWN", retryable: "check-first", nextStep: expect.stringMatching(/listPendingDeposits\(\)/) });
+    // Only the fee message is FEE_OVER_LIMIT, not every SparkValidationError
+    // the claim raises (review 2026-10-28, F37). "Invalid transaction hex" is
+    // a real SDK message from the same claim path.
+    const badHex = await rejection(mkAgent(wallet(new SparkValidationError("Invalid transaction hex", { field: "txHex" }))).claimDeposit({ txid: TX }));
+    expect(badHex).toMatchObject({ name: "SparkValidationError", code: "CLAIM_OUTCOME_UNKNOWN", retryable: "check-first" });
+    expect(badHex.nextStep).not.toMatch(/maxFeeSats/);
+  });
+
+  it("the SDK still raises the claim's fee message the FEE_OVER_LIMIT carve-out matches", async () => {
+    const dist = join(ROOT, "node_modules", "@buildonspark", "spark-sdk", "dist");
+    const files = (await readdir(dist)).filter((f) => f.endsWith(".js"));
+    const src = (await Promise.all(files.map((f) => readFile(join(dist, f), "utf8")))).join("\n");
+    expect(src.includes('new SparkValidationError("Fee larger than max fee"'), "re-audit claimDeposit's FEE_OVER_LIMIT carve-out").toBe(true);
+    expect(src.includes('SparkValidationError("Invalid transaction hex"'), "the test above uses a message the SDK no longer raises").toBe(true);
   });
 
   it("TRANSFER_ID_CONFLICT: another invoice's id is check-first; another id for this invoice is 'no'", async () => {
@@ -676,5 +729,53 @@ describe("source ratchet", () => {
     }
     expect(used.size).toBeGreaterThan(30);
     expect([...used].filter((c) => !Object.hasOwn(AGENT_ERRORS, c))).toEqual([]);
+  });
+});
+
+// ToB review 2026-10-28 (F16): annotateError is public, and relabelling a
+// check-first error with a "yes" code lowered it, in production too (vitest
+// always runs strict mode, so these clear NODE_ENV and VITEST).
+describe("annotateError never lowers an error's own retryable", () => {
+  const saved = {};
+  const production = () => {
+    for (const k of ["NODE_ENV", "VITEST"]) { saved[k] = process.env[k]; delete process.env[k]; }
+  };
+  afterEach(() => {
+    for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  });
+
+  it("a PAYMENT_COMMITTED relabelled SPARK_UNAVAILABLE stays check-first (production)", () => {
+    const committed = new PaymentCommittedError("outcome unknown", { settled: null, op: "transfer" });
+    production();
+    const e = annotateError(committed, "SPARK_UNAVAILABLE");
+    expect(e).toMatchObject({ code: "SPARK_UNAVAILABLE", retryable: "check-first" });
+    expect(e.nextStep.endsWith(CHECK_FIRST_TAIL)).toBe(true);
+  });
+
+  it("the same through a wrapper (a frozen error) keeps the level", () => {
+    const frozen = Object.freeze(Object.assign(new Error("frozen"), { retryable: "check-first" }));
+    production();
+    expect(annotateError(frozen, "SPARK_UNAVAILABLE")).toMatchObject({ retryable: "check-first", cause: frozen });
+  });
+
+  it("an explicit lower value is refused (strict throws; production keeps the safer level)", () => {
+    const committed = new PaymentCommittedError("outcome unknown", { settled: null, op: "transfer" });
+    expect(() => annotateError(committed, "SPARK_UNAVAILABLE", { retryable: "yes" })).toThrow(/can't be made retryable "yes"/);
+    production();
+    expect(annotateError(committed, "SPARK_UNAVAILABLE", { retryable: "yes" }).retryable).toBe("check-first");
+  });
+
+  it("a value nobody can read is check-first in production, whatever the code's default", () => {
+    production();
+    for (const bad of ["check_first", true, "maybe"]) {
+      expect(annotateError(new Error("x"), "SPARK_UNAVAILABLE", { retryable: bad }).retryable).toBe("check-first");
+    }
+  });
+
+  it("a lower value the registry allows still applies, and a `code` in the facts can't replace the code", () => {
+    const failed = annotateError(new Error("Lightning payment failed"), "LIGHTNING_PAYMENT_FAILED", { retryable: "yes" });
+    expect(failed.retryable).toBe("yes");
+    const e = annotateError(new Error("x"), "BAD_INPUT", { field: "amount", code: "SPARK_UNAVAILABLE" });
+    expect(e).toMatchObject({ code: "BAD_INPUT", retryable: "no", field: "amount" });
   });
 });

@@ -214,3 +214,18 @@ describe("getBalance incomingSats", () => {
     expect(await agentWith({ available: 100n, owned: 100n }).getBalance()).toMatchObject({ incomingSats: "0" });
   });
 });
+
+// ToB review 2026-10-28 (F14): a token's balance is the SDK's ownedBalance,
+// which still counts the outputs of a send that isn't final; what a send can
+// use now was dropped.
+describe("getBalance token figures", () => {
+  it("each token has balance (owned) and available (sendable now)", async () => {
+    const tokenBalances = new Map([
+      ["btkn1abc", { ownedBalance: 1600n, availableToSendBalance: 1000n, tokenMetadata: { tokenName: "Test", tokenTicker: "TST", decimals: 2 } }],
+    ]);
+    const agent = new SparkAgent({ getBalance: async () => ({ satsBalance: { available: 0n, owned: 0n, incoming: 0n }, tokenBalances }) }, "MAINNET");
+    expect((await agent.getBalance()).tokens).toEqual({
+      btkn1abc: { balance: "1600", available: "1000", name: "Test", ticker: "TST", decimals: 2 },
+    });
+  });
+});

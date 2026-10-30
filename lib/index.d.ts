@@ -631,6 +631,7 @@ export type AgentErrorCode =
   | "LIGHTNING_PAYMENT_FAILED"
   | "PREIMAGE_MISMATCH"
   // Environment and services
+  | "AGENT_CLOSED"
   | "SPARK_UNAVAILABLE"
   | "SPARK_REFUSED"
   | "SERVICE_UNAVAILABLE"
@@ -732,11 +733,11 @@ export type StatusProblemCode =
 export const STATUS_PROBLEMS: Readonly<Record<StatusProblemCode, Readonly<{ blocking: boolean; nextStep: string }>>>;
 
 export interface AnnotateErrorOptions {
-  /** A SAFER value than the registry's default (yes → no → check-first), or one the entry allows. */
+  /** A SAFER value than the registry's default and the error's own retryable (yes → no → check-first), or a lower one the entry allows. An unrecognised value is check-first. */
   retryable?: Retryable;
   /** A more specific sentence than the registry's. */
   nextStep?: string;
-  /** Any other key is a fact set on the error (field, osCode, sendId, invoiceHash, …). */
+  /** Any other key except `code` is a fact set on the error (field, osCode, sendId, invoiceHash, …). */
   [fact: string]: unknown;
 }
 
@@ -745,8 +746,9 @@ export interface AnnotateErrorOptions {
  * `throw annotateError(new Error("…"), "BAD_INPUT", { field: "amount" })`.
  * Class, message, stack and cause stay as they are. Something that isn't an
  * extensible object (a thrown string, a frozen error) comes back wrapped in a
- * new Error with it as `cause`. Under test an unregistered code, or a less
- * safe retryable, throws.
+ * new Error with it as `cause`. A relabelled error never becomes less safe
+ * than the retryable it already carries. Under test an unregistered code, or
+ * a less safe retryable, throws.
  */
 export function annotateError<E extends Error>(err: E, code: AgentErrorCode, options?: AnnotateErrorOptions): E & AgentError;
 export function annotateError(err: unknown, code: AgentErrorCode, options?: AnnotateErrorOptions): Error & AgentError;

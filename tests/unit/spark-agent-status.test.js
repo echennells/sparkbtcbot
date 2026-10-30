@@ -200,11 +200,39 @@ describe("status(): AGENT_CLOSED", () => {
     });
   });
 
-  it("the backup reads off, though the stopped vault still calls itself healthy", async () => {
+  it("the backup reads off once the agent is closed", async () => {
     const { agent } = await connected();
     await agent.cleanup();
     at(5 * MIN);
     expect((await agent.status()).backup).toEqual({ state: "off", ageMinutes: 5, lastError: null });
+  });
+
+  // ToB review 2026-10-28 (F22): only status() knew the agent was closed. The
+  // SDK recreates its clients on demand, so reads, receives and sends still
+  // reached Spark after cleanup(), with the backup already stopped.
+  it("after cleanup(): money methods refuse before any call, anything else is AGENT_CLOSED, and a second cleanup() does nothing", async () => {
+    const { agent, wallet } = await connected();
+    await Promise.all([agent.cleanup(), agent.cleanup()]);
+    await agent.cleanup();
+    expect(wallet.cleanup).toHaveBeenCalledTimes(1);
+    for (const fn of Object.values(wallet)) if (vi.isMockFunction(fn)) fn.mockClear();
+    const fetched = vi.fn();
+    vi.stubGlobal("fetch", fetched);
+    try {
+      const other = testSparkAddress("REGTEST", "02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5");
+      for (const [name, call] of [
+        ["transfer", () => agent.transfer({ to: other, amount: 100 })],
+        ["fetchL402", () => agent.fetchL402("https://api.example/paid", { maxAmountSats: 3000 })],
+      ]) {
+        await expect(call(), name).rejects.toMatchObject({ code: "AGENT_CLOSED", retryable: "no", message: expect.stringMatching(/Nothing was sent/) });
+      }
+      await expect(agent.getBalance()).rejects.toMatchObject({ code: "AGENT_CLOSED", retryable: "check-first" });
+      await expect(agent.createLightningInvoice(1000, "after close")).rejects.toMatchObject({ code: "AGENT_CLOSED" });
+      for (const [name, fn] of Object.entries(wallet)) if (vi.isMockFunction(fn)) expect(fn, name).not.toHaveBeenCalled();
+      expect(fetched).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
 

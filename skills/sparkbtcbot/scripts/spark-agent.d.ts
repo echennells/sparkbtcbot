@@ -4,6 +4,8 @@
 //   @sideEffect read     moves no value (it may still call Spark or a service)
 //   @sideEffect receive  can bring value in or create a way to receive it
 //   @sideEffect spend    can send value out
+//   @sideEffect unlock   moves no value, but lifts a guard against paying twice
+//                        (forgetL402): gate it like a spend
 //   @dryRun read         with { dryRun: true } it is a read: a preview, nothing sent
 //   @throws {T} CODE     each `err.code` it can throw (AgentError, lib/index.d.ts);
 //                        `@throws none` when it throws nothing of its own
@@ -68,8 +70,12 @@ export interface SatsFigures {
 }
 
 export interface SparkAgentBalance extends SatsFigures {
-  /** Keyed by bech32m token identifier; `balance` is the owned balance in base units. */
-  tokens: Record<string, { balance: string; name: string; ticker: string; decimals: number }>;
+  /**
+   * Keyed by bech32m token identifier, in base units. `balance` is owned,
+   * including outputs of a token send that isn't final; `available` is what a
+   * send can use now. Neither proves a send left: getTokenTransactions() does.
+   */
+  tokens: Record<string, { balance: string; available: string; name: string; ticker: string; decimals: number }>;
 }
 
 export interface PendingDeposit {
@@ -132,6 +138,8 @@ export type VaultHealth =
   | { disabled: true }
   | {
       healthy: boolean;
+      /** Stopped by cleanup(): nothing backs up any more, so never healthy. */
+      disposed: boolean;
       lastSuccessAt: number | null;
       consecutiveFailures: number;
       consecutiveTransientSkips: number;
@@ -227,7 +235,9 @@ export interface PayLightningInvoiceOptions {
   dryRun?: boolean;
 }
 export interface PayAndSettleOptions extends PayLightningInvoiceOptions {
+  /** Milliseconds between status reads (default 2000): a whole number, 0 or more, else BAD_INPUT before the send. */
   pollMs?: number;
+  /** Status reads before returning settled: false (default 30; 0 skips them): a whole number, else BAD_INPUT before the send. */
   maxPolls?: number;
 }
 export interface FulfillInvoiceOptions {
@@ -535,6 +545,7 @@ export declare class SparkAgent {
    * @throws {AgentError} SPARK_UNAVAILABLE
    * @throws {AgentError} SPARK_REFUSED
    * @throws {PaymentCommittedError} PAYMENT_COMMITTED
+   * @throws {AgentError} AGENT_CLOSED
    */
   transfer(options: TransferOptions & { dryRun: true }): Promise<TransferPreview>;
   transfer(options: TransferOptions & { dryRun?: false }): Promise<WalletTransfer>;
@@ -628,6 +639,7 @@ export declare class SparkAgent {
    * @throws {AgentError} DEDUP_ENTRY_UNREADABLE
    * @throws {AgentError} PAYMENT_ALREADY_SETTLED
    * @throws {PaymentCommittedError} PAYMENT_COMMITTED
+   * @throws {AgentError} AGENT_CLOSED
    */
   payLightningInvoice(bolt11: string, options: PayLightningInvoiceOptions & { dryRun: true }): Promise<LightningPayPreview>;
   payLightningInvoice(bolt11: string, options?: PayLightningInvoiceOptions & { dryRun?: false }): Promise<LightningPayResult>;
@@ -680,6 +692,7 @@ export declare class SparkAgent {
    * @throws {AgentError} LIGHTNING_PAYMENT_FAILED
    * @throws {AgentError} PREIMAGE_MISMATCH
    * @throws {PaymentCommittedError} PAYMENT_COMMITTED
+   * @throws {AgentError} AGENT_CLOSED
    */
   payAndSettle(bolt11: string, options: PayAndSettleOptions & { dryRun: true }): Promise<LightningPayPreview>;
   payAndSettle(bolt11: string, options?: PayAndSettleOptions & { dryRun?: false }): Promise<SettleResult>;
@@ -723,6 +736,7 @@ export declare class SparkAgent {
    * @throws {AgentError} SPARK_UNAVAILABLE
    * @throws {AgentError} SPARK_REFUSED
    * @throws {PaymentCommittedError} PAYMENT_COMMITTED
+   * @throws {AgentError} AGENT_CLOSED
    */
   fulfillInvoice(invoices: FulfillInvoiceEntry[], options: FulfillInvoiceOptions & { dryRun: true }): Promise<FulfillPreview>;
   fulfillInvoice(invoices: FulfillInvoiceEntry[], options?: FulfillInvoiceOptions & { dryRun?: false }): Promise<FulfillSparkInvoiceResponse>;
@@ -743,6 +757,7 @@ export declare class SparkAgent {
    * @throws {AgentError} SPARK_UNAVAILABLE
    * @throws {AgentError} SPARK_REFUSED
    * @throws {PaymentCommittedError} PAYMENT_COMMITTED
+   * @throws {AgentError} AGENT_CLOSED
    */
   transferTokens(options: TransferTokensOptions & { dryRun: true }): Promise<TokenTransferPreview>;
   transferTokens(options: TransferTokensOptions & { dryRun?: false }): Promise<string>;
@@ -763,6 +778,7 @@ export declare class SparkAgent {
    * @throws {AgentError} SPARK_UNAVAILABLE
    * @throws {AgentError} SPARK_REFUSED
    * @throws {PaymentCommittedError} PAYMENT_COMMITTED
+   * @throws {AgentError} AGENT_CLOSED
    */
   batchTransferTokens(transfers: BatchTokenEntry[], options: BatchTransferTokensOptions & { dryRun: true }): Promise<BatchTokenTransferPreview>;
   batchTransferTokens(transfers: BatchTokenEntry[], options?: BatchTransferTokensOptions & { dryRun?: false }): Promise<string>;
@@ -784,6 +800,7 @@ export declare class SparkAgent {
    * @throws {AgentError} SPARK_UNAVAILABLE
    * @throws {AgentError} SPARK_REFUSED
    * @throws {AgentError} CLAIM_OUTCOME_UNKNOWN
+   * @throws {AgentError} AGENT_CLOSED
    */
   claimDeposit(options: ClaimDepositOptions & { dryRun: true }): Promise<ClaimPreview>;
   claimDeposit(options: ClaimDepositOptions & { dryRun?: false }): Promise<ClaimStaticDepositOutput | null>;
@@ -826,6 +843,7 @@ export declare class SparkAgent {
    * @throws {AgentError} SPARK_UNAVAILABLE
    * @throws {AgentError} SPARK_REFUSED
    * @throws {PaymentCommittedError} PAYMENT_COMMITTED
+   * @throws {AgentError} AGENT_CLOSED
    */
   withdraw(options: WithdrawOptions & { dryRun: true }): Promise<WithdrawPreview>;
   withdraw(options: WithdrawOptions & { dryRun?: false }): Promise<CoopExitRequest>;
@@ -887,6 +905,7 @@ export declare class SparkAgent {
    * @throws {AgentError} DEDUP_ENTRY_UNREADABLE
    * @throws {AgentError} LIGHTNING_PAYMENT_FAILED
    * @throws {PaymentCommittedError} PAYMENT_COMMITTED
+   * @throws {AgentError} AGENT_CLOSED
    */
   fetchL402(url: string, options?: FetchL402Options): Promise<L402Result>;
 
@@ -897,7 +916,7 @@ export declare class SparkAgent {
    * second purchase if the earlier payment went through. Call it only on the
    * user's say-so. Removes the hold's file too (~/.spark/l402-holds/), so no
    * later process finishes it either. Returns whether anything was held.
-   * @sideEffect read
+   * @sideEffect unlock
    * @throws {AgentError} BAD_INPUT
    * @throws {AgentError} STORAGE_ERROR
    */

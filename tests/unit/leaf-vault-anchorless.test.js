@@ -150,9 +150,11 @@ describe("the continuous backup reports anchorless refunds", () => {
     const errors = [];
     const v = enableLeafVault(fixtureWallet("regtest-ladder-off").wallet, { path: join(dir, "current.json"), networkLabel: "REGTEST", intervalMs: 3_600_000, onError: (e) => errors.push(e) });
     expect(await v.ready).toEqual({ ok: true });
-    expect(v.health()).toMatchObject({ healthy: true, anchorless: [] });
+    expect(v.health()).toMatchObject({ healthy: true, disposed: false, anchorless: [] });
     await v.dispose();
     expect(errors).toEqual([]);
+    // Stopped (the agent's cleanup()): nothing backs up any more (ToB review 2026-10-28, F22).
+    expect(v.health()).toMatchObject({ healthy: false, disposed: true });
   });
 });
 
@@ -208,7 +210,8 @@ describe("SparkAgent and a wallet opened with the ladders on", () => {
 // them hands the operators fee ladders and leaves anchorless refunds behind.
 describe("every wallet this package opens, or tells you to open, passes sparkWalletOptions", () => {
   const root = fileURLToPath(new URL("../../", import.meta.url));
-  const calls = (text) => [...text.matchAll(/\b(?:Issuer)?SparkWallet\.initialize\(\{([\s\S]*?)\}\);/g)].map((m) => m[1]);
+  // create() opens through capturingWallet(…), a SparkWallet subclass.
+  const calls = (text) => [...text.matchAll(/\b(?:(?:Issuer)?SparkWallet|capturingWallet\(.*?\))\.initialize\(\{([\s\S]*?)\}\);/g)].map((m) => m[1]);
   // Everything an agent runs or copies from; SKILL.md is loaded every session.
   const shipped = async () => {
     const { readdir, readFile } = await import("node:fs/promises");

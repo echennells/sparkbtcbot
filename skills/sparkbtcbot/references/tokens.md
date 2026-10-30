@@ -18,7 +18,7 @@ for (const [id, info] of tokenBalances) {
 }
 ```
 
-Each entry has `ownedBalance` (total) and `availableToSendBalance` (excludes pending outbound). For "what can I spend right now," use `availableToSendBalance`.
+Each entry has `ownedBalance` (total) and `availableToSendBalance` (excludes pending outbound). For "what can I spend right now," use `availableToSendBalance`; the agent's `getBalance().tokens[id]` gives both, as `balance` and `available`. Neither figure proves a send left (after a send in doubt, `balance` can read unchanged): `getTokenTransactions()` is the check.
 
 ## Transfer Tokens
 

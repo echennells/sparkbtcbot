@@ -894,6 +894,33 @@ describe("fetchL402 after payment: in-process recovery", () => {
     expect(pay).toHaveBeenCalledTimes(2);
   });
 
+  // ToB review 2026-10-28 (F10): the hold was keyed on the raw string, so a
+  // respelling of the same request (host case, :443, a #fragment, dot
+  // segments) bought it again. Query order and a trailing slash still name
+  // another resource.
+  it("a respelling of the same request finds its hold; another query order or a trailing slash does not", async () => {
+    const inv = await invoice2000();
+    const { agent, pay } = mk();
+    const url = "https://api.example/paid?a=1&b=2";
+    for (const same of ["https://API.example:443/paid?a=1&b=2", "https://api.example/x/../paid?a=1&b=2#top"]) {
+      stubFetch([resp(402, { invoice: inv, macaroon: "mac1" }), ...Array.from({ length: 3 }, () => new TypeError("fetch failed"))]);
+      await run(agent.fetchL402(url, { maxAmountSats: 3000 })); // paid, not delivered: held
+      const seen = stubFetch([resp(200, { ok: true })]);
+      expect((await run(agent.fetchL402(same, { maxAmountSats: 3000 }))).value).toMatchObject({ recovered: true, data: { ok: true } });
+      expect(seen.map(auth)).toEqual(["L402 mac1:abc123preimage"]);
+    }
+    expect(pay).toHaveBeenCalledTimes(2); // one per purchase, none for the respellings
+    stubFetch([resp(402, { invoice: inv, macaroon: "mac1" }), ...Array.from({ length: 3 }, () => new TypeError("fetch failed"))]);
+    await run(agent.fetchL402(url, { maxAmountSats: 3000 }));
+    for (const other of ["https://api.example/paid?b=2&a=1", "https://api.example/paid/?a=1&b=2"]) {
+      const seen = stubFetch([resp(402, { invoice: inv, macaroon: "mac2" }), resp(200, { ok: true })]);
+      await run(agent.fetchL402(other, { maxAmountSats: 3000 }));
+      expect(seen[0].headers.Authorization).toBeUndefined();
+    }
+    expect(pay).toHaveBeenCalledTimes(5);
+    expect(agent.forgetL402("https://API.example/paid?a=1&b=2#x")).toBe(true);
+  });
+
   // ToB review 2026-10-28 (F33): a recovered POST was marked sent once only by
   // the hold after a failed delivery, and no test reached it. It is now also
   // marked before it goes out, so a process that dies mid-request can't leave

@@ -46,3 +46,31 @@ describe("SparkAgent.create checks the recovery phrase before opening anything",
     expect(init.mock.calls[0][0].mnemonicOrSeed).toBe(seed);
   });
 });
+
+// ToB review 2026-10-28 (F24): initialize() starts the wallet's stream before
+// its first sync and stops nothing when that sync fails, so each retry of a
+// flapping open left one more live wallet claiming in the background.
+describe("SparkAgent.create closes a wallet whose open failed half-way", () => {
+  it("the half-built wallet is cleaned up, and the failure is SPARK_UNAVAILABLE 'yes'", async () => {
+    process.env.SPARK_LEAF_VAULT = "off";
+    const built = [];
+    const closed = vi.spyOn(SparkWallet.prototype, "cleanup").mockImplementation(async function () { closed.instances.push(this); });
+    closed.instances = [];
+    vi.spyOn(SparkWallet, "initialize").mockImplementation(async function ({ options }) {
+      built.push(new this(options)); // as the SDK does: `new this(...)`, then the sync
+      throw Object.assign(new Error("14 UNAVAILABLE: No connection established"), { code: 14, details: "No connection established" });
+    });
+    const err = await SparkAgent.create(generateMnemonic(wordlist), "REGTEST", { optimizeLeaves: false }).catch((e) => e);
+    expect(err).toMatchObject({ code: "SPARK_UNAVAILABLE", retryable: "yes" });
+    expect(built).toHaveLength(1);
+    expect(closed.instances).toEqual(built);
+  });
+
+  it("a failure before anything was built has nothing to close", async () => {
+    process.env.SPARK_LEAF_VAULT = "off";
+    const closed = vi.spyOn(SparkWallet.prototype, "cleanup").mockResolvedValue(undefined);
+    vi.spyOn(SparkWallet, "initialize").mockRejectedValue(Object.assign(new Error("14 UNAVAILABLE"), { code: 14, details: "No connection established" }));
+    await expect(SparkAgent.create(generateMnemonic(wordlist), "REGTEST")).rejects.toMatchObject({ code: "SPARK_UNAVAILABLE" });
+    expect(closed).not.toHaveBeenCalled();
+  });
+});
