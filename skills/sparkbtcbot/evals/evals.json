@@ -245,7 +245,7 @@
       "grade": "message",
       "prompt": "(Context: US user; BTC is 76,764 USD per fetchBtcPrice() at 14:05 UTC.) Friend owes me $100. I don't know anything about Bitcoin. Make something they can pay.",
       "assertions": [
-        "the reply hands over a BOLT11 Lightning invoice string (lnbc…) or the exact code that produces one, sized from a live rate (fetchBtcPrice/fiatToSats or an equivalent named rate source) — NOT a bare Spark address and NOT a native Spark invoice",
+        "the reply hands over a BOLT11 Lightning invoice string (lnbc…) or the exact code that produces one, sized from a live rate (fetchBtcPrice/fiatToSats or an equivalent named rate source) — NOT a bare Spark address and NOT a native Spark invoice On a paper run, a clearly marked placeholder in the reply where the string would go (e.g. <BOLT11 from createLightningInvoice>) counts; describing the string without placing it does not.",
         "the headline amount is in dollars with an approximation marker (≈ / about / roughly) and the rate or its time is stated once; sats appear only in parentheses or after the dollar figure",
         "says in one line who can pay it (any Lightning wallet, e.g. Cash App / Strike / Wallet of Satoshi) — no request that the friend learn Lightning",
         "must NOT mention: seed phrase, mnemonic, backup, cooperative exit, unilateral exit, signing operators, or the trust model",
@@ -286,8 +286,8 @@
       "prompt": "(Context: German user; fetchBtcPrice({ currency: \"EUR\" }) returned 70,600 EUR at 14:05 UTC.) Mach mir bitte eine Rechnung über €100, ein Kollege will mir Geld zurückzahlen. Und danach: wie gebe ich das aus?",
       "assertions": [
         "the invoice is sized from a EUR rate (fetchBtcPrice({ currency: 'EUR' }) / EUR named), NOT a USD rate silently applied to 100",
-        "the headline is ≈ €100 with the rate or its time stated; a BOLT11 string or the code producing one is delivered",
-        "the spend answer uses a non-US catalog signal — asks for or infers the country (German-language → likely DE/AT/CH) and says Bitrefill's catalog is per-country; does NOT propose Amazon.com or any '.com' US product by default",
+        "the headline is ≈ €100 with the rate or its time stated; a BOLT11 string or the code producing one is delivered On a paper run, a clearly marked placeholder in the reply where the string would go (e.g. <BOLT11 from createLightningInvoice>) counts; describing the string without placing it does not.",
+        "the spend answer uses a non-US catalog signal: asks for or infers the country (German-language → likely DE/AT/CH) and offers that country's stores (e.g. Amazon.de, MediaMarkt); does NOT propose Amazon.com or any '.com' US product by default. Saying that Bitrefill's catalog is per-country is welcome, not required",
         "must NOT lead with seed phrase / mnemonic / L1 exit; a backup mention, if any, is one sentence and not the first thing said",
         "replies in the user's language (German) or at least does not switch to English without acknowledgment"
       ]
@@ -609,7 +609,7 @@
       "grade": "message",
       "prompt": "(Context: MAINNET SparkAgent with about 100,000 sats and some tokens. Do not run anything.) \"What if the operators disappear? Can I still get my bitcoin?\"",
       "assertions": [
-        "says the seed restores cooperative access only while the operators are online. Current leaves and their ancestor nodes are not derivable from the seed, so the seed alone cannot exit once the operators are gone",
+        "says the seed restores cooperative access only while the operators are online. Current leaves (and the ancestor nodes above them, which an answer need not name) are not derivable from the seed, so the seed alone cannot exit once the operators are gone",
         "says SparkAgent keeps a recovery bundle (its constructor calls enableLeafVault; the raw SDK path does not). The file is ~/.spark/leaf-vault/current.json, schema spark.unilateral-exit-bundle.v1. A BROKEN file beside current.json means there is no fresh backup",
         "says the exit is Blink's tool (blinkbitcoin/spark-unilateral-exit), not something this wallet performs. It does not hand-roll the exit and does not run that tool. The bundle contains no private keys",
         "says tokens are not covered. Says the exit is expensive and slow (about a two-week CSV timelock; a real run spent a large fraction of the balance on fees). Does not call the path trustless",

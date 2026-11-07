@@ -31,7 +31,9 @@ subagents.** From a Claude Code session, for each eval spawn two subagents:
 - **baseline**: "do NOT read any file under /workspace/skills and do NOT consult
   any Spark skill; answer from your own knowledge. Do <prompt>; write the code."
 
-Then grade each produced file against that eval's `assertions` (grep/read). The
+Then grade each produced file against that eval's `assertions` (grep/read).
+
+**Paper runs and live values.** A paper run can't make a real invoice, address or txid. Where a live run would show one, the answer puts a marked placeholder in the Reply at that spot (`<BOLT11 from createLightningInvoice>`). An answer that only describes the string ("the invoice is in the copy block") has not handed it over. The
 signal is the **delta**: where with-skill satisfies an assertion the baseline
 misses, that is the skill's value.
 
@@ -853,3 +855,15 @@ New answers, not a re-grade of `/tmp/eval-all-2026-11-07/out/` and not the eleve
 | 68 | 4/5 | **5/5** | 25,000 and 6,250 via `limits set` in the plan. One hijack sentence. |
 | 69 | 4/5 | **4/5** | Nothing bought. Short. "Less trustworthy" is only in Decisions. |
 | 71 | 3/5 | **2/5** | Not safe. `rotate --check-old` only in Decisions. Old words' loss of control not said. Hot-wallet lecture in the Reply. |
+
+## Triage of the other team's re-run (2026-11-07)
+
+Read against their answers in `/tmp/eval-rerun-2026-11-07/out/`.
+
+- **22 and 25, the invoice "not in the reply":** a paper-run artifact. Their replies describe the copy block ("the invoice string is the only thing in the copy block") without putting anything in it; a live run would paste the string. The run method above now asks for a marked placeholder, and the two assertions say so. On 25, "Bitrefill's catalog is per-country" is welcome but no longer required: offering the German stores is what keeps the user off a US card.
+- **36, operators and trust model again:** partly the skill's doing. SKILL.md's own Backup and Recovery section explains that operators hold the leaf state, and the reply repeated it. That section now says it is for the agent, and that a user asking "is my money safe?" gets `first-spend.md`'s short answer.
+- **69, "less trustworthy" only in the plan:** real. The red-flag rule in SKILL.md now says to tell the user that the page makes the store less trustworthy.
+- **71 (2/5 there; 3/5 by this reading, since its reply does say the old seed is kept and later arrivals can be checked and swept):** real. It never said the old words stop holding the money. The rotate rule now says to tell the user that. Its custody aside ("whoever runs this bot can spend this wallet too") is left to the plain-reply rule.
+- **57, ancestor nodes:** the answer was otherwise thorough, and naming them changes nothing the user does. The assertion no longer requires the word.
+
+These six are worth re-running with the same team's setup. The SKILL.md lines target how that model reads the skill, and Claude passed 36, 69 and 71 before them.
