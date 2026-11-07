@@ -37,6 +37,14 @@ describeFunded("SDK refund fee ladder vs the leaf-vault (REGTEST)", () => {
     return { leaves, snap, verdict: await verifyVault(path) };
   };
 
+  const returnReceived = async () => {
+    const readAvailable = async () => (await payer.getBalance()).satsBalance.available;
+    const before = await readAvailable();
+    let returned = 0n;
+    for (const w of received.splice(0)) returned += await returnSats(w, payerAddress);
+    if (returned > 0n) await waitForClaimed(readAvailable, before + returned);
+  };
+
   // Reads the wallet's real SDK config, which a mock can't vouch for.
   const agentWarnsAboutLadders = (wallet) => {
     const orig = process.env.SPARK_LEAF_VAULT;
@@ -59,11 +67,7 @@ describeFunded("SDK refund fee ladder vs the leaf-vault (REGTEST)", () => {
   }, 90_000);
 
   afterAll(async () => {
-    const readAvailable = async () => (await payer.getBalance()).satsBalance.available;
-    const before = await readAvailable();
-    let returned = 0n;
-    for (const w of received) returned += await returnSats(w, payerAddress);
-    if (returned > 0n) await waitForClaimed(readAvailable, before + returned);
+    await returnReceived();
     try { await ladderOn?.cleanup(); } catch {}
     await cleanupAllWallets();
     if (dir) await rm(dir, { recursive: true, force: true });
@@ -79,6 +83,7 @@ describeFunded("SDK refund fee ladder vs the leaf-vault (REGTEST)", () => {
   }, 120_000);
 
   it("SDK defaults (ladder on): the 1,024+ sat leaves come back anchorless, and verify fails naming them", async () => {
+    await returnReceived(); // the same sats again: the suite needs 5,000 of float, not 10,000
     ({ wallet: ladderOn } = await SparkWallet.initialize({ options: { network: "REGTEST", optimizationOptions: { auto: false } } }));
     const { leaves, snap, verdict } = await receiveAndVerify(ladderOn, "on");
     const big = leaves.filter((l) => l.sats >= 1024).map((l) => l.id).sort();

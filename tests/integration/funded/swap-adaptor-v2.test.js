@@ -11,7 +11,18 @@ import { createTestWallet, cleanupAllWallets, getFundedMnemonic, waitForSettled,
 
 const fundedMnemonic = getFundedMnemonic();
 const describeFunded = fundedMnemonic ? describe : describe.skip;
-const FUNDING = 4_000n;
+const FUNDING = 2_000n;
+
+// An amount these leaves can't make, with up to `slack` sats of fee on top: a
+// fixed amount only swaps if the leaves happen not to fit it.
+const amountNeedingSwap = async (wallet, slack) => {
+  const values = (await wallet.getLeaves()).map((l) => Number(l.value));
+  const sums = values.reduce((all, v) => new Set([...all, ...[...all].map((s) => s + v)]), new Set([0]));
+  for (let amount = 300; amount < Number(FUNDING); amount++) {
+    if (!Array.from({ length: slack + 1 }, (_, fee) => amount + fee).some((total) => sums.has(total))) return amount;
+  }
+  throw new Error(`no amount needs a swap with leaves ${values}`);
+};
 
 class CountingSigner extends DefaultSparkSigner {
   v2 = 0;
@@ -23,7 +34,7 @@ class CountingSigner extends DefaultSparkSigner {
 
 describeFunded("leaf swaps on version 2 adaptor signing (REGTEST)", () => {
   const savedVault = process.env.SPARK_LEAF_VAULT;
-  const payers = [];
+  const wallets = []; // everything that may hold sats: returned in afterAll, whatever failed
   let funded;
   let fundedAddress;
 
@@ -32,10 +43,10 @@ describeFunded("leaf swaps on version 2 adaptor signing (REGTEST)", () => {
   const fundPayer = async () => {
     const signer = new CountingSigner();
     const { wallet } = await createTestWallet({ signer, walletOptions: { optimizationOptions: { auto: false } } });
-    payers.push(wallet);
+    wallets.push(wallet);
     await funded.transfer({ receiverSparkAddress: await wallet.getSparkAddress(), amountSats: Number(FUNDING) });
     expect(await waitForSettled(wallet, FUNDING, { timeoutMs: 60_000 })).toEqual({ available: FUNDING, incoming: 0n });
-    return { signer, agent: new SparkAgent(wallet, "REGTEST") };
+    return { wallet, signer, agent: new SparkAgent(wallet, "REGTEST") };
   };
 
   beforeAll(async () => {
@@ -49,7 +60,7 @@ describeFunded("leaf swaps on version 2 adaptor signing (REGTEST)", () => {
       const readAvailable = async () => (await funded.getBalance()).satsBalance.available;
       const before = await readAvailable();
       let returned = 0n;
-      for (const wallet of payers) returned += await returnSats(wallet, fundedAddress);
+      for (const wallet of wallets) returned += await returnSats(wallet, fundedAddress);
       if (returned > 0n) await waitForClaimed(readAvailable, before + returned);
     } finally {
       await cleanupAllWallets();
@@ -58,25 +69,27 @@ describeFunded("leaf swaps on version 2 adaptor signing (REGTEST)", () => {
   }, 180_000);
 
   it("a Spark transfer that doesn't match the leaves swaps, and arrives", async () => {
-    const { signer, agent } = await fundPayer();
+    const { wallet, signer, agent } = await fundPayer();
     expect(signer.v2).toBe(0);
+    const amount = await amountNeedingSwap(wallet, 0);
     const { wallet: receiver } = await createTestWallet();
-    await agent.transfer({ to: await receiver.getSparkAddress(), amount: 777 });
+    wallets.push(receiver);
+    await agent.transfer({ to: await receiver.getSparkAddress(), amount });
     expect(signer.v2).toBeGreaterThan(0);
-    expect(await waitForSettled(receiver, 777n, { timeoutMs: 60_000 })).toEqual({ available: 777n, incoming: 0n });
-    await returnSats(receiver, fundedAddress);
+    expect(await waitForSettled(receiver, BigInt(amount), { timeoutMs: 60_000 })).toEqual({ available: BigInt(amount), incoming: 0n });
   }, 180_000);
 
   it("a Lightning send that doesn't match the leaves swaps, and settles with its proof", async () => {
-    const { signer, agent } = await fundPayer();
+    const { wallet, signer, agent } = await fundPayer();
     expect(signer.v2).toBe(0);
+    const amount = await amountNeedingSwap(wallet, 8); // the fee on a few hundred sats is a few sats
     const { wallet: receiver } = await createTestWallet();
-    const req = await receiver.createLightningInvoice({ amountSats: 333, memo: "swap test", expirySeconds: 600 });
-    const paid = await agent.payAndSettle(req.invoice.encodedInvoice, { preferSpark: false, maxAmountSats: 333, maxFeeSats: 50 });
+    wallets.push(receiver);
+    const req = await receiver.createLightningInvoice({ amountSats: amount, memo: "swap test", expirySeconds: 600 });
+    const paid = await agent.payAndSettle(req.invoice.encodedInvoice, { preferSpark: false, maxAmountSats: amount, maxFeeSats: 50 });
     expect(paid).toMatchObject({ settled: true });
     expect(paid.paymentPreimage).toBeTruthy();
     expect(signer.v2).toBeGreaterThan(0);
-    expect(await waitForSettled(receiver, 333n, { timeoutMs: 60_000 })).toEqual({ available: 333n, incoming: 0n });
-    await returnSats(receiver, fundedAddress);
+    expect(await waitForSettled(receiver, BigInt(amount), { timeoutMs: 60_000 })).toEqual({ available: BigInt(amount), incoming: 0n });
   }, 180_000);
 });

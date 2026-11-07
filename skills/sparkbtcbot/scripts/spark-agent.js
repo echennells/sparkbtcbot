@@ -240,13 +240,20 @@ const LIGHTNING_SATS_RETURNED = "USER_SWAP_RETURNED";
 // ("preimage request already exists", AlreadyExists) before they create any
 // transfer: THAT attempt sent nothing, but an earlier one for the invoice is
 // still open. The Spark-fallback rail's dedup refusal reads "transfer already
-// exists" instead, and only that one, under an id the store proves was used
-// for this invoice, means settled.
+// exists", or (seen first on REGTEST on 2026-11-07) "transfer <id> cannot be
+// matched to this request": the operators' text, in no SDK version. Only that
+// one, under an id the store proves was used for this invoice, means settled.
 const PREIMAGE_REQUEST_EXISTS = /preimage request already exists/i;
 const TRANSFER_ALREADY_EXISTS = /transfer already exists/i;
 
 // Whether an error, or one it wraps (originalError, cause), says `re`. The
 // SDK appends the operators' text to its own message, but a wrapper may not.
+// The newer wording names the transfer, so it must name this one.
+function refusedAsDuplicate(err, transferId) {
+  return errorSays(err, TRANSFER_ALREADY_EXISTS) ||
+    errorSays(err, new RegExp(`transfer ${transferId} cannot be matched to this request`, "i"));
+}
+
 function errorSays(err, re) {
   for (let e = err, i = 0; e !== null && typeof e === "object" && i < 8; e = e.originalError ?? e.cause, i++) {
     if (re.test(String(e.message ?? ""))) return true;
@@ -2043,11 +2050,11 @@ export class SparkAgent {
       // surfaces it as a raw gRPC error that reads as the opposite of what
       // happened (2026-08-31 live QA + ToB sharp-edges F1). Translate it
       // HERE, where the wrapper holds the proof, and only on that rail's
-      // signature ("transfer already exists"). This attempt's spend entry
+      // signature (refusedAsDuplicate). This attempt's spend entry
       // is a duplicate — the attempt that paid recorded it — so it is undone.
       // A non-reused AlreadyExists (store deleted between attempts?) is a
       // state we can't vouch for, so it falls through to "outcome unknown".
-      if (resolved?.reused && errorSays(err, TRANSFER_ALREADY_EXISTS)) {
+      if (resolved?.reused && refusedAsDuplicate(err, resolved.transferId)) {
         await spend.undo().catch(() => {});
         throw annotateError(
           new Error(

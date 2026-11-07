@@ -242,6 +242,41 @@ describe("audit hardening (wrapper)", () => {
     expect(err.nextStep).toMatch(/the transfer whose id is err\.transferId/);
   });
 
+  // The operators' wording changed (seen on REGTEST 2026-11-07): it now names
+  // the transfer, so it counts only when it names the id on record.
+  describe("the newer refusal: transfer <id> cannot be matched to this request", () => {
+    const refusal = (id) => new Error(`Failed to start transfer: /spark.SparkService/start_transfer_v2 ALREADY_EXISTS: transfer ${id} cannot be matched to this request; query it by id before sending again`);
+    const refusing = (idFor) => {
+      process.env.SPARK_LEAF_VAULT = "off";
+      return new SparkAgent({
+        getSparkAddress: async () => "sp1from",
+        getLightningSendFeeEstimate: async () => 5,
+        payLightningInvoice: async ({ transferId }) => { throw refusal(idFor(String(transferId))); },
+      }, "MAINNET");
+    };
+
+    it("naming the recorded id is PAYMENT_ALREADY_SETTLED, with that id", async () => {
+      await mkIsolated();
+      await mkThrowing(null).agent.payLightningInvoice(AMOUNTLESS, { amountSats: 500 });
+      let sent;
+      const err = await refusing((id) => (sent = id)).payLightningInvoice(AMOUNTLESS, { amountSats: 500 }).catch((e) => e);
+      expect(err).toMatchObject({ code: "PAYMENT_ALREADY_SETTLED", retryable: "check-first", transferId: sent });
+    });
+
+    it("naming another id proves nothing: PAYMENT_COMMITTED", async () => {
+      await mkIsolated();
+      await mkThrowing(null).agent.payLightningInvoice(AMOUNTLESS, { amountSats: 500 });
+      const err = await refusing(() => "01a1b7cf-0000-7000-8000-000000000000").payLightningInvoice(AMOUNTLESS, { amountSats: 500 }).catch((e) => e);
+      expect(err).toMatchObject({ code: "PAYMENT_COMMITTED", retryable: "check-first" });
+    });
+
+    it("on a first attempt, with no id on record, it proves nothing either", async () => {
+      await mkIsolated();
+      const err = await refusing((id) => id).payLightningInvoice(AMOUNTLESS, { amountSats: 500 }).catch((e) => e);
+      expect(err).toMatchObject({ code: "PAYMENT_COMMITTED", retryable: "check-first" });
+    });
+  });
+
   it("passes AlreadyExists through RAW when the id was NOT reused (no proof to vouch)", async () => {
     await mkIsolated();
     const grpcErr = new Error("rpc error: code = AlreadyExists desc = transfer already exists");
