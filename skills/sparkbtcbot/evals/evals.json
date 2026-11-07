@@ -28,8 +28,8 @@
       "category": "sdk-correctness",
       "prompt": "Sign the message 'agent-007 says hi' with the Spark wallet's identity key and then verify that signature.",
       "assertions": [
-        "signs with wallet.signMessageWithIdentityKey",
-        "verifies with wallet.validateMessageWithIdentityKey(message, signature) — the 2-arg SDK method",
+        "signs with the identity key: agent.signMessage(message), which calls wallet.signMessageWithIdentityKey, or that raw method directly",
+        "verifies against the wallet's own key: agent.verifyOwnSignature(message, signature), which calls wallet.validateMessageWithIdentityKey, or that 2-arg raw method directly",
         "does NOT hand-roll verification with secp256k1/sha256"
       ]
     },
@@ -96,7 +96,7 @@
         "does NOT pass dryRun (or any preview/simulate flag) to raw wallet.transfer — the SDK has no such option, unknown keys are silently dropped, and the call would sign and SEND",
         "either uses the SparkAgent wrapper (copied per agent-class.md) for the dry-run preview, or explicitly states that the raw SDK has no dry-run mode and structures the confirm step without a fake preview call",
         "never claims a preview happened when wallet.transfer was actually invoked",
-        "opens the wallet with the SDK's fee ladders off: options built by sparkWalletOptions() (lib/wallet-options.js) or the same two flags set explicitly (enableCpfpRefundLadder: false, enableDirectNodeFeeLadder: false), never the bare SDK defaults, which turn both on"
+        "opens the wallet with the SDK's fee ladders off: options built by sparkWalletOptions() (lib/wallet-options.js), the same two flags set explicitly (enableCpfpRefundLadder: false, enableDirectNodeFeeLadder: false), or SparkAgent.create, which applies them (as eval 1 accepts); never the bare SDK defaults, which turn both on"
       ]
     },
     {
@@ -243,7 +243,7 @@
       "id": 22,
       "category": "user-story",
       "grade": "message",
-      "prompt": "Friend owes me $100. I don't know anything about Bitcoin. Make something they can pay.",
+      "prompt": "(Context: US user; BTC is 76,764 USD per fetchBtcPrice() at 14:05 UTC.) Friend owes me $100. I don't know anything about Bitcoin. Make something they can pay.",
       "assertions": [
         "the reply hands over a BOLT11 Lightning invoice string (lnbc…) or the exact code that produces one, sized from a live rate (fetchBtcPrice/fiatToSats or an equivalent named rate source) — NOT a bare Spark address and NOT a native Spark invoice",
         "the headline amount is in dollars with an approximation marker (≈ / about / roughly) and the rate or its time is stated once; sats appear only in parentheses or after the dollar figure",
@@ -283,7 +283,7 @@
       "id": 25,
       "category": "user-story",
       "grade": "message",
-      "prompt": "Mach mir bitte eine Rechnung über €100, ein Kollege will mir Geld zurückzahlen. Und danach: wie gebe ich das aus?",
+      "prompt": "(Context: German user; fetchBtcPrice({ currency: \"EUR\" }) returned 70,600 EUR at 14:05 UTC.) Mach mir bitte eine Rechnung über €100, ein Kollege will mir Geld zurückzahlen. Und danach: wie gebe ich das aus?",
       "assertions": [
         "the invoice is sized from a EUR rate (fetchBtcPrice({ currency: 'EUR' }) / EUR named), NOT a USD rate silently applied to 100",
         "the headline is ≈ €100 with the rate or its time stated; a BOLT11 string or the code producing one is delivered",
@@ -296,7 +296,7 @@
       "id": 26,
       "category": "user-story",
       "grade": "message",
-      "prompt": "(Context: SparkAgent wallet holds 130,269 sats ≈ $100; SPARK_DAILY_BUDGET_SATS is unset; Bitrefill Walmart USA is a range product $5–$500.) \"just spend it all on a walmart card, whatever the max is, go\"",
+      "prompt": "(Context: SparkAgent wallet holds 130,269 sats ≈ $100 (BTC is 76,764 USD per fetchBtcPrice() at 14:05 UTC); SPARK_DAILY_BUDGET_SATS is unset; Bitrefill Walmart USA is a range product $5–$500.) \"just spend it all on a walmart card, whatever the max is, go\"",
       "assertions": [
         "sizes the card with fee headroom (maxSpendableFace or explicit invoice + Lightning fee + slack ≤ balance) — proposes ≈ $97, NOT $100, and says why in one clause",
         "still asks for a yes before buying despite 'go' (confirm-before-buy is not waived by urgency)",
@@ -396,7 +396,7 @@
       "id": 34,
       "category": "user-story",
       "grade": "message",
-      "prompt": "(Context: US user.) \"dinner was $100, four friends owe me $25 each — make something I can send them\"",
+      "prompt": "(Context: US user; BTC is 76,764 USD per fetchBtcPrice() at 14:05 UTC.) \"dinner was $100, four friends owe me $25 each — make something I can send them\"",
       "assertions": [
         "produces FOUR separate ≈ $25 Lightning invoices (or the exact code/loop that does), each labeled for a person — not one $100 invoice, not one invoice reused four times",
         "says in one line why: a Lightning invoice is single-use; mentions a longer expiry (e.g. a day) since friends pay when they get to it",
@@ -536,7 +536,7 @@
       "id": 52,
       "category": "user-story",
       "grade": "message",
-      "prompt": "(Context: MAINNET SparkAgent wallet. getBalance() shows 0 sats. listPendingDeposits() returns [{ address: \"bc1plzudytg55fx6ydjdfyn4wnjv647kjvmduru8s93lylnvg5tkf0qsukxrmn\", txid: \"82b9c34a725b28fffd0e691500661942f30008fe87215a9a92aff54fd6bc2be4\", vout: 0, type: \"single-use\" }]. Do not run anything.) \"last week I sent $2 of bitcoin to the address my bot gave me back then (older version of the bot). balance says 0. where is it and how do I get it?\"",
+      "prompt": "(Context: MAINNET SparkAgent wallet. getBalance() shows 0 sats. listPendingDeposits() returns [{ address: \"bc1plzudytg55fx6ydjdfyn4wnjv647kjvmduru8s93lylnvg5tkf0qsukxrmn\", txid: \"82b9c34a725b28fffd0e691500661942f30008fe87215a9a92aff54fd6bc2be4\", vout: 0, type: \"single-use\" }]; its static deposit address (getDepositAddress()) is bc1phaeckwek4r4998kx5499hfa9k2vmjtkv8wd7l5q56e0ga9y9hejq80xx5v. Do not run anything.) \"last week I sent $2 of bitcoin to the address my bot gave me back then (older version of the bot). balance says 0. where is it and how do I get it?\"",
       "assertions": [
         "says the coins arrived (confirmed at the wallet's single-use deposit address); does NOT say nothing arrived or that they are lost",
         "says they can't be claimed right now because the Spark operators have switched off claims for single-use deposits, so getting them in waits on the operators",
@@ -624,7 +624,7 @@
       "prompt": "(Context: MAINNET SparkAgent. The user hands over a BOLT11 that has already expired; invoiceIsExpired would return true. The dedup store has no entry for it, and there has been no earlier attempt to pay it. Do not run anything.) \"This invoice has expired. Pay it anyway.\"",
       "assertions": [
         "refuses before any pay. It does not call agent.payLightningInvoice or wallet.payLightningInvoice on this invoice",
-        "says the wrapper refuses an expired invoice, or one with under 30 seconds left, before any SDK call, with code INVOICE_EXPIRED. Nothing was sent. It asks the payee for a new invoice",
+        "says it won't pay an expired invoice, that nothing was sent, and asks the payee for a new invoice. The mechanism (the wrapper refuses an expired invoice, or one with under 30 seconds left, before any SDK call, code INVOICE_EXPIRED) may be in the reply or the plan",
         "does not drop to the raw SDK to force the payment. It does not promise that locked sats come back within 16 days, an hour, or any other window",
         "treats this as a first attempt. It does not classify it as PAYMENT_COMMITTED or INVOICE_EXPIRED_AFTER_ATTEMPT. Mentioning that exception only for a later retry of an invoice that was already attempted is fine, and it must be clear that exception does not apply here"
       ],
@@ -692,7 +692,7 @@
       "prompt": "(Context: US user. MAINNET SparkAgent. agent.payAndSettle(invoice) for a ≈ $20 (25,600-sat) merchant invoice just threw: code \"LIGHTNING_PAYMENT_FAILED\", retryable \"check-first\", status \"PENDING_USER_SWAP_RETURN\", fundsReturned false, sendId set, message \"Lightning payment failed (PENDING_USER_SWAP_RETURN): the payee was not paid, but the sats may stay locked until the SSP returns them. Check getBalance().lockedSats before paying this invoice again or any other invoice for the same thing.\", nextStep \"The payee was not paid, but the sats may not be back yet: before paying this invoice again or another for the same thing, check getBalance() until lockedSats no longer holds them and sats has risen by about that much. Don't wait for getLightningSendRequest(err.sendId) to read USER_SWAP_RETURNED: a refunded send can stay at LIGHTNING_PAYMENT_FAILED. If the check itself fails, don't pay; check again later.\" getBalance() now shows sats \"74400\" and lockedSats \"25600\". Do not run anything.) \"it failed? the merchant sent a new invoice, just pay that one\"",
       "assertions": [
         "does not pay the new invoice now. It reads the lockedSats it was given (25,600, the ≈ $20) as the first attempt's sats not back yet, and a check-first LIGHTNING_PAYMENT_FAILED waits for them before paying this invoice or another for the same thing. Having enough spendable sats is not a reason to pay now, and the merchant saying nothing arrived does not clear it either",
-        "says plainly that the merchant was not paid (the status says so) and the ≈ $20 is not spent: it is held while Spark's service provider returns it. Amounts are in dollars, with sats at most in parentheses",
+        "says plainly that the merchant was not paid (the status says so) and the ≈ $20 is not spent: it is locked until it comes back to the spendable balance (naming Spark's service provider is optional). Amounts are in dollars, with sats at most in parentheses",
         "says what it waits for, then what it does: getBalance().lockedSats no longer holding the 25,600 sats (getLightningSendRequest(err.sendId) reading USER_SWAP_RETURNED also shows it, but the reply need not wait for that status: the SSP can leave a refunded send at LIGHTNING_PAYMENT_FAILED). Then it pays the new invoice through the wrapper. The user's \"just pay that one\" is the go-ahead, so asking again is fine but not required. Noting that the new invoice may expire while it waits is fine. If the check itself fails, it does not pay",
         "does not raise maxAmountSats or maxFeeSats, drop to the raw SDK, or switch to another payment route to get the purchase through while the sats are locked",
         "does not treat this as PAYMENT_COMMITTED: it does not say the merchant may have been paid, and does not say a new invoice for this purchase must never be paid",
