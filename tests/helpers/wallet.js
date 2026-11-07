@@ -9,7 +9,8 @@ const tracked = new Set();
 export async function createTestWallet(opts = {}) {
   const { wallet, mnemonic } = await SparkWallet.initialize({
     mnemonicOrSeed: opts.mnemonic,
-    options: sparkWalletOptions(NETWORK),
+    signer: opts.signer,
+    options: sparkWalletOptions(NETWORK, opts.walletOptions),
   });
   tracked.add(wallet);
   return { wallet, mnemonic };
