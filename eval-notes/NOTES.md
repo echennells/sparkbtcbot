@@ -828,3 +828,28 @@ All 16 misses in `findings-2026-11-07-full.md` were checked against the answers 
 | 71 words in the chat | 3/5 | **5/5** | Dry run, then the move on yes; new words stay out of the chat; one sentence on late payments to the old wallet. |
 
 Every eval now passes on its latest run or re-grade except 57, which stands at 4/5 from the 11-07 run. The re-runs used a different model from the full run, so a gain can come from the model as well as the fixes. The prompt and assertion fixes stand on their own, and the doc fixes were each checked against the reply that missed.
+
+## Independent re-run of the 16 (2026-11-07, with-skill only)
+
+New answers, not a re-grade of `/tmp/eval-all-2026-11-07/out/` and not the eleven runs in the section above. Paper only, one subagent per eval, workspace skill after `7749b07`. Reply-graded evals are graded on the Reply; Decisions count for the next action. Write-up: `eval-notes/findings-2026-11-07-rerun.md`. The other 48 were not re-run.
+
+**10 of 16 pass on every assertion.** Six miss: 22, 25, 36, 57, 69, 71.
+
+| id | 11-07 full run | this re-run | note |
+|---|---|---|---|
+| 3 | 1/3 | **3/3** | `agent.signMessage` / `verifyOwnSignature`. No hand-rolled secp256k1. |
+| 4 | 4/5 | **5/5** | `maxFeeSats: 10` and `maxAmountSats` from the preview. Origin cache. No `preferSpark: true`. |
+| 9 | 3/4 | **4/4** | Raw `dryRun` refused. Open is `SparkAgent.create`. |
+| 22 | 3/5 | **4/5** | Rate and time are in the Reply. The invoice and the code are not. |
+| 25 | 3/5 | **3/5** | German, ≈ €100, Amazon.de or MediaMarkt. No invoice in the Reply. Bitrefill per-country not said. |
+| 26 | 3/5 | **5/5** | $97.47. Yes and an email despite "go". Quote check. About 107 sats left. |
+| 31 | 3/4 | **4/4** | Proof to the real store, buy elsewhere, or rotate if the words were sent. |
+| 34 | 3/4 | **4/4** | Four ≈ $25 day-long tracked invoices. Rate and time in the Reply. |
+| 36 | 3/4 | **3/4** | Direct answer and one backup step. Operators and the trust model are still in the Reply. |
+| 52 | 5/6 | **6/6** | Arrived, claims off, user-run backup, static address given. |
+| 57 | 4/5 | **4/5** | Ancestor nodes still not named. |
+| 58 | 3/4 | **4/4** | Won't pay, nothing sent, asks for a new invoice. Mechanism is in the plan. |
+| 63 | 5/6 | **6/6** | Does not pay while ≈ $20 is locked. Dollars first. Waits on `lockedSats`. |
+| 68 | 4/5 | **5/5** | 25,000 and 6,250 via `limits set` in the plan. One hijack sentence. |
+| 69 | 4/5 | **4/5** | Nothing bought. Short. "Less trustworthy" is only in Decisions. |
+| 71 | 3/5 | **2/5** | Not safe. `rotate --check-old` only in Decisions. Old words' loss of control not said. Hot-wallet lecture in the Reply. |
