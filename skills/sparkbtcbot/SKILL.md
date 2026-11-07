@@ -47,7 +47,7 @@ The common setup: a user tells a chat agent "install sparkbtcbot for me", and it
 
 - **Other budgets.** `SPARK_DAILY_BUDGET_SATS` (env, rolling 24h, `agent.spendStatus()`) still works. An operator at a terminal can seal one into the seed (`set-policy`, `references/encrypted-seed.md`), which overrides the env var. When a user asks you to seal one, also offer the daily limit you can set from chat now (`limits set --daily-budget`), saying it's a file you could change, unlike the sealed one. The user's daily limit applies on top: the tighter of it and the budget in force wins.
 
-- **`PAYMENT_COMMITTED` = the money may have left.** Never pay again with a new invoice, address or method; check `agent.getTransfers()` (token sends: `getTokenTransactions()`). Retrying the same invoice is deduped, and `fetchL402` on the same URL and method finishes a held purchase, in any process (holds are on disk); `forgetL402` only on the user's say-so (`references/l402.md`). Act on each error's `retryable` (`yes`/`no`/`check-first`) and `nextStep`; `agent.status()` says if the agent can work.
+- **`PAYMENT_COMMITTED` = the money may have left.** Never pay again with a new invoice, address or method; check `agent.getTransfers()` (token sends: `getTokenTransactions()`). Retrying the same invoice is deduped, and `fetchL402` on the same URL and method finishes a held purchase, in any process (holds are on disk); `forgetL402` only on the user's say-so (`references/l402.md`). A `fetchL402` result with a non-2xx `status` is paid for: calling again buys again, so tell the user what the service answered. Act on each error's `retryable` (`yes`/`no`/`check-first`) and `nextStep`; `agent.status()` says if the agent can work.
 
 ## Rules for Claude when operating this skill
 

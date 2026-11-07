@@ -420,6 +420,11 @@ export type L402Result =
       recovered?: true;
       /** This call overlapped a fetchL402 for the same method + URL and shares its outcome; it paid nothing itself. */
       joined?: true;
+      /**
+       * The service's answer. Anything but a 2xx means this result is paid for
+       * but may not be what was bought, and the pass is released: calling
+       * again buys again. Reuse `macaroon` and `preimage` to ask again.
+       */
       status: number;
       amountSats: number | null;
       macaroon: string;

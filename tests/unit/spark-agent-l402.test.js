@@ -607,6 +607,69 @@ describe("fetchL402 after payment: in-process recovery", () => {
     expect(pay).toHaveBeenCalledTimes(1);
   });
 
+  // ToB review 2026-10-28 (F02): after paying, only 5xx/408/429 were retried and
+  // only 401/402 refused, so "try again shortly" (409, 423, 425) or a 403
+  // released the pass and the natural retry bought a second one.
+  it.each([409, 423, 425])("a %i on delivery is retried with the same pass", async (status) => {
+    const inv = await invoice2000();
+    const seen = stubFetch([resp(402, { invoice: inv, macaroon: "mac1" }), resp(status, {}), resp(200, { ok: true })]);
+    const { agent, pay } = mk();
+    const { value } = await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }));
+    expect(value).toMatchObject({ paid: true, status: 200, data: { ok: true } });
+    expect(seen.slice(1).map(auth)).toEqual(["L402 mac1:abc123preimage", "L402 mac1:abc123preimage"]);
+    expect(pay).toHaveBeenCalledTimes(1);
+  });
+
+  it("a 409 on every attempt holds the pass: the next call presents it without paying", async () => {
+    const inv = await invoice2000();
+    stubFetch([resp(402, { invoice: inv, macaroon: "mac1" }), resp(409, {}), resp(409, {}), resp(409, {})]);
+    const { agent, pay } = mk();
+    const first = await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }));
+    expect(first.error).toMatchObject({ code: "PAYMENT_COMMITTED", settled: true });
+    expect(first.error.message).toMatch(/after 3 attempts \(HTTP 409\)/);
+
+    const seen = stubFetch([resp(200, { ok: true })]);
+    expect((await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }))).value).toMatchObject({ paid: false, recovered: true, data: { ok: true } });
+    expect(seen.map(auth)).toEqual(["L402 mac1:abc123preimage"]);
+    expect(pay).toHaveBeenCalledTimes(1);
+  });
+
+  it("a POST answered 409 is sent once and held, not repeated", async () => {
+    const inv = await invoice2000();
+    const seen = stubFetch([resp(402, { invoice: inv, macaroon: "mac1" }), resp(409, {})]);
+    const { agent } = mk();
+    const r = await run(agent.fetchL402(URL_, { method: "POST", body: { q: 1 }, maxAmountSats: 3000 }));
+    expect(r.error).toMatchObject({ code: "PAYMENT_COMMITTED", settled: true });
+    expect(r.error.message).toMatch(/after 1 attempt \(HTTP 409\).*resend: true/s);
+    expect(seen).toHaveLength(2);
+  });
+
+  it("a 403 after paying refuses the pass like a 401: blocked, no second purchase", async () => {
+    const inv = await invoice2000();
+    stubFetch([resp(402, { invoice: inv, macaroon: "mac1" }), resp(403, { error: "wrong caveat" })]);
+    const { agent, pay } = mk();
+    const r = await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }));
+    expect(r.error).toMatchObject({ code: "PAYMENT_COMMITTED", reason: "L402_PASS_REFUSED", settled: true, status: 403 });
+    stubFetch([]);
+    expect((await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }))).error).toMatchObject({ reason: "L402_PASS_REFUSED" });
+    expect(pay).toHaveBeenCalledTimes(1);
+  });
+
+  // Documented in l402.md: these are the service's answer, so the pass is
+  // released and calling again is a new purchase. A POST answered 400 must stay
+  // free to send a corrected body.
+  it.each([400, 404, 410, 422])("a %i after paying is returned with its status, and calling again buys again", async (status) => {
+    const inv = await invoice2000();
+    stubFetch([resp(402, { invoice: inv, macaroon: "mac1" }), resp(status, { error: "no" })]);
+    const { agent, pay } = mk();
+    const { value } = await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }));
+    expect(value).toMatchObject({ paid: true, status, macaroon: "mac1", preimage: "abc123preimage", data: { error: "no" } });
+    expect(agent.forgetL402(URL_)).toBe(false); // nothing held
+    stubFetch([resp(402, { invoice: inv, macaroon: "mac2" }), resp(200, { ok: true })]);
+    await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }));
+    expect(pay).toHaveBeenCalledTimes(2);
+  });
+
   it("a POST is presented once: a failed delivery holds the pass instead of re-sending it", async () => {
     const inv = await invoice2000();
     const seen = stubFetch([resp(402, { invoice: inv, macaroon: "mac1" }), resp(503, {})]);

@@ -688,7 +688,11 @@ const L402_MIN_TOKEN_LIFETIME_SECONDS = 120;
 // sent once, and a failure holds the pass for the caller to present again.
 const L402_DELIVERY_ATTEMPTS = 3;
 const L402_DELIVERY_BACKOFF_MS = 500;
-const L402_RETRY_STATUS = (status) => status >= 500 || status === 408 || status === 429;
+// "Not now": a 5xx, or 408, 409, 423, 425 and 429, which a paying client is
+// told to try again. Retried with the same pass, since buying again would be a
+// second purchase. 401, 402 and 403 refuse the pass (ToB review 2026-10-28).
+const L402_RETRY_STATUS = (status) => status >= 500 || [408, 409, 423, 425, 429].includes(status);
+const L402_REFUSED_STATUS = (status) => status === 401 || status === 402 || status === 403;
 const L402_REPEATABLE = new Set(["GET", "HEAD", "OPTIONS", "PUT", "DELETE"]);
 // Unresolved L402 purchases held per agent (undelivered passes, payments in
 // doubt, blocks). Nothing held is ever dropped, since each may mean money has
@@ -3137,8 +3141,9 @@ export class SparkAgent {
   // for the next call in this process and a PaymentCommittedError (settled:
   // true) is thrown. A request that isn't safe to repeat (POST, PATCH) is sent
   // once, and sent again only with { resend: true }: the service may already
-  // have acted on it. A 401 or 402 means the service refused a paid pass;
-  // any other status is its answer, returned as is with `status`.
+  // have acted on it. A 401, 402 or 403 means the service refused a paid pass;
+  // any other status is its answer, returned as is with `status`, and that
+  // releases the pass: calling again buys again (references/l402.md).
   async #deliverL402(url, key, pass, { method, headers, reqBody }, { recovered, paid = !recovered }) {
     const { host, path } = l402Target(url);
     const repeatable = L402_REPEATABLE.has(String(method).toUpperCase());
@@ -3185,7 +3190,7 @@ export class SparkAgent {
         await res.text().catch(() => "");
         continue;
       }
-      if (res.status === 401 || res.status === 402) {
+      if (L402_REFUSED_STATUS(res.status)) {
         // The service refused a pass it was paid for. Its body may hold a NEW
         // challenge; paying that is a second purchase. Remember the refusal,
         // so a retry loop gets this error again instead of buying.

@@ -63,7 +63,7 @@ Some errors carry facts too: `transferId` (`PAYMENT_ALREADY_SETTLED`: the paymen
 | `L402_HOLD_UNREADABLE` | `check-first` | The saved record of an unfinished `fetchL402` purchase of this resource (`~/.spark/l402-holds/`) can't be read, so `fetchL402` won't buy it while that record may stand for a payment. | An earlier purchase of this resource may have been paid: check getTransfers() before anything else, and don't buy it another way. Call forgetL402(url) only when the user asks in their own message, once getTransfers() shows no payment for it. |
 | `CONCURRENT_PAYMENT_ATTEMPT` | `check-first` | Another attempt at this same invoice wrote its dedup entry while this one was starting. | Another attempt at this same invoice is running or just ran, and may be paying it: wait, then check getTransfers() before paying again. |
 | `TRANSFER_ID_CONFLICT` | `check-first` (or `no`) | A `transferId` the caller passed is on record for a different invoice (`check-first`), or differs from the id on record for this invoice (`no`: omit it to reuse that id). | That transferId already paid, or tried to pay, another invoice. If this invoice is for the same purchase, don't pay it: check getTransfers() first; omit transferId only if this is a different payment. |
-| `LIGHTNING_PAYMENT_FAILED` | `check-first` (or `yes`) | The Lightning payment failed for good and the payee wasn't paid (`err.status`). Only `USER_SWAP_RETURNED` means the sats are back (`fundsReturned: true`, `yes`); after any other status they may still be locked. | The payee was not paid, but the sats may not be back yet: check getBalance().lockedSats (and getLightningSendRequest(err.sendId) when set) before paying this invoice again or another for the same thing. |
+| `LIGHTNING_PAYMENT_FAILED` | `check-first` (or `yes`) | The Lightning payment failed for good and the payee wasn't paid (`err.status`). Only `USER_SWAP_RETURNED` proves the sats are back (`fundsReturned: true`, `yes`); after any other status they may still be locked, though a refunded send can also stay at `LIGHTNING_PAYMENT_FAILED`, so judge by the balance. | The payee was not paid, but the sats may not be back yet: before paying this invoice again or another for the same thing, check getBalance() until lockedSats no longer holds them and sats has risen by about that much. Don't wait for getLightningSendRequest(err.sendId) to read USER_SWAP_RETURNED: a refunded send can stay at LIGHTNING_PAYMENT_FAILED. |
 | `PREIMAGE_MISMATCH` | `check-first` | The preimage that came back doesn't hash to this invoice's payment hash, so the invoice isn't proven paid. | This invoice is not proven paid: don't report it paid and don't pay it again yet. Check getTransfers() and getLightningSendRequest(err.sendId), and never reuse a transferId across invoices. |
 | `AGENT_CLOSED` | `no` | A money method, or `fetchL402`, called after `cleanup()`: refused before anything is sent. Anything else that reaches the closed wallet gets the same code as `check-first`, since a payment already under way when `cleanup()` ran may have sent. | Nothing was sent: this agent was closed with cleanup(), and nothing goes through it after that. Open a new one (restart the agent's process) and call again. |
 | `SPARK_UNAVAILABLE` | `yes` | Spark couldn't be reached (a connection failure) on a call that moves no money. The withdrawal quote (`getWithdrawalFeeQuote`, and `withdraw`'s, dry run included) is `check-first`: the SDK may have started a leaf swap with the SSP to price it. | Nothing moved: Spark couldn't be reached. Call the same method again later; tell the user if it keeps failing. |
@@ -826,7 +826,11 @@ const L402_MIN_TOKEN_LIFETIME_SECONDS = 120;
 // sent once, and a failure holds the pass for the caller to present again.
 const L402_DELIVERY_ATTEMPTS = 3;
 const L402_DELIVERY_BACKOFF_MS = 500;
-const L402_RETRY_STATUS = (status) => status >= 500 || status === 408 || status === 429;
+// "Not now": a 5xx, or 408, 409, 423, 425 and 429, which a paying client is
+// told to try again. Retried with the same pass, since buying again would be a
+// second purchase. 401, 402 and 403 refuse the pass (ToB review 2026-10-28).
+const L402_RETRY_STATUS = (status) => status >= 500 || [408, 409, 423, 425, 429].includes(status);
+const L402_REFUSED_STATUS = (status) => status === 401 || status === 402 || status === 403;
 const L402_REPEATABLE = new Set(["GET", "HEAD", "OPTIONS", "PUT", "DELETE"]);
 // Unresolved L402 purchases held per agent (undelivered passes, payments in
 // doubt, blocks). Nothing held is ever dropped, since each may mean money has
@@ -3275,8 +3279,9 @@ export class SparkAgent {
   // for the next call in this process and a PaymentCommittedError (settled:
   // true) is thrown. A request that isn't safe to repeat (POST, PATCH) is sent
   // once, and sent again only with { resend: true }: the service may already
-  // have acted on it. A 401 or 402 means the service refused a paid pass;
-  // any other status is its answer, returned as is with `status`.
+  // have acted on it. A 401, 402 or 403 means the service refused a paid pass;
+  // any other status is its answer, returned as is with `status`, and that
+  // releases the pass: calling again buys again (references/l402.md).
   async #deliverL402(url, key, pass, { method, headers, reqBody }, { recovered, paid = !recovered }) {
     const { host, path } = l402Target(url);
     const repeatable = L402_REPEATABLE.has(String(method).toUpperCase());
@@ -3323,7 +3328,7 @@ export class SparkAgent {
         await res.text().catch(() => "");
         continue;
       }
-      if (res.status === 401 || res.status === 402) {
+      if (L402_REFUSED_STATUS(res.status)) {
         // The service refused a pass it was paid for. Its body may hold a NEW
         // challenge; paying that is a second purchase. Remember the refusal,
         // so a retry loop gets this error again instead of buying.
