@@ -332,7 +332,7 @@ const LN_RESUMING = Symbol("sparkagent.lightningResuming");
 // claims the transfer (TRANSFER_COMPLETED). A failure before the preimage is
 // released can't have charged the payer: without it the SSP can't collect.
 // These meanings are inferred from that flow, not documented, and whether an
-// early failure is final isn't known. SDK 0.14 names only some of these and
+// early failure is final isn't known. SDK 0.15 names only some of these and
 // reports the SSP's others (HTLC_RECEIVED, HTLC_FAILED, …) as FUTURE_VALUE,
 // which maps to "unknown".
 const RECEIVE_STATES = {
@@ -1691,7 +1691,7 @@ export class SparkAgent {
     // The raw SDK takes ONE object ({ invoice, ... }); this wrapper takes a bare
     // BOLT11 string + options. The raw layer crashes opaquely on the mix-up
     // ("Cannot read properties of undefined (reading 'toLowerCase')" — no
-    // validation in spark-sdk through at least 0.14.0), so the wrapper
+    // validation in spark-sdk through at least 0.15.0), so the wrapper
     // direction at least must fail loud and name both shapes.
     if (typeof bolt11 !== "string") {
       throw badInput(

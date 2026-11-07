@@ -88,8 +88,8 @@
     "rotate": "node skills/sparkbtcbot/scripts/rotate.js"
   },
   "dependencies": {
-    "@buildonspark/issuer-sdk": "0.2.1",
-    "@buildonspark/spark-sdk": "0.14.0",
+    "@buildonspark/issuer-sdk": "0.2.2",
+    "@buildonspark/spark-sdk": "0.15.0",
     "@noble/curves": "1.9.7",
     "@scure/bip39": "1.6.0",
     "dotenv": "17.4.2",
