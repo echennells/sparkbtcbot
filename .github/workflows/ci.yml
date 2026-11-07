@@ -41,6 +41,39 @@ jobs:
       - name: Run unit tests
         run: npm test
 
+  # The install publish.yml does, through Socket Firewall, run on every push.
+  # Publishing runs only on a tag, so without this a broken firewall would
+  # first show up as a failed release, as it did for v0.9.0. No npm cache, for
+  # the reason publish.yml gives.
+  firewalled-install:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Update npm
+        run: npm install -g npm@11.21.0
+
+      - name: Harden package managers
+        uses: echennells/supply-chain-hardening/action@v2
+        with:
+          ecosystems: npm
+
+      - name: Install Socket Firewall
+        run: |
+          npm install -g sfw@2.0.6
+          sfw --version
+
+      - name: Install dependencies
+        run: sfw npm ci
+
   # Practice what the README preaches on supply-chain hygiene. Separate job so a
   # dependency advisory is a distinct signal from a test failure, and runs once
   # (audit is lockfile-based, node-version-independent). --audit-level=high keeps

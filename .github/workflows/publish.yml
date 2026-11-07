@@ -33,10 +33,12 @@ jobs:
         with:
           persist-credentials: false
 
+      # No npm cache: a restored cache is served locally, so Socket Firewall,
+      # a network proxy, would never see those packages. Measured 2026-11-07:
+      # the same `sfw npm ci` takes 2 s warm and 33 s cold.
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
 
       # Pinned, not @latest: an unpinned npm install ran before the hardening
       # step and so was not age-gated. 11.21.0 has min-release-age (11.10.0+).
@@ -49,22 +51,28 @@ jobs:
       # min-release-age landed in npm 11.10.0 and on the runner's stock npm the
       # age gate is written and enforced by nothing.
       #
-      # `intel: sfw` (Socket Firewall's known-malware blocklist, the axis the
-      # age gate and script blocking cannot cover) is OFF until the action is
-      # fixed. Its first run here, the v0.9.0 publish (2026-10-27), failed
-      # closed: the action installs sfw with sudo into a root-owned
-      # /usr/local/lib/node_modules/sfw, and sfw then can't create its binary
-      # cache there as the job user (EACCES), so `npm ci` exits 1. It is not
-      # fail-open for a broken local install, only for Socket being
-      # unreachable. Turn it back on once the action installs sfw as the job
-      # user and checks that it runs.
       - name: Harden package managers
         uses: echennells/supply-chain-hardening/action@v2
         with:
           ecosystems: npm
 
+      # Socket Firewall: the known-malware blocklist, the axis the age gate and
+      # script blocking cannot cover. Installed here as the job user, not with
+      # the action's `intel: sfw`: that installs it with sudo into a root-owned
+      # directory, where sfw can't create its binary cache (EACCES), which
+      # failed the v0.9.0 publish closed. This job holds no id-token, so sfw
+      # and the binary it downloads can't mint the publishing identity.
+      # `sfw --version` downloads that binary, so a broken install fails here,
+      # by name. ci.yml runs the same steps, so this breaks on a push, not on
+      # a tag. If Socket is unreachable sfw fails open; a broken install fails
+      # closed.
+      - name: Install Socket Firewall
+        run: |
+          npm install -g sfw@2.0.6
+          sfw --version
+
       - name: Install dependencies
-        run: npm ci
+        run: sfw npm ci
 
       # Assert the hardening is in FORCE, not merely applied. After the install
       # so it also catches anything the install changed.
