@@ -1581,7 +1581,7 @@ export class SparkAgent {
         "SparkAgent.getSingleUseDepositAddress: refused — the Spark operators currently refuse to claim single-use " +
           "deposits (finalize_deposit_tree_creation UNAVAILABLE), so coins sent to one would be stuck. " +
           "Use getDepositAddress() (the static, reusable address) instead. To tell payers apart, give each order " +
-          "its own Lightning invoice (createLightningInvoice).",
+          "its own tracked invoice (createTrackedInvoice, then getInvoiceStatus).",
       ),
       "SINGLE_USE_DEPOSITS_UNAVAILABLE",
     );

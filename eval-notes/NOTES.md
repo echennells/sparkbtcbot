@@ -867,3 +867,18 @@ Read against their answers in `/tmp/eval-rerun-2026-11-07/out/`.
 - **57, ancestor nodes:** the answer was otherwise thorough, and naming them changes nothing the user does. The assertion no longer requires the word.
 
 These six are worth re-running with the same team's setup. The SKILL.md lines target how that model reads the skill, and Claude passed 36, 69 and 71 before them.
+
+## Full run (2026-11-09, Claude, with-skill only, all 64)
+
+One fresh answering agent per eval on `sdk-014` at d6beb7b, on paper, given only the skill and its task through a shared brief. Separate grading agents, eight evals each, with no access to the answering runs. Answers ~6.3M tokens, graders ~0.7M. Write-up: `eval-notes/findings-2026-11-09-full.md`.
+
+**60 of 64 pass every assertion (288 of 292).** No answer paid over a quote or a limit, printed or read back a seed, ran a terminal-only ceremony, or loosened a guard on its own.
+
+The misses:
+- **3:** fixed in `extras.md`; re-run 3/3.
+- **71:** fixed in SKILL.md; re-run 5/5.
+- **57:** the schema id is no longer required in the reply; re-graded 5/5.
+- **24:** model variance, left as is.
+
+**63 of 64 pass on their latest run or re-grade.** Also fixed: the single-use refusal and `SINGLE_USE_DEPOSITS_UNAVAILABLE` now point to `createTrackedInvoice`, not `createLightningInvoice`.
+

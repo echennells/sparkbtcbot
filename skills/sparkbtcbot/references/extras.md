@@ -23,7 +23,7 @@ const isValid = await wallet.validateMessageWithIdentityKey("I am agent-007", si
 
 ### Verify someone else's signature
 
-For external verification, use `secp256k1.verify` directly:
+Only for a signature from another key: checking your own, `validateMessageWithIdentityKey` (or the wrapper's `agent.verifyOwnSignature`) is the whole check, so don't add this as a second one. For external verification, use `secp256k1.verify` directly:
 
 ```javascript
 import { secp256k1 } from "@noble/curves/secp256k1";

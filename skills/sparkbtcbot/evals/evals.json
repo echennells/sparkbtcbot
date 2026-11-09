@@ -610,7 +610,7 @@
       "prompt": "(Context: MAINNET SparkAgent with about 100,000 sats and some tokens. Do not run anything.) \"What if the operators disappear? Can I still get my bitcoin?\"",
       "assertions": [
         "says the seed restores cooperative access only while the operators are online. Current leaves (and the ancestor nodes above them, which an answer need not name) are not derivable from the seed, so the seed alone cannot exit once the operators are gone",
-        "says SparkAgent keeps a recovery bundle (its constructor calls enableLeafVault; the raw SDK path does not). The file is ~/.spark/leaf-vault/current.json, schema spark.unilateral-exit-bundle.v1. A BROKEN file beside current.json means there is no fresh backup",
+        "says SparkAgent keeps a recovery bundle (its constructor calls enableLeafVault; the raw SDK path does not). The file is ~/.spark/leaf-vault/current.json (schema spark.unilateral-exit-bundle.v1; naming the schema is welcome, not required). A BROKEN file beside current.json means there is no fresh backup",
         "says the exit is Blink's tool (blinkbitcoin/spark-unilateral-exit), not something this wallet performs. It does not hand-roll the exit and does not run that tool. The bundle contains no private keys",
         "says tokens are not covered. Says the exit is expensive and slow (about a two-week CSV timelock; a real run spent a large fraction of the balance on fees). Does not call the path trustless",
         "does not print the seed, ask for it, or run reveal-mnemonic. Does not offer Boltz"

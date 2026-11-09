@@ -50,7 +50,7 @@ Some errors carry facts too: `transferId` (`PAYMENT_ALREADY_SETTLED`: the paymen
 | `SPEND_LEDGER_UNREADABLE` | `no` | The ledger file isn't a valid ledger, so the budget can't be checked and every send is refused. | Stop spending and tell the user the ledger file the message names can't be read. Delete it only when the user asks in their own message (that empties the budget window), and don't edit it. |
 | `INVOICE_EXPIRED` | `no` | The invoice has expired or has under 30 seconds left, refused before any SDK call. With `SPARK_LN_DEDUP=off` it is `check-first`, since an earlier attempt can't be ruled out. | Nothing was sent by this call. Ask the payee for a new invoice (fetchL402: call it again for a fresh challenge); if an earlier attempt at this payment had an unclear outcome, check getTransfers() first. |
 | `INVOICE_REFUSED` | `no` | Spark refused one or more invoices of a `fulfillInvoice` batch (`err.invalidInvoices`), and nothing in the batch was paid. | Nothing was paid by this call. Read err.invalidInvoices[].reason and ask the payee for fresh invoices in place of the refused ones, unless an earlier attempt at one of them ended in PAYMENT_COMMITTED: then check getTransfers() first, since a fresh invoice for the same thing would be a second payment. |
-| `SINGLE_USE_DEPOSITS_UNAVAILABLE` | `no` | The operators currently refuse to claim single-use deposits, so this package neither hands out a single-use address nor claims one. | Use getDepositAddress() (the static, reusable address) for deposits, and createLightningInvoice() per order to tell payers apart. |
+| `SINGLE_USE_DEPOSITS_UNAVAILABLE` | `no` | The operators currently refuse to claim single-use deposits, so this package neither hands out a single-use address nor claims one. | Use getDepositAddress() (the static, reusable address) for deposits, and createTrackedInvoice() per order to tell payers apart (a plain createLightningInvoice paid Spark-direct never shows as paid). |
 | `DEPOSIT_NOT_FOUND` | `no` | The operators don't list this deposit as claimable at the static address right now. | Nothing was claimed. Check listPendingDeposits(): the deposit may need more confirmations (the claim needs 3) or have another vout. If an earlier claim of it ended with an unknown outcome, it was probably claimed: check getBalance(). |
 | `DEPOSIT_LOOKUP_INCOMPLETE` | `no` | The deposit lookup stopped before it could tell (a repeated page, or 10,000 deposits). | Nothing was claimed. Claim the deposits listPendingDeposits() shows first (claimed ones drop out of the lookup), then try this one again. |
 | `L402_CHALLENGE_INVALID` | `no` | The service's 402 answer has no invoice, token or amount this package can read. | Nothing was paid. Don't pay this challenge; tell the user the service's 402 challenge can't be read. |
@@ -1720,7 +1720,7 @@ export class SparkAgent {
         "SparkAgent.getSingleUseDepositAddress: refused — the Spark operators currently refuse to claim single-use " +
           "deposits (finalize_deposit_tree_creation UNAVAILABLE), so coins sent to one would be stuck. " +
           "Use getDepositAddress() (the static, reusable address) instead. To tell payers apart, give each order " +
-          "its own Lightning invoice (createLightningInvoice).",
+          "its own tracked invoice (createTrackedInvoice, then getInvoiceStatus).",
       ),
       "SINGLE_USE_DEPOSITS_UNAVAILABLE",
     );

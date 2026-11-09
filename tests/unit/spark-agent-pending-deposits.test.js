@@ -182,7 +182,7 @@ describe("getSingleUseDepositAddress", () => {
   it("refuses: the operators currently refuse single-use claims, so the address would trap coins", async () => {
     let asked = false;
     const agent = new SparkAgent({ getSingleUseDepositAddress: async () => { asked = true; return "bc1pX"; } }, "MAINNET");
-    await expect(agent.getSingleUseDepositAddress()).rejects.toMatchObject({ code: "SINGLE_USE_DEPOSITS_UNAVAILABLE", message: expect.stringMatching(/getDepositAddress\(\).*Lightning invoice/s) });
+    await expect(agent.getSingleUseDepositAddress()).rejects.toMatchObject({ code: "SINGLE_USE_DEPOSITS_UNAVAILABLE", message: expect.stringMatching(/getDepositAddress\(\).*createTrackedInvoice/s) });
     expect(asked).toBe(false);
   });
 });
