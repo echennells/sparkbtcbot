@@ -53,7 +53,7 @@ const EXISTING_CODES = [
   "LEAF_VAULT_FATAL", "LEAF_VAULT_ANCHORLESS", "EEXIST",
 ];
 // Node's own error codes, which the sources compare against (never raise).
-const OS_CODES = new Set(["ENOENT", "EEXIST", "EACCES", "EPERM", "ENOTDIR", "EISDIR"]);
+const OS_CODES = new Set(["ENOENT", "EEXIST", "EACCES", "EPERM", "ENOTDIR", "EISDIR", "ESRCH"]);
 const SIDE_EFFECTS = new Set(["read", "receive", "spend", "unlock"]);
 
 // --- Reading the declarations ---
@@ -263,7 +263,7 @@ const LIB_CALLS = [
   [/\bloadRecipientsAllowlist\(/, ["STORAGE_ERROR"], "lib/recipients-allowlist.js"],
   [/\bassertRecipientAllowed\(/, ["RECIPIENT_NOT_ALLOWED", "RECIPIENT_INVALID"], "lib/recipients-allowlist.js"],
   [/\bcreateSpendLedger\(/, ["BAD_INPUT"], "lib/spend-ledger.js"],
-  [/\bledger\.assertCanSpend\(/, ["SPEND_BUDGET_EXCEEDED", ...LEDGER_READ], "lib/spend-ledger.js"],
+  [/\bledger\.reserve\(/, ["SPEND_BUDGET_EXCEEDED", ...LEDGER_READ], "lib/spend-ledger.js"],
   [/\bledger\.(?:record|status)\(/, LEDGER_READ, "lib/spend-ledger.js"],
   [/\breadLimits\(/, ["LIMITS_UNREADABLE"], "lib/spending-limits.js"],
   [/\.#l402Store\.(?:read|list)\(/, ["L402_HOLD_UNREADABLE", "STORAGE_ERROR"], "lib/l402-holds.js"],
