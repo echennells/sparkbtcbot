@@ -136,6 +136,59 @@ describe("an unknown payment outcome stays counted against the budget", () => {
     expect(await agent.spendStatus()).toMatchObject({ spentSats: 0 });
   });
 
+  // OUT-1 (review 2026-11-09): the Spark invoice inside a Lightning invoice,
+  // refused by the SDK before any request, read as "outcome unknown": counted,
+  // dedup entry kept, "retrying is safe", and counted again on each retry.
+  it("a Spark fallback the SDK refuses before sending: INVOICE_INVALID, nothing counted, and preferSpark: false pays it", async () => {
+    const inv = await invoice2000();
+    for (const refusal of [
+      new SparkValidationError("Lightning invoice amount does not match embedded spark invoice amount", { field: "amountSats" }),
+      new SparkValidationError("Zero amount mismatch. Either both or neither the lightning invoice and the spark invoice should have a zero amount"),
+      new Error("Failed to fulfill spark invoice"),
+    ]) {
+      const calls = [];
+      const wallet = {
+        getSparkAddress: async () => "sp1from",
+        getLightningSendFeeEstimate: async () => 5,
+        payLightningInvoice: async (args) => {
+          calls.push(args.preferSpark);
+          if (args.preferSpark) throw refusal;
+          return { id: "pay-ln", status: "LIGHTNING_PAYMENT_SUCCEEDED" };
+        },
+      };
+      const agent = new SparkAgent(wallet, "MAINNET");
+      const err = await agent.payLightningInvoice(inv, { maxAmountSats: 3000 }).catch((e) => e);
+      expect(err).toMatchObject({ code: "INVOICE_INVALID", retryable: "no" });
+      expect(err.nextStep).toMatch(/Nothing was sent.*preferSpark: false/);
+      expect(await agent.spendStatus()).toMatchObject({ spentSats: 0 });
+      expect(await readdir(join(dir, "ln-dedup")).catch(() => [])).toHaveLength(0);
+      await expect(agent.payLightningInvoice(inv, { maxAmountSats: 3000, preferSpark: false })).resolves.toMatchObject({ id: "pay-ln" });
+      expect(calls).toEqual([true, false]);
+      await rm(join(dir, "ln-dedup"), { recursive: true, force: true });
+      await rm(join(dir, "ledger.json"), { force: true });
+    }
+  });
+
+  // OUT-5 (review 2026-11-09): an explicit transferId that already names
+  // another transfer, refused on the first attempt, said "retrying is safe";
+  // the retry then read the same refusal as this invoice settled.
+  it("an explicit transferId refused as an existing transfer on its first attempt: TRANSFER_ID_CONFLICT, nothing counted, never 'settled'", async () => {
+    const inv = await invoice2000();
+    const id = "0193f1a2-7b7c-7cc3-8a9e-2b1f0c3d4e5f";
+    const wallet = {
+      getSparkAddress: async () => "sp1from",
+      getLightningSendFeeEstimate: async () => 5,
+      payLightningInvoice: async () => { throw new Error(`ALREADY_EXISTS: transfer ${id} cannot be matched to this request`); },
+    };
+    const agent = new SparkAgent(wallet, "MAINNET");
+    const err = await agent.payLightningInvoice(inv, { maxAmountSats: 3000, transferId: id }).catch((e) => e);
+    expect(err).toMatchObject({ code: "TRANSFER_ID_CONFLICT", retryable: "check-first", field: "transferId" });
+    expect(err.nextStep).toMatch(/Nothing was sent\. That transferId already names a transfer/);
+    expect(await agent.spendStatus()).toMatchObject({ spentSats: 0 });
+    const again = await agent.payLightningInvoice(inv, { maxAmountSats: 3000, transferId: id }).catch((e) => e);
+    expect(again.code).toBe("TRANSFER_ID_CONFLICT");
+  });
+
   // F36 through the agent: a post-send error that quotes a pre-send phrase is
   // an unknown outcome. The spend stays counted, and for Lightning the dedup
   // entry stays, so the retry goes out under the same transferId.

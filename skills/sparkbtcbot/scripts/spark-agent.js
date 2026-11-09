@@ -38,7 +38,7 @@ import { sparkWalletOptions } from "../../../lib/wallet-options.js";
 import { validateMnemonic } from "@scure/bip39";
 import { wordlist as englishWordlist } from "@scure/bip39/wordlists/english";
 import { l402TokenExpiry } from "../../../lib/l402-token.js";
-import { PaymentCommittedError, provesNothingSent, preSendCode, classifySdkError } from "../../../lib/payment-outcome.js";
+import { PaymentCommittedError, provesNothingSent, preSendCode, classifySdkError, SPARK_FALLBACK_REFUSED_STEP } from "../../../lib/payment-outcome.js";
 import { annotateError, isConnectionFailure, STATUS_PROBLEMS } from "../../../lib/agent-errors.js";
 
 // Best-effort BOLT11 amount in sats (undefined for amountless invoices or on a
@@ -245,6 +245,10 @@ const LIGHTNING_SATS_RETURNED = "USER_SWAP_RETURNED";
 // one, under an id the store proves was used for this invoice, means settled.
 const PREIMAGE_REQUEST_EXISTS = /preimage request already exists/i;
 const TRANSFER_ALREADY_EXISTS = /transfer already exists/i;
+// The SDK's plain Error when the Spark invoice inside a Lightning invoice was
+// refused before any transfer was attempted (dist: fulfillSparkInvoiceInternal,
+// raised only when fulfillSparkInvoices returned no attempt at all).
+const SPARK_FALLBACK_REFUSED = /Failed to fulfill spark invoice/;
 
 // Whether an error, or one it wraps (originalError, cause), says `re`. The
 // SDK appends the operators' text to its own message, but a wrapper may not.
@@ -2173,6 +2177,37 @@ export class SparkAgent {
         );
         e.reason = "EARLIER_ATTEMPT_OPEN";
         throw e;
+      }
+      // The embedded Spark invoice refused before any request (expired, meant
+      // for another payer, an old format). It read as "outcome unknown", kept
+      // the spend and promised a safe retry that counted it again, and the
+      // invoice never paid with the default options (review 2026-11-09, OUT-1).
+      if (sparkDirect && errorSays(err, SPARK_FALLBACK_REFUSED)) {
+        await forgetIfMinted();
+        await spend.undo().catch(() => {});
+        throw annotateError(
+          new Error("SparkAgent.payLightningInvoice: the Spark invoice inside this Lightning invoice was refused before anything was sent (expired, meant for another payer, or unreadable). Nothing was sent.", { cause: err }),
+          "INVOICE_INVALID",
+          { field: "bolt11", nextStep: SPARK_FALLBACK_REFUSED_STEP },
+        );
+      }
+      // An explicit transferId refused on its FIRST attempt as an existing
+      // transfer names someone else's transfer (an earlier purchase's, or one
+      // whose record was pruned): the operators refused before creating one.
+      // It read as "outcome unknown, retrying is safe", and the retry, now a
+      // known reuse, read the same refusal as this invoice settled (review
+      // 2026-11-09, OUT-5).
+      if (resolved && !resolved.reused && explicitTransferId !== undefined && refusedAsDuplicate(err, resolved.transferId)) {
+        await forgetIfMinted();
+        await spend.undo().catch(() => {});
+        throw annotateError(
+          new Error(`SparkAgent.payLightningInvoice: transferId ${resolved.transferId} already belongs to another transfer, so the operators refused this payment before sending anything. Nothing was sent.`, { cause: err }),
+          "TRANSFER_ID_CONFLICT",
+          {
+            field: "transferId",
+            nextStep: "Nothing was sent. That transferId already names a transfer: if it was an earlier payment for this same purchase, check getTransfers() for the transfer with that id before paying again; if this is a different payment, call again without transferId.",
+          },
+        );
       }
       // AlreadyExists on a KNOWN retry (the store proved this id was already
       // used for THIS invoice) is proof of settlement, not failure — the
