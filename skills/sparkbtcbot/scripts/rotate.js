@@ -387,15 +387,30 @@ export async function runCheckOld({ sweepNow = false, deps = defaultDeps, out = 
   if (!dirs.length) { out("No retired wallets to check.\n"); return 0; }
   const passphrase = takePassphrase(environment);
   let current = null;
+  let seedContext;
   let anything = false;
+  let unopened = 0;
   try {
     if (sweepNow) {
       const cur = await loadSeedPayload({ passphrase, path: seedPath });
       current = await deps.openWallet(cur.mnemonic, network);
+      // The deposit claim's agent counts against the CURRENT seed's ledger,
+      // which a rotation re-signed under the current key: without this a
+      // sealed install threw POLICY_NOT_LOADED out of the whole run, leaving
+      // this wallet's sats and every retired wallet after it where the leaked
+      // words reach them (review 2026-11-09, ROT-2).
+      seedContext = cur.policy ? { policy: cur.policy, ledgerHmacKey: deriveLedgerHmacKey(cur.mnemonic) } : null;
     }
     for (const dir of dirs) {
-      const payload = await loadSeedPayload({ passphrase, path: join(dir, "seed.enc") });
-      const wallet = await deps.openWallet(payload.mnemonic, network); // opening it claims transfers that arrived
+      let wallet;
+      try {
+        const payload = await loadSeedPayload({ passphrase, path: join(dir, "seed.enc") });
+        wallet = await deps.openWallet(payload.mnemonic, network); // opening it claims transfers that arrived
+      } catch (err) {
+        unopened++;
+        out(`Retired wallet ${dir}: couldn't open it (${err?.code ?? err?.message ?? err}); the others are still checked.\n`);
+        continue;
+      }
       try {
         let h = await readHoldings(wallet);
         const has = h.sats > 0n || h.tokens.length || h.pendingDeposits.length || h.lockedSats > 0n || h.incomingSats > 0n;
@@ -406,8 +421,10 @@ export async function runCheckOld({ sweepNow = false, deps = defaultDeps, out = 
         if (h.pendingDeposits.length) {
           // The claim goes through SparkAgent for its fee caps (the user's limits
           // apply too). Its backup is off here: it would overwrite this wallet's.
-          const agent = await (makeAgent ?? defaultMakeAgent)(wallet, network, environment);
-          for (const d of h.pendingDeposits) {
+          let agent = null;
+          try { agent = await (makeAgent ?? defaultMakeAgent)(wallet, network, environment, seedContext); }
+          catch (err) { out(`  Couldn't set up the deposit claim (${err?.code ?? err?.message ?? err}); the deposits stay there, check again later.\n`); }
+          for (const d of agent ? h.pendingDeposits : []) {
             try { await agent.claimDeposit({ txid: d.txid, vout: d.vout }); log(`claimed ${d.txid.slice(0, 16)}…:${d.vout}`); }
             catch (err) { out(`  Couldn't claim ${d.txid.slice(0, 16)}…:${d.vout} now (${err?.code ?? err?.message ?? err}); it stays there, check again later.\n`); }
           }
@@ -429,15 +446,15 @@ export async function runCheckOld({ sweepNow = false, deps = defaultDeps, out = 
   } finally {
     await current?.cleanup?.().catch?.(() => {});
   }
-  if (!anything) out("Nothing has arrived at the retired wallets.\n");
-  else if (!sweepNow) out("\nTell the user what arrived; `sparkbtcbot rotate --check-old --sweep` moves it to this wallet, on their say-so.\n");
-  return 0;
+  if (!anything && !unopened) out("Nothing has arrived at the retired wallets.\n");
+  else if (anything && !sweepNow) out("\nTell the user what arrived; `sparkbtcbot rotate --check-old --sweep` moves it to this wallet, on their say-so.\n");
+  return unopened ? 1 : 0;
 }
 
-async function defaultMakeAgent(wallet, network, environment) {
+async function defaultMakeAgent(wallet, network, environment, seedContext) {
   environment.SPARK_LEAF_VAULT = "off"; // this process only: the retired wallet's backup must not replace this one's
   const { SparkAgent } = await import("./spark-agent.js");
-  return new SparkAgent(wallet, network);
+  return new SparkAgent(wallet, network, { seedContext });
 }
 
 function takePassphrase(environment) {

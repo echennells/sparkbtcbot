@@ -7,7 +7,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtemp, rm, readdir, readFile, access, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, readdir, readFile, access, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -32,7 +32,7 @@ function fakeNet() {
     const w = {
       id, address, sats, tokens: new Map(Object.entries(tokens)), deposits: [], failTransfer: null,
       getSparkAddress: async () => address,
-      getIdentityPublicKey: async () => `02${String(id).padStart(64, "0")}`,
+      getIdentityPublicKey: async () => `02${String(id).padStart(4, "0")}${"0".repeat(60)}`, // distinct in the retired dir's 12-char prefix
       getBalance: async () => ({
         satsBalance: { available: w.sats, owned: w.sats, incoming: 0n },
         tokenBalances: new Map([...w.tokens].map(([t, amt]) => [t, { availableToSendBalance: amt, ownedBalance: amt, tokenMetadata: { tokenTicker: "TKN" } }])),
@@ -266,6 +266,55 @@ describe("sparkbtcbot rotate --check-old", () => {
     expect(claimDeposit).toHaveBeenCalledWith({ txid: "cd".repeat(32), vout: 1 });
     expect({ old: old.sats, current: current.sats }).toEqual({ old: 0n, current: 6_000n });
     expect(old.transfer.mock.calls.at(-1)[0].receiverSparkAddress).toBe(current.address);
+  });
+
+  // ROT-2: the claim's agent got no seed context, so on a sealed install
+  // POLICY_NOT_LOADED ended the whole run before any wallet was swept.
+  it("on a sealed install, --sweep claims under the current seed's policy and still visits every retired wallet", async () => {
+    const net = fakeNet();
+    const { mnemonic: first } = await walletOnDisk(net, { sats: 3_000n, policy: { dailyBudgetSats: 20_000 } });
+    await initSignedLedger({ path: environment.SPARK_SPEND_LEDGER_PATH, hmacKey: deriveLedgerHmacKey(first) });
+    expect(await runRotate(opts(net, { execute: true }))).toBe(0);
+    expect(await runRotate(opts(net, { execute: true }))).toBe(0);
+    const words = async (p) => (await loadSeedPayload({ passphrase: PASS, path: p })).mnemonic;
+    const [a, b] = await Promise.all((await retiredDirs()).sort().map(async (d) => net.byMnemonic.get(await words(join(d, "seed.enc")))));
+    a.deposits = [{ txid: "ab".repeat(32), vout: 0 }];
+    a.sats = 700n;
+    b.sats = 900n;
+    const current = net.byMnemonic.get(await words(environment.SPARK_SEED_PATH));
+    const before = current.sats;
+    // SparkAgent reads its paths from process.env.
+    const keys = { SPARK_SEED_PATH: environment.SPARK_SEED_PATH, SPARK_SPEND_LEDGER_PATH: environment.SPARK_SPEND_LEDGER_PATH,
+      SPARK_LIMITS_PATH: join(dir, "limits.json"), SPARK_L402_HOLDS_PATH: join(dir, "holds"), SPARK_LN_DEDUP_PATH: join(dir, "dedup") };
+    const saved = Object.fromEntries(Object.keys(keys).map((k) => [k, process.env[k]]));
+    Object.assign(process.env, keys);
+    try {
+      out = [];
+      expect(await runCheckOld(opts(net, { sweepNow: true }))).toBe(0);
+    } finally {
+      for (const [k, v] of Object.entries(saved)) if (v === undefined) delete process.env[k]; else process.env[k] = v;
+    }
+    expect(report()).not.toMatch(/POLICY_NOT_LOADED|Couldn't set up/);
+    // The fake wallet has no claim API: the claim reached SparkAgent and failed there, per deposit.
+    expect(report()).toMatch(/Couldn't claim abababababababab…:0 now/);
+    expect({ a: a.sats, b: b.sats, gained: current.sats - before }).toEqual({ a: 0n, b: 0n, gained: 1_600n });
+  });
+
+  it("a retired wallet that won't open is reported, the others are still checked, and the run exits 1", async () => {
+    const net = fakeNet();
+    const { wallet: old } = await walletOnDisk(net, { sats: 5_000n });
+    expect(await runRotate(opts(net, { execute: true }))).toBe(0);
+    const [retired] = await retiredDirs();
+    old.sats = 400n;
+    const broken = join(dir, "retired", "0000-broken");
+    await mkdir(broken);
+    await writeFile(join(broken, "manifest.json"), "{}");
+    await writeFile(join(broken, "seed.enc"), "not a seed");
+    out = [];
+    expect(await runCheckOld(opts(net))).toBe(1);
+    expect(report()).toMatch(/Retired wallet .*0000-broken: couldn't open it/);
+    expect(report()).toContain(`Retired wallet ${retired}:`);
+    expect(report()).toMatch(/sats\s+400 spendable/);
   });
 
   it("with nothing retired, says so", async () => {
