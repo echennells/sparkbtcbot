@@ -36,6 +36,9 @@ async function main() {
     console.log("No tokens held.\n");
   }
 
+  // The raw-SDK sends below skip SparkAgent's guards (the user's spending
+  // limits and the recipient allowlist). For an agent, use SparkAgent.
+
   // --- Transfer Tokens ---
   // Uncomment with real values to send tokens:
   //

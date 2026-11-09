@@ -72,6 +72,30 @@ describe("SparkAgent spend budget (SPARK_DAILY_BUDGET_SATS)", () => {
     await agent2.transfer({ to: "sp1x", amount: 495 }); // the remainder fits
   });
 
+  // GATE-8 (review 2026-11-09): cleanup() landing while the spend was being
+  // recorded gave PAYMENT_COMMITTED with the spend kept, though nothing was sent.
+  it("cleanup() at any point before the send: AGENT_CLOSED 'no', nothing counted, the SDK never called", async () => {
+    process.env.SPARK_DAILY_BUDGET_SATS = "100000";
+    let outcomes = new Set();
+    for (let turns = 0; turns < 80; turns++) {
+      process.env.SPARK_SPEND_LEDGER_PATH = join(dir, `ledger-${turns}.json`);
+      const wallet = mkWallet();
+      wallet.transfer = vi.fn(async () => ({ id: "t1" }));
+      wallet.cleanup = async () => {};
+      const agent = new SparkAgent(wallet, "MAINNET");
+      const p = agent.transfer({ to: "sp1x", amount: 700 }).catch((e) => e);
+      for (let i = 0; i < turns; i++) await new Promise((r) => setImmediate(r));
+      await agent.cleanup();
+      const r = await p;
+      if (wallet.transfer.mock.calls.length) { outcomes.add("sent"); continue; }
+      expect(r).toMatchObject({ code: "AGENT_CLOSED", retryable: "no" });
+      const ledger = await readFile(process.env.SPARK_SPEND_LEDGER_PATH, "utf8").then(JSON.parse, () => ({ entries: [] }));
+      expect(ledger.entries.reduce((s, e) => s + e.sats, 0)).toBe(0);
+      outcomes.add("closed");
+    }
+    expect(outcomes.has("closed")).toBe(true);
+  });
+
   // GATE-3 (review 2026-11-09): the fee was left out, 25x the budget on 1-sat invoices.
   it("a Lightning payment counts its fee estimate, or the fee cap when there is no estimate", async () => {
     process.env.SPARK_DAILY_BUDGET_SATS = "100000";

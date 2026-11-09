@@ -44,7 +44,9 @@ import { realpathSync } from "node:fs";
 import { mkdir, rename, access, copyFile, unlink, readdir, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { SparkWallet } from "@buildonspark/spark-sdk";
-import { loadSeedPayload, saveEncryptedMnemonic, deriveLedgerHmacKey, DEFAULT_SEED_PATH } from "../../../lib/encrypted-seed.js";
+import { validateMnemonic } from "@scure/bip39";
+import { wordlist as englishWordlist } from "@scure/bip39/wordlists/english";
+import { loadSeedPayload, saveEncryptedMnemonic, deriveLedgerHmacKey, normalizeMnemonic, DEFAULT_SEED_PATH } from "../../../lib/encrypted-seed.js";
 import { createSpendLedger, rekeyLedger, DEFAULT_SPEND_LEDGER_PATH } from "../../../lib/spend-ledger.js";
 import { atomicWriteFile } from "../../../lib/atomic-file.js";
 import { ensureWalletPrivacy, privacyPreferenceFromEnv } from "../../../lib/wallet-privacy.js";
@@ -75,9 +77,13 @@ const retiredDirFor = (seedPath, startedAt, key) => join(retiredRoot(seedPath), 
 class Refusal extends Error {} // a planned stop: the message is the answer
 
 // One-shot wallets: fee ladders off (sparkWalletOptions), no leaf optimizer.
+// The words are normalized and checked as SparkAgent.create does them.
 export const defaultDeps = {
-  openWallet: async (mnemonic, network) =>
-    (await SparkWallet.initialize({ mnemonicOrSeed: mnemonic, options: sparkWalletOptions(network, { optimizationOptions: { auto: false } }) })).wallet,
+  openWallet: async (mnemonic, network) => {
+    const words = normalizeMnemonic(mnemonic);
+    if (!validateMnemonic(words, englishWordlist)) throw new Refusal("A seed file holds words that aren't a valid recovery phrase (they are not shown). Nothing changed; tell the user.");
+    return (await SparkWallet.initialize({ mnemonicOrSeed: words, options: sparkWalletOptions(network, { optimizationOptions: { auto: false } }) })).wallet;
+  },
   generateWallet: async (network) => {
     const { wallet, mnemonic } = await SparkWallet.initialize({ options: sparkWalletOptions(network, { optimizationOptions: { auto: false } }) });
     return { wallet, mnemonic };
@@ -393,7 +399,9 @@ export async function runRotate({ execute = false, deps = defaultDeps, out = (s)
   const oldWallet = await deps.openWallet(oldPayload.mnemonic, network);
   let fresh = null;
   try {
-    const old = await readHoldings(oldWallet, { depositAddress: true });
+    // Only --execute asks for the deposit address: asking can create one at
+    // the operators, and the dry run says nothing was written (ROT-10).
+    const old = await readHoldings(oldWallet, { depositAddress: execute });
     out(`Rotation plan (${network}):\nThis wallet, to be retired:\n${fmt(old)}\nEverything spendable moves to a freshly generated wallet.\n`);
     for (const n of leftBehind(old)) out(`Left behind: ${n}; \`rotate --check-old\` picks them up later.\n`);
     out(HISTORY_NOTE);
@@ -685,7 +693,7 @@ export async function main(args = process.argv.slice(2)) {
     else code = await runRotate({ execute: args.includes("--execute") });
     return exit(code);
   } catch (err) {
-    stderr.write(`rotate: ${err?.message ?? err}\n${err?.nextStep ? `Next: ${err.nextStep}\n` : ""}`);
+    stderr.write(`rotate: ${err?.code ? `[${err.code}${err.retryable ? `, retry: ${err.retryable}` : ""}] ` : ""}${err?.message ?? err}\n${err?.nextStep ? `Next: ${err.nextStep}\n` : ""}`);
     return exit(1);
   }
 }

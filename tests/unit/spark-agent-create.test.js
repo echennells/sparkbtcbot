@@ -53,6 +53,23 @@ describe("SparkAgent.create checks the recovery phrase before opening anything",
 // ToB review 2026-10-28 (F24): initialize() starts the wallet's stream before
 // its first sync and stops nothing when that sync fails, so each retry of a
 // flapping open left one more live wallet claiming in the background.
+// OUT-2 (review 2026-11-09): the constructor's refusal left the opened wallet running.
+describe("SparkAgent.create closes the wallet when the agent can't be built on it", () => {
+  it("a constructor refusal (BAD_CONFIG) closes the opened wallet and is thrown as is", async () => {
+    const init = spyInitialize();
+    const { wallet } = await init.getMockImplementation()();
+    const cleanup = vi.spyOn(wallet, "cleanup");
+    const saved = process.env.SPARK_DAILY_BUDGET_SATS;
+    process.env.SPARK_DAILY_BUDGET_SATS = "lots";
+    try {
+      await expect(SparkAgent.create(generateMnemonic(wordlist), "REGTEST")).rejects.toMatchObject({ code: "BAD_CONFIG" });
+    } finally {
+      if (saved === undefined) delete process.env.SPARK_DAILY_BUDGET_SATS; else process.env.SPARK_DAILY_BUDGET_SATS = saved;
+    }
+    expect(cleanup).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("SparkAgent.create closes a wallet whose open failed half-way", () => {
   it("the half-built wallet is cleaned up, and the failure is SPARK_UNAVAILABLE 'yes'", async () => {
     process.env.SPARK_LEAF_VAULT = "off";

@@ -59,6 +59,10 @@ async function main() {
   // });
   // console.log("Estimated Lightning fee:", fee, "sats");
 
+  // The raw-SDK sends below skip every guard SparkAgent adds: the user's
+  // spending limits, the daily budget, the allowlist, the fee and amount
+  // ceilings and the Lightning dedup store. For an agent, use SparkAgent.
+
   // --- Pay Lightning Invoice ---
   // Uncomment with a real BOLT11 invoice to send:
   //

@@ -13,7 +13,7 @@ import {
   generateTransferId,
   getNetworkFromSparkAddress,
 } from "@buildonspark/spark-sdk";
-import { loadMnemonicFromEnv, getLoadedSeedContext, seedFileIsSealed } from "../../../lib/encrypted-seed.js";
+import { loadMnemonicFromEnv, getLoadedSeedContext, seedFileIsSealed, normalizeMnemonic } from "../../../lib/encrypted-seed.js";
 import {
   loadRecipientsAllowlist,
   assertRecipientAllowed,
@@ -1258,7 +1258,7 @@ export class SparkAgent {
     // (Uint8Array) pass through. The words are never echoed.
     let seed = mnemonic;
     if (typeof mnemonic === "string") {
-      seed = mnemonic.normalize("NFKD").trim().toLowerCase().split(/\s+/).join(" ");
+      seed = normalizeMnemonic(mnemonic);
       if (!validateMnemonic(seed, englishWordlist)) {
         throw badInput(
           new Error("SparkAgent.create: that is not a valid BIP39 recovery phrase (its words are not shown here)."),
@@ -1289,7 +1289,16 @@ export class SparkAgent {
       throw classifySdkError(err); // a BAD_INPUT from sparkWalletOptions passes through as is
     }
     const { wallet, mnemonic: generated } = opened;
-    const agent = new SparkAgent(wallet, network);
+    // The constructor can refuse (BAD_CONFIG, POLICY_NOT_LOADED): close the
+    // wallet it was handed, or it stays open claiming in the background
+    // (review 2026-11-09, OUT-2).
+    let agent;
+    try {
+      agent = new SparkAgent(wallet, network);
+    } catch (err) {
+      await wallet.cleanup?.().catch?.(() => {});
+      throw err;
+    }
     agent.#track = track;
     // Surface a broken recovery backup LOUDLY at startup instead of the silent
     // console.error default — the wallet still works, but the operator is told.
@@ -1428,6 +1437,16 @@ export class SparkAgent {
       `Do NOT pay again with a new invoice, address or method. ${next}`,
       { settled: null, op, invoiceHash, cause: err, nextStep: next },
     );
+  }
+
+  // cleanup() can land while #recordSpend awaits its files. Each send checks
+  // #closed with no await before the SDK call, so a closed agent never
+  // reaches the wallet, and this undoes the spend recorded for nothing. It
+  // used to land in the send's catch as PAYMENT_COMMITTED with the spend kept
+  // (review 2026-11-09, GATE-8 and OUT-4).
+  async #closedBeforeSend(method, spend) {
+    await spend.undo().catch(() => {});
+    return agentClosed(method);
   }
 
   // Budget gate + PRE-commit record for a sats spend. Recording before the
@@ -1668,6 +1687,7 @@ export class SparkAgent {
       };
     }
     const spend = await this.#recordSpend(sats, "spark_transfer");
+    if (this.#closed) throw await this.#closedBeforeSend("transfer", spend);
     try {
       return await this.#wallet.transfer({
         receiverSparkAddress: to,
@@ -2139,6 +2159,11 @@ export class SparkAgent {
       leaveInFlight();
       throw err;
     }
+    if (this.#closed) {
+      await forgetIfMinted();
+      leaveInFlight();
+      throw await this.#closedBeforeSend("payLightningInvoice", spend);
+    }
     let result;
     try {
       // The SDK REQUIRES amountSatsToSend for a zero-amount invoice and REJECTS it
@@ -2597,6 +2622,7 @@ export class SparkAgent {
       return Number.isFinite(n) ? sum + n : NaN;
     }, 0);
     const spend = await this.#recordSpend(satsTotal, "fulfill_spark_invoice");
+    if (this.#closed) throw await this.#closedBeforeSend("fulfillInvoice", spend);
     let result;
     try {
       result = await this.#wallet.fulfillSparkInvoice(
@@ -2694,6 +2720,7 @@ export class SparkAgent {
         network: this.#network,
       };
     }
+    if (this.#closed) throw agentClosed("transferTokens");
     try {
       return await this.#wallet.transferTokens({
         tokenIdentifier: id,
@@ -2773,6 +2800,7 @@ export class SparkAgent {
         network: this.#network,
       };
     }
+    if (this.#closed) throw agentClosed("batchTransferTokens");
     try {
       return await this.#wallet.batchTransferTokens(outputs);
     } catch (err) {
@@ -2978,6 +3006,7 @@ export class SparkAgent {
     }
     // Budget counts amount + the vetted fee — both leave the wallet on an exit.
     const spend = await this.#recordSpend(sats + (check.fee ?? 0), "l1_withdraw");
+    if (this.#closed) throw await this.#closedBeforeSend("withdraw", spend);
     let result;
     try {
       // Bind the executed exit to the SAME quote we just vetted, so the operator

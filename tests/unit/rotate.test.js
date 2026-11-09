@@ -17,7 +17,8 @@ import { saveEncryptedMnemonic, loadSeedPayload, deriveLedgerHmacKey } from "../
 import { initSignedLedger, createSpendLedger } from "../../lib/spend-ledger.js";
 import { writeLimits } from "../../lib/spending-limits.js";
 import { createL402HoldStore } from "../../lib/l402-holds.js";
-import { runRotate, runResume, runCheckOld } from "../../skills/sparkbtcbot/scripts/rotate.js";
+import { SparkWallet } from "@buildonspark/spark-sdk";
+import { runRotate, runResume, runCheckOld, defaultDeps } from "../../skills/sparkbtcbot/scripts/rotate.js";
 
 const PASS = "correct horse battery staple";
 const exists = (p) => access(p).then(() => true, () => false);
@@ -41,7 +42,7 @@ function fakeNet() {
       }),
       queryStaticDepositAddresses: async () => (w.deposits.length ? ["bc1pdeposit"] : []),
       getUtxosForDepositAddress: async () => w.deposits,
-      getStaticDepositAddress: async () => `bc1pstatic${id}`,
+      getStaticDepositAddress: vi.fn(async () => `bc1pstatic${id}`),
       transfer: vi.fn(async ({ receiverSparkAddress, amountSats }) => {
         if (w.failTransfer) throw w.failTransfer;
         const to = byAddress.get(receiverSparkAddress);
@@ -104,6 +105,7 @@ describe("sparkbtcbot rotate", () => {
     expect(report()).toMatch(/Dry run: nothing moved, nothing written\. Show the user this plan; run `sparkbtcbot rotate --execute` only on their yes\./);
     expect(net.deps.generateWallet).not.toHaveBeenCalled();
     expect(wallet.transfer).not.toHaveBeenCalled();
+    expect(wallet.getStaticDepositAddress).not.toHaveBeenCalled(); // asking can create one at the operators (ROT-10)
     expect(await exists(`${environment.SPARK_SEED_PATH}.next`)).toBe(false);
     expect(await retiredDirs()).toEqual([]);
   });
@@ -495,6 +497,24 @@ describe("sparkbtcbot rotate --check-old", () => {
     await walletOnDisk(net);
     expect(await runCheckOld(opts(net))).toBe(0);
     expect(report()).toBe("No retired wallets to check.\n");
+  });
+});
+
+// ROT-9 (review 2026-11-09): rotate passed the stored words to the SDK as
+// they were; words SparkAgent.create normalizes and opens read as a hex seed,
+// with characters of them in the error.
+describe("rotate opens a seed's words as SparkAgent.create does", () => {
+  afterEach(() => vi.restoreAllMocks());
+  it("case and spacing are normalized; words that aren't a phrase are refused without being shown", async () => {
+    const init = vi.spyOn(SparkWallet, "initialize").mockImplementation(async () => ({ wallet: { ok: true } }));
+    const words = generateMnemonic(wordlist);
+    const messy = `  ${words.split(" ").map((w, i) => (i === 0 ? w.toUpperCase() : w)).join("   ")}\n`;
+    expect(await defaultDeps.openWallet(messy, "REGTEST")).toEqual({ ok: true });
+    expect(init.mock.calls[0][0].mnemonicOrSeed).toBe(words);
+    const err = await defaultDeps.openWallet("these are not twelve real recovery words at all ok", "REGTEST").catch((e) => e);
+    expect(err.message).toMatch(/aren't a valid recovery phrase \(they are not shown\)/);
+    expect(err.message).not.toMatch(/these are/);
+    expect(init).toHaveBeenCalledTimes(1);
   });
 });
 

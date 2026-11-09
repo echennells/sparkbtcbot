@@ -183,7 +183,8 @@ Spark-to-Spark transfers are instant and zero-fee.
 > Passing `dryRun: true` (or any unknown key) does nothing: JavaScript drops it
 > silently and the transfer signs and broadcasts anyway. `dryRun` exists only on
 > the `SparkAgent` wrapper (`references/agent-class.md`), which is also the only
-> layer that enforces the recipient allowlist and fee guards. For sends on behalf
+> layer that enforces the recipient allowlist, fee guards, the user's spending
+> limits, the daily budget and the Lightning dedup store. For sends on behalf
 > of an operator, prefer the wrapper; if you must use the raw SDK, never claim a
 > preview happened — there is no such mode here.
 
