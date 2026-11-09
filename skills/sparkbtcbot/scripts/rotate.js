@@ -45,7 +45,7 @@ import { mkdir, rename, access, copyFile, unlink, readdir, readFile } from "node
 import { dirname, join } from "node:path";
 import { SparkWallet } from "@buildonspark/spark-sdk";
 import { loadSeedPayload, saveEncryptedMnemonic, deriveLedgerHmacKey, DEFAULT_SEED_PATH } from "../../../lib/encrypted-seed.js";
-import { createSpendLedger, initSignedLedger, DEFAULT_SPEND_LEDGER_PATH } from "../../../lib/spend-ledger.js";
+import { createSpendLedger, rekeyLedger, DEFAULT_SPEND_LEDGER_PATH } from "../../../lib/spend-ledger.js";
 import { atomicWriteFile } from "../../../lib/atomic-file.js";
 import { ensureWalletPrivacy, privacyPreferenceFromEnv } from "../../../lib/wallet-privacy.js";
 import { sparkWalletOptions } from "../../../lib/wallet-options.js";
@@ -70,6 +70,7 @@ const USAGE =
 const exists = (p) => access(p).then(() => true, () => false);
 const retiredRoot = (seedPath) => join(dirname(seedPath), "retired");
 const statePath = (seedPath) => `${seedPath}.rotation.json`;
+const retiredDirFor = (seedPath, startedAt, key) => join(retiredRoot(seedPath), `${String(startedAt).slice(0, 10)}-${String(key).slice(0, 12)}`);
 
 class Refusal extends Error {} // a planned stop: the message is the answer
 
@@ -94,25 +95,39 @@ export async function readHoldings(wallet, { depositAddress: wantDepositAddress 
   const available = BigInt(sb.available ?? 0n);
   const owned = BigInt(sb.owned ?? available);
   const tokens = [];
+  const tokensPending = [];
   for (const [tokenIdentifier, info] of balance.tokenBalances?.entries?.() ?? []) {
     const amount = BigInt(info.availableToSendBalance ?? info.ownedBalance ?? 0n);
-    if (amount > 0n) tokens.push({ tokenIdentifier, amount, ticker: info.tokenMetadata?.tokenTicker ?? "?" });
+    const owned = BigInt(info.ownedBalance ?? amount);
+    const ticker = info.tokenMetadata?.tokenTicker ?? "?";
+    if (amount > 0n) tokens.push({ tokenIdentifier, amount, ticker });
+    if (owned > amount) tokensPending.push({ tokenIdentifier, amount: owned - amount, ticker });
   }
+  // Static and single-use deposit addresses, as SparkAgent.listPendingDeposits
+  // reads them. A lookup that fails is reported as unknown, never as none: a
+  // confident "nothing has arrived" hid a deposit the leaked words can claim
+  // (review 2026-11-09, ROT-8).
   const pendingDeposits = [];
+  let depositsUnknown = null;
   try {
-    for (const addr of await wallet.queryStaticDepositAddresses()) {
-      for (const u of await wallet.getUtxosForDepositAddress(addr, 100, 0, true)) {
-        pendingDeposits.push({ address: addr, txid: u.txid, vout: u.vout });
+    const seen = new Set();
+    for (const [type, list] of [["static", await wallet.queryStaticDepositAddresses()], ["single-use", (await wallet.getUnusedDepositAddresses?.()) ?? []]]) {
+      for (const addr of list) {
+        if (seen.has(addr)) continue;
+        seen.add(addr);
+        for (const u of await wallet.getUtxosForDepositAddress(addr, 100, 0, true)) pendingDeposits.push({ address: addr, txid: u.txid, vout: u.vout, type });
       }
     }
-  } catch { /* none readable now: reported as none, the check can be run again */ }
+  } catch (err) {
+    depositsUnknown = String(err?.code ?? err?.message ?? err).slice(0, 120);
+  }
   // Only for the wallet being retired: asking a wallet for it can create one.
   const depositAddress = wantDepositAddress ? await wallet.getStaticDepositAddress?.().catch(() => null) ?? null : null;
   return {
     address, identityPublicKey, depositAddress, sats: available,
     lockedSats: owned > available ? owned - available : 0n,
     incomingSats: BigInt(sb.incoming ?? 0n),
-    tokens, pendingDeposits,
+    tokens, tokensPending, pendingDeposits, depositsUnknown,
   };
 }
 
@@ -192,20 +207,45 @@ export async function sweep(from, to, holdings, { log = () => {}, pollMs = 2_000
   throw e;
 }
 
-// --- Stage 1 (before anything moves): both seeds on disk.
+// --- Stage 1 (before anything moves): both seeds on disk. The state file
+// goes first, exclusive: it is the lock against a second rotation, and it
+// lets --resume tell how far staging got. Written last, a crash after `.next`
+// left a rotation that neither --execute nor --resume would touch (review
+// 2026-11-09, ROT-4). It holds the two identities and the start time; the
+// paths are derived from them, never read back (ROT-7).
 export async function stageSeeds({ seedPath, passphrase, oldPayload, newMnemonic, oldKey, newHoldings, now = new Date() }) {
-  const nextPath = `${seedPath}.next`;
-  const retiredDir = join(retiredRoot(seedPath), `${now.toISOString().slice(0, 10)}-${String(oldKey).slice(0, 12)}`);
-  await mkdir(retiredDir, { recursive: true, mode: 0o700 });
-  // Both exclusive: never overwrite an earlier retirement or a staged seed.
-  await saveEncryptedMnemonic({ mnemonic: oldPayload.mnemonic, passphrase, path: join(retiredDir, "seed.enc"), policy: oldPayload.policy });
-  await saveEncryptedMnemonic({ mnemonic: newMnemonic, passphrase, path: nextPath, policy: oldPayload.policy });
   const state = {
-    schema: "sparkbtcbot.rotation.v1", state: "staged", startedAt: now.toISOString(), retiredDir, nextPath,
+    schema: "sparkbtcbot.rotation.v1", state: "staging", startedAt: now.toISOString(),
     old: { identityPublicKey: oldKey }, new: { identityPublicKey: newHoldings.identityPublicKey, sparkAddress: newHoldings.address },
   };
+  try {
+    await atomicWriteFile(statePath(seedPath), JSON.stringify(state, null, 2) + "\n", { mode: 0o600, exclusive: true });
+  } catch (err) {
+    if (err?.code !== "EEXIST") throw err;
+    throw new Refusal(`Another rotation is under way or was interrupted (${statePath(seedPath)}). Run \`sparkbtcbot rotate --resume\`. Nothing changed.`);
+  }
+  const run = withPaths(seedPath, state);
+  await mkdir(run.retiredDir, { recursive: true, mode: 0o700 });
+  await keepRetiredSeed({ retiredDir: run.retiredDir, passphrase, payload: oldPayload });
+  await saveEncryptedMnemonic({ mnemonic: newMnemonic, passphrase, path: run.nextPath, policy: oldPayload.policy }); // exclusive
+  state.state = "staged";
   await atomicWriteFile(statePath(seedPath), JSON.stringify(state, null, 2) + "\n", { mode: 0o600 });
-  return state;
+  return { ...run, state: "staged" };
+}
+
+const withPaths = (seedPath, state) => ({ ...state, nextPath: `${seedPath}.next`, retiredDir: retiredDirFor(seedPath, state.startedAt, state.old.identityPublicKey) });
+
+// The old seed's copy in its retired dir: written exclusive, or kept when a
+// copy with the same words is there already (left by a run cut off while
+// staging, which used to block every rotation that UTC day). A copy holding
+// other words is never replaced.
+async function keepRetiredSeed({ retiredDir, passphrase, payload }) {
+  const path = join(retiredDir, "seed.enc");
+  if (await exists(path)) {
+    if ((await loadSeedPayload({ passphrase, path })).mnemonic === payload.mnemonic) return;
+    throw new Refusal(`${path} already holds a different seed, so this wallet's copy can't go there. Nothing moved; tell the user.`);
+  }
+  await saveEncryptedMnemonic({ mnemonic: payload.mnemonic, passphrase, path, policy: payload.policy });
 }
 
 // --- Stage 2 (after a verified sweep): the new seed in place, the old wallet's
@@ -214,31 +254,56 @@ export async function stageSeeds({ seedPath, passphrase, oldPayload, newMnemonic
 // BEFORE anything moves (a ledger that fails verification stops the rotation
 // there), so the commit can sign the same spends again under the new key: the
 // budget doesn't restart because the seed did. null when nothing is sealed.
-export async function readSealedWindow(oldPayload, ledgerPath) {
+// --resume passes the new seed's words too: a commit cut off after the
+// re-sign left the ledger under the new key.
+export async function readSealedWindow(oldPayload, ledgerPath, newMnemonic = null) {
   if (oldPayload.policy?.dailyBudgetSats == null) return null;
-  const { entries } = await createSpendLedger({
-    path: ledgerPath, budgetSats: oldPayload.policy.dailyBudgetSats, hmacKey: deriveLedgerHmacKey(oldPayload.mnemonic), bound: true,
-  }).status();
-  return entries;
+  const read = async (mnemonic) => (await createSpendLedger({
+    path: ledgerPath, budgetSats: oldPayload.policy.dailyBudgetSats, hmacKey: deriveLedgerHmacKey(mnemonic), bound: true,
+  }).status()).entries;
+  try {
+    return await read(oldPayload.mnemonic);
+  } catch (err) {
+    if (err?.code !== "SPEND_LEDGER_BAD_SIGNATURE" || !newMnemonic) throw err;
+    return await read(newMnemonic);
+  }
 }
 
-export async function commitRotation({ seedPath, ledgerPath, vaultPath, state, sealedEntries, newMnemonic, oldHoldings, swept, now = new Date() }) {
-  if (sealedEntries) await initSignedLedger({ path: ledgerPath, hmacKey: deriveLedgerHmacKey(newMnemonic), entries: sealedEntries });
-  await rename(state.nextPath, seedPath); // atomic: seed.enc is old or new, never partial
-  if (await exists(vaultPath)) {
-    const dest = join(state.retiredDir, "leaf-vault.json");
-    try { await rename(vaultPath, dest); } catch { await copyFile(vaultPath, dest); await unlink(vaultPath); }
+export async function commitRotation({ seedPath, ledgerPath, vaultPath, state, sealedEntries, passphrase, oldMnemonic, newMnemonic, oldHoldings, swept, now = new Date() }) {
+  // The words seed.enc is about to lose must be on disk elsewhere first.
+  if ((await loadSeedPayload({ passphrase, path: join(state.retiredDir, "seed.enc") })).mnemonic !== oldMnemonic) {
+    throw new Refusal(`${join(state.retiredDir, "seed.enc")} doesn't hold the seed being retired, so ${seedPath} is left as it is. Run \`sparkbtcbot rotate --resume\`; tell the user if it says the same.`);
   }
+  // Re-read now, under the ledger's lock, rather than re-signing the window
+  // read at the start; an old-key spend recorded meanwhile stays counted.
+  if (sealedEntries) {
+    await rekeyLedger({ path: ledgerPath, fromKeys: [deriveLedgerHmacKey(oldMnemonic), deriveLedgerHmacKey(newMnemonic)], toKey: deriveLedgerHmacKey(newMnemonic), keep: sealedEntries });
+  }
+  await rename(state.nextPath, seedPath); // atomic: seed.enc is old or new, never partial
+  await fileOldVault(vaultPath, state.retiredDir);
+  return await writeManifest(seedPath, state, oldHoldings, swept, now);
+}
+
+// The old wallet's backup goes beside its retired seed, unless a copy is
+// there already.
+async function fileOldVault(vaultPath, retiredDir) {
+  const dest = join(retiredDir, "leaf-vault.json");
+  if (!(await exists(vaultPath)) || (await exists(dest))) return;
+  try { await rename(vaultPath, dest); } catch { await copyFile(vaultPath, dest); await unlink(vaultPath); }
+}
+
+async function writeManifest(seedPath, state, oldHoldings, swept, now) {
   const manifest = {
     schema: "sparkbtcbot.retired-seed.v1",
     retiredAt: now.toISOString(),
     identityPublicKey: oldHoldings.identityPublicKey,
     sparkAddress: oldHoldings.address,
     staticDepositAddress: oldHoldings.depositAddress,
-    sweptSats: String(swept.sats),
+    sweptSats: swept.sats == null ? null : String(swept.sats),
     sweptTokens: swept.tokens.map((t) => ({ tokenIdentifier: t.tokenIdentifier, amount: String(t.amount), ticker: t.ticker })),
     tokensLeftBehind: (swept.leftBehind ?? []).map((t) => ({ tokenIdentifier: t.tokenIdentifier, amount: String(t.amount), ticker: t.ticker, reason: t.reason })),
     successor: state.new,
+    ...(swept.note ? { note: swept.note } : {}),
   };
   await atomicWriteFile(join(state.retiredDir, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n", { mode: 0o600 });
   await unlink(statePath(seedPath)).catch(() => {});
@@ -249,7 +314,9 @@ const fmt = (h) => [
   `  address        ${h.address}`,
   `  sats           ${h.sats} spendable${h.lockedSats > 0n ? `, ${h.lockedSats} locked` : ""}${h.incomingSats > 0n ? `, ${h.incomingSats} incoming` : ""}`,
   ...h.tokens.map((t) => `  token          ${t.amount} ${t.ticker} (${t.tokenIdentifier.slice(0, 24)}…)`),
-  ...h.pendingDeposits.map((d) => `  L1 deposit     ${d.txid.slice(0, 16)}…:${d.vout} waiting to be claimed`),
+  ...(h.tokensPending ?? []).map((t) => `  token          ${t.amount} ${t.ticker} (${t.tokenIdentifier.slice(0, 24)}…) not spendable yet`),
+  ...h.pendingDeposits.map((d) => `  L1 deposit     ${d.txid.slice(0, 16)}…:${d.vout} waiting to be claimed${d.type === "single-use" ? " (single-use address: the operators don't claim these now)" : ""}`),
+  ...(h.depositsUnknown ? [`  L1 deposits    couldn't be checked (${h.depositsUnknown}): run this again`] : []),
 ].join("\n");
 
 function leftBehind(h) {
@@ -257,6 +324,8 @@ function leftBehind(h) {
   if (h.lockedSats > 0n) notes.push(`${h.lockedSats} sats locked: a send still in flight may yet take them, or they come back to the old wallet`);
   if (h.incomingSats > 0n) notes.push(`${h.incomingSats} sats incoming stay with the old wallet until they settle`);
   if (h.pendingDeposits.length) notes.push(`${h.pendingDeposits.length} L1 deposit(s) waiting to be claimed stay at the old deposit address`);
+  if (h.depositsUnknown) notes.push(`L1 deposits couldn't be checked (${h.depositsUnknown}), so any there stay at the old address`);
+  if (h.tokensPending?.length) notes.push(`${h.tokensPending.length} token balance(s) not spendable yet stay with the old wallet`);
   return notes;
 }
 
@@ -307,8 +376,8 @@ const AFTER =
 export async function runRotate({ execute = false, deps = defaultDeps, out = (s) => stdout.write(s), log = (s) => stderr.write(`  ${s}\n`), environment = env } = {}) {
   const network = environment.SPARK_NETWORK || "MAINNET";
   const seedPath = environment.SPARK_SEED_PATH || DEFAULT_SEED_PATH;
-  if (await exists(`${seedPath}.next`)) {
-    throw new Refusal(`A rotation was interrupted: ${seedPath}.next (the new wallet) is on disk. Run \`sparkbtcbot rotate --resume\` to finish it. Nothing changed.`);
+  if (await exists(`${seedPath}.next`) || await exists(statePath(seedPath))) {
+    throw new Refusal(`A rotation was interrupted (${await exists(`${seedPath}.next`) ? `${seedPath}.next, the new wallet, is on disk` : statePath(seedPath)}). Run \`sparkbtcbot rotate --resume\` to finish it. Nothing changed.`);
   }
   const passphrase = takePassphrase(environment);
   const oldPayload = await loadSeedPayload({ passphrase, path: seedPath });
@@ -337,21 +406,26 @@ export async function runRotate({ execute = false, deps = defaultDeps, out = (s)
     log(`new wallet ${neu.address}`);
     const state = await stageSeeds({ seedPath, passphrase, oldPayload, newMnemonic: fresh.mnemonic, oldKey: old.identityPublicKey, newHoldings: neu });
     log(`old seed kept at ${join(state.retiredDir, "seed.enc")}; new seed staged at ${state.nextPath}`);
-    return await finish({ seedPath, network, environment, state, sealedEntries, newMnemonic: fresh.mnemonic, oldWallet, newWallet: fresh.wallet, old, out, log });
+    return await finish({ seedPath, network, environment, state, sealedEntries, passphrase, oldMnemonic: oldPayload.mnemonic, newMnemonic: fresh.mnemonic, oldWallet, newWallet: fresh.wallet, old, out, log });
   } finally {
     await oldWallet.cleanup?.().catch?.(() => {});
     await fresh?.wallet.cleanup?.().catch?.(() => {});
   }
 }
 
-async function finish({ seedPath, network, environment, state, sealedEntries, newMnemonic, oldWallet, newWallet, old, out, log }) {
+async function finish({ seedPath, network, environment, state, sealedEntries, passphrase, oldMnemonic, newMnemonic, oldWallet, newWallet, old, out, log }) {
   if (privacyPreferenceFromEnv(environment)) {
     try { await ensureWalletPrivacy(newWallet); log("privacy on for the new wallet"); }
     catch (err) { log(`privacy could not be turned on for the new wallet yet (${err?.message ?? err}); its next boot retries`); }
   }
   let swept;
+  let movedSats;
   try {
-    swept = await sweep(oldWallet, newWallet, old, { log });
+    // What the old wallet holds now, not at the plan: sats that became
+    // spendable since move too (review 2026-11-09, ROT-8).
+    const now = await readHoldings(oldWallet);
+    swept = await sweep(oldWallet, newWallet, now, { log });
+    movedSats = now.sats;
   } catch (err) {
     out(
       `\nThe sweep didn't finish: ${err?.message ?? err}\n` +
@@ -360,10 +434,24 @@ async function finish({ seedPath, network, environment, state, sealedEntries, ne
     );
     return 1;
   }
+  // And anything that became spendable during the sweep, twice at most. A
+  // failure here leaves it for --check-old: the rotation itself is done.
+  for (let round = 0; round < 2; round++) {
+    try {
+      const more = await readHoldings(oldWallet);
+      if (more.sats <= 0n) break;
+      swept = { ...swept, balanceSats: (await sweep(oldWallet, newWallet, { ...more, tokens: [] }, { log })).balanceSats };
+      movedSats += more.sats;
+    } catch (err) {
+      log(`sats that arrived during the sweep stay in the old wallet for --check-old (${err?.message ?? err})`);
+      break;
+    }
+  }
   const vaultPath = environment.SPARK_LEAF_VAULT_PATH || defaultVaultPath();
   await commitRotation({
     seedPath, ledgerPath: environment.SPARK_SPEND_LEDGER_PATH || DEFAULT_SPEND_LEDGER_PATH, vaultPath,
-    state, sealedEntries, newMnemonic, oldHoldings: old, swept: { sats: old.sats, tokens: swept.sent.tokens, leftBehind: swept.sent.leftBehind },
+    state, sealedEntries, passphrase, oldMnemonic, newMnemonic, oldHoldings: old,
+    swept: { sats: movedSats, tokens: swept.sent.tokens, leftBehind: swept.sent.leftBehind },
   });
   if (environment.SPARK_LEAF_VAULT !== "off") {
     try {
@@ -387,20 +475,95 @@ export async function runResume({ deps = defaultDeps, out = (s) => stdout.write(
   } catch {
     throw new Refusal(`No interrupted rotation to finish (${statePath(seedPath)} isn't there). Nothing changed.`);
   }
-  if (!(await exists(state.nextPath))) throw new Refusal(`${state.nextPath} is missing, so this rotation can't be finished from here. Nothing changed; tell the user.`);
+  const KEY = /^0[23][0-9a-f]{64}$/;
+  if (!KEY.test(state?.old?.identityPublicKey ?? "") || !KEY.test(state?.new?.identityPublicKey ?? "") || !/^\d{4}-\d{2}-\d{2}T/.test(state?.startedAt ?? "")) {
+    throw new Refusal(`${statePath(seedPath)} isn't a rotation state this command wrote. Nothing changed; tell the user.`);
+  }
+  const run = withPaths(seedPath, state);
+  const ledgerPath = environment.SPARK_SPEND_LEDGER_PATH || DEFAULT_SPEND_LEDGER_PATH;
   const passphrase = takePassphrase(environment);
-  const oldPayload = await loadSeedPayload({ passphrase, path: seedPath });
-  const newPayload = await loadSeedPayload({ passphrase, path: state.nextPath });
-  const sealedEntries = await readSealedWindow(oldPayload, environment.SPARK_SPEND_LEDGER_PATH || DEFAULT_SPEND_LEDGER_PATH);
+  const seedPayload = await loadSeedPayload({ passphrase, path: seedPath });
+  const seedWallet = await deps.openWallet(seedPayload.mnemonic, network);
+  let newWallet = null;
+  try {
+    const seedKey = await seedWallet.getIdentityPublicKey();
+    if (!(await exists(run.nextPath))) {
+      // Cut off after the rename: seed.enc is the new wallet; only the
+      // bookkeeping is left. It used to refuse, and --check-old couldn't see
+      // the retired wallet without its manifest.
+      if (seedKey === state.new.identityPublicKey) return await completeCommit({ seedPath, network, environment, deps, passphrase, run, newWallet: seedWallet, out, log });
+      // Cut off while staging: nothing moved (the sweep starts after it).
+      if (seedKey === state.old.identityPublicKey) {
+        await unlink(statePath(seedPath));
+        out("The interrupted rotation stopped while writing the seeds, before anything moved. It is cleared, and nothing moved. On the user's say-so, run `sparkbtcbot rotate` for a fresh plan.\n");
+        return 1;
+      }
+      throw new Refusal(`${run.nextPath} is missing and ${seedPath} is neither wallet this rotation names, so it can't be finished from here. Nothing changed; tell the user.`);
+    }
+    const newPayload = await loadSeedPayload({ passphrase, path: run.nextPath });
+    newWallet = await deps.openWallet(newPayload.mnemonic, network);
+    const nextKey = await newWallet.getIdentityPublicKey();
+    // Both must be the wallets this rotation staged, and the destination
+    // never one already retired. Unchecked, a stale run's state or a planted
+    // one moved the money into a retired (leaked) seed and put that seed back
+    // in seed.enc (review 2026-11-09, ROT-5 and ROT-7).
+    if (seedKey !== state.old.identityPublicKey || nextKey !== state.new.identityPublicKey) {
+      throw new Refusal(`${seedPath} and ${run.nextPath} aren't the two wallets this rotation staged, so finishing it could send the money to the wrong one. Nothing changed; tell the user.`);
+    }
+    if ((await retiredKeys(seedPath)).has(nextKey)) {
+      throw new Refusal(`${run.nextPath} is a wallet already retired, so it can't become seed.enc again. Nothing changed; tell the user.`);
+    }
+    // A spending policy sealed (or changed) since staging goes with the new seed.
+    if (JSON.stringify(seedPayload.policy ?? null) !== JSON.stringify(newPayload.policy ?? null)) {
+      await saveEncryptedMnemonic({ mnemonic: newPayload.mnemonic, passphrase, path: run.nextPath, policy: seedPayload.policy, allowOverwrite: true });
+      log("the new seed now carries the spending policy set since the rotation started");
+    }
+    await mkdir(run.retiredDir, { recursive: true, mode: 0o700 });
+    await keepRetiredSeed({ retiredDir: run.retiredDir, passphrase, payload: seedPayload });
+    const sealedEntries = await readSealedWindow(seedPayload, ledgerPath, newPayload.mnemonic);
+    const old = await readHoldings(seedWallet, { depositAddress: true });
+    out(`Finishing the rotation (${network}). Still in the old wallet:\n${fmt(old)}\n`);
+    return await finish({
+      seedPath, network, environment, state: run, sealedEntries, passphrase, oldMnemonic: seedPayload.mnemonic, newMnemonic: newPayload.mnemonic,
+      oldWallet: seedWallet, newWallet, old, out, log,
+    });
+  } finally {
+    await seedWallet.cleanup?.().catch?.(() => {});
+    await newWallet?.cleanup?.().catch?.(() => {});
+  }
+}
+
+// The identities in the retired wallets' manifests.
+async function retiredKeys(seedPath) {
+  const keys = new Set();
+  for (const name of await readdir(retiredRoot(seedPath)).catch(() => [])) {
+    try { keys.add(JSON.parse(await readFile(join(retiredRoot(seedPath), name, "manifest.json"), "utf8")).identityPublicKey); } catch {}
+  }
+  return keys;
+}
+
+// The rename happened, the rest didn't: file the old backup, write the
+// manifest, clear the state. What the sweep moved isn't known any more.
+async function completeCommit({ seedPath, network, environment, deps, passphrase, run, newWallet, out, log }) {
+  const oldPayload = await loadSeedPayload({ passphrase, path: join(run.retiredDir, "seed.enc") });
   const oldWallet = await deps.openWallet(oldPayload.mnemonic, network);
-  const newWallet = await deps.openWallet(newPayload.mnemonic, network);
   try {
     const old = await readHoldings(oldWallet, { depositAddress: true });
-    out(`Finishing the rotation (${network}). Still in the old wallet:\n${fmt(old)}\n`);
-    return await finish({ seedPath, network, environment, state, sealedEntries, newMnemonic: newPayload.mnemonic, oldWallet, newWallet, old, out, log });
+    if (old.identityPublicKey !== run.old.identityPublicKey) {
+      throw new Refusal(`${join(run.retiredDir, "seed.enc")} isn't the wallet this rotation retired. Nothing changed; tell the user.`);
+    }
+    await fileOldVault(environment.SPARK_LEAF_VAULT_PATH || defaultVaultPath(), run.retiredDir);
+    if (!(await exists(join(run.retiredDir, "manifest.json")))) {
+      await writeManifest(seedPath, run, old, { sats: null, tokens: [], note: "completed by --resume after an interruption; the swept amounts weren't recorded" }, new Date());
+    } else {
+      await unlink(statePath(seedPath)).catch(() => {});
+    }
+    const neu = await readHoldings(newWallet);
+    log("the money had moved and seed.enc was already the new wallet; the last bookkeeping is done now");
+    out(`\nRotated. ${seedPath} is the new wallet: ${neu.address}, holding ${neu.sats} sats.\nThe old seed is kept at ${join(run.retiredDir, "seed.enc")}.\nStill in the old wallet:\n${fmt(old)}\n\n${AFTER}`);
+    return 0;
   } finally {
     await oldWallet.cleanup?.().catch?.(() => {});
-    await newWallet.cleanup?.().catch?.(() => {});
   }
 }
 
@@ -409,20 +572,24 @@ export async function runResume({ deps = defaultDeps, out = (s) => stdout.write(
 export async function runCheckOld({ sweepNow = false, deps = defaultDeps, out = (s) => stdout.write(s), log = (s) => stderr.write(`  ${s}\n`), environment = env, makeAgent } = {}) {
   const network = environment.SPARK_NETWORK || "MAINNET";
   const seedPath = environment.SPARK_SEED_PATH || DEFAULT_SEED_PATH;
+  // Every retired seed, manifest or not: a rotation cut off before its
+  // manifest still retired that wallet (review 2026-11-09, ROT-4). A copy
+  // holding seed.enc's own words is a rotation not yet committed: skipped.
   const dirs = [];
   for (const name of await readdir(retiredRoot(seedPath)).catch(() => [])) {
     const dir = join(retiredRoot(seedPath), name);
-    if (await exists(join(dir, "manifest.json")) && await exists(join(dir, "seed.enc"))) dirs.push(dir);
+    if (await exists(join(dir, "seed.enc"))) dirs.push(dir);
   }
   if (!dirs.length) { out("No retired wallets to check.\n"); return 0; }
   const passphrase = takePassphrase(environment);
+  const cur = await loadSeedPayload({ passphrase, path: seedPath });
   let current = null;
   let seedContext;
   let anything = false;
+  let checked = 0;
   let unopened = 0;
   try {
     if (sweepNow) {
-      const cur = await loadSeedPayload({ passphrase, path: seedPath });
       current = await deps.openWallet(cur.mnemonic, network);
       // The deposit claim's agent counts against the CURRENT seed's ledger,
       // which a rotation re-signed under the current key: without this a
@@ -435,6 +602,8 @@ export async function runCheckOld({ sweepNow = false, deps = defaultDeps, out = 
       let wallet;
       try {
         const payload = await loadSeedPayload({ passphrase, path: join(dir, "seed.enc") });
+        if (payload.mnemonic === cur.mnemonic) continue;
+        checked++;
         wallet = await deps.openWallet(payload.mnemonic, network); // opening it claims transfers that arrived
       } catch (err) {
         unopened++;
@@ -443,7 +612,7 @@ export async function runCheckOld({ sweepNow = false, deps = defaultDeps, out = 
       }
       try {
         let h = await readHoldings(wallet);
-        const has = h.sats > 0n || h.tokens.length || h.pendingDeposits.length || h.lockedSats > 0n || h.incomingSats > 0n;
+        const has = h.sats > 0n || h.tokens.length || h.tokensPending.length || h.pendingDeposits.length || h.depositsUnknown || h.lockedSats > 0n || h.incomingSats > 0n;
         out(`Retired wallet ${dir}:\n${fmt(h)}\n`);
         const recent = await recentTransfers(wallet);
         out(recent.length
@@ -480,7 +649,8 @@ export async function runCheckOld({ sweepNow = false, deps = defaultDeps, out = 
   } finally {
     await current?.cleanup?.().catch?.(() => {});
   }
-  if (!anything && !unopened) out("Nothing has arrived at the retired wallets.\n");
+  if (!checked) out("No retired wallets to check.\n");
+  else if (!anything && !unopened) out("Nothing has arrived at the retired wallets.\n");
   else if (anything && !sweepNow) out("\nTell the user what arrived; `sparkbtcbot rotate --check-old --sweep` moves it to this wallet, on their say-so.\n");
   return unopened ? 1 : 0;
 }
@@ -515,7 +685,7 @@ export async function main(args = process.argv.slice(2)) {
     else code = await runRotate({ execute: args.includes("--execute") });
     return exit(code);
   } catch (err) {
-    stderr.write(`rotate: ${err?.message ?? err}\n`);
+    stderr.write(`rotate: ${err?.message ?? err}\n${err?.nextStep ? `Next: ${err.nextStep}\n` : ""}`);
     return exit(1);
   }
 }

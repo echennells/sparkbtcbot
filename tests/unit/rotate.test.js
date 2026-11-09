@@ -7,7 +7,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtemp, rm, readdir, readFile, access, writeFile, mkdir } from "node:fs/promises";
+import { mkdtemp, rm, readdir, readFile, access, writeFile, mkdir, copyFile, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -243,6 +243,154 @@ describe("sparkbtcbot rotate", () => {
     await expect(runRotate(opts(net, { execute: true }))).rejects.toMatchObject({ code: "SPEND_LEDGER_BAD_SIGNATURE" });
     expect(old.transfer).not.toHaveBeenCalled();
     expect(await exists(`${environment.SPARK_SEED_PATH}.next`)).toBe(false);
+  });
+});
+
+// Review 2026-11-09: a rotation cut off between two local writes (ROT-4), a
+// state that no longer matches the files (ROT-5), a state file that names
+// another destination (ROT-7), the window re-signed from a stale read (ROT-6),
+// and a deposit lookup that fails (ROT-8). Each test failed on the old code.
+describe("sparkbtcbot rotate after an interruption", () => {
+  const statePath = () => `${environment.SPARK_SEED_PATH}.rotation.json`;
+  const nextPath = () => `${environment.SPARK_SEED_PATH}.next`;
+  const words = async (p) => (await loadSeedPayload({ passphrase: PASS, path: p })).mnemonic;
+  // A rotation staged, then its sweep cut off: both seeds on disk, nothing moved.
+  async function staged(net, setup = {}, beforeRotate = async () => {}) {
+    const { mnemonic, wallet: old } = await walletOnDisk(net, { sats: 5_000n, ...setup });
+    await beforeRotate(mnemonic);
+    old.failTransfer = new Error("deadline exceeded");
+    expect(await runRotate(opts(net, { execute: true }))).toBe(1);
+    old.failTransfer = null;
+    out = [];
+    return { oldWords: mnemonic, old, fresh: net.byMnemonic.get(await words(nextPath())) };
+  }
+
+  it("cut off while staging (no .next yet): --resume clears it, nothing moved, and the next --execute reuses the retired copy", async () => {
+    const net = fakeNet();
+    const { oldWords, old } = await staged(net);
+    await unlink(nextPath());
+    await writeFile(statePath(), JSON.stringify({ ...JSON.parse(await readFile(statePath(), "utf8")), state: "staging" }));
+    await expect(runRotate(opts(net))).rejects.toThrow(/A rotation was interrupted .*rotate --resume/);
+    expect(await runResume(opts(net))).toBe(1);
+    expect(report()).toMatch(/stopped while writing the seeds, before anything moved/);
+    expect(await exists(statePath())).toBe(false);
+    expect({ seed: await words(environment.SPARK_SEED_PATH), sats: old.sats }).toEqual({ seed: oldWords, sats: 5_000n });
+    out = [];
+    expect(await runRotate(opts(net, { execute: true }))).toBe(0); // same day, same key: the retired copy is reused
+    expect(old.sats).toBe(0n);
+  });
+
+  it("cut off after the rename: --check-old still sees the retired wallet, and --resume writes its manifest", async () => {
+    const net = fakeNet();
+    const { wallet: old } = await walletOnDisk(net, { sats: 5_000n });
+    expect(await runRotate(opts(net, { execute: true }))).toBe(0);
+    const fresh = net.byMnemonic.get(await words(environment.SPARK_SEED_PATH));
+    const [retired] = await retiredDirs();
+    await unlink(join(retired, "manifest.json"));
+    await writeFile(statePath(), JSON.stringify({ schema: "sparkbtcbot.rotation.v1", state: "staged", startedAt: new Date().toISOString(),
+      old: { identityPublicKey: old.key }, new: { identityPublicKey: fresh.key, sparkAddress: fresh.address } }));
+    old.sats = 300n;
+    out = [];
+    expect(await runCheckOld(opts(net))).toBe(0);
+    expect(report()).toMatch(/sats\s+300 spendable/);
+    out = [];
+    expect(await runResume(opts(net))).toBe(0);
+    expect(report()).toMatch(/Rotated\..*is the new wallet/);
+    expect(JSON.parse(await readFile(join(retired, "manifest.json"), "utf8"))).toMatchObject({ identityPublicKey: old.key, sweptSats: null, successor: { sparkAddress: fresh.address } });
+    expect(await exists(statePath())).toBe(false);
+  });
+
+  it("cut off after the sealed ledger was re-signed: --resume reads it under the new key and finishes", async () => {
+    const net = fakeNet();
+    const policy = { dailyBudgetSats: 5_000 };
+    const spend = { id: "aaaaaaaaaaaaaaaa", ts: Date.now() - 60_000, sats: 1_200, operation: "lightning_pay" };
+    const { fresh } = await staged(net, { policy }, (mnemonic) =>
+      initSignedLedger({ path: environment.SPARK_SPEND_LEDGER_PATH, hmacKey: deriveLedgerHmacKey(mnemonic), entries: [spend] }));
+    const newWords = await words(nextPath());
+    await initSignedLedger({ path: environment.SPARK_SPEND_LEDGER_PATH, hmacKey: deriveLedgerHmacKey(newWords), entries: [spend] });
+    expect(await runResume(opts(net))).toBe(0);
+    expect(await words(environment.SPARK_SEED_PATH)).toBe(newWords);
+    expect(fresh.sats).toBe(5_000n);
+    const status = await createSpendLedger({ path: environment.SPARK_SPEND_LEDGER_PATH, budgetSats: 5_000, hmacKey: deriveLedgerHmacKey(newWords), bound: true }).status();
+    expect(status.spentSats).toBe(1_200);
+  });
+
+  it("a spend the old key records while the rotation runs stays in the re-signed window", async () => {
+    const net = fakeNet();
+    const policy = { dailyBudgetSats: 5_000 };
+    const { mnemonic: oldWords } = await walletOnDisk(net, { sats: 9_000n, policy });
+    await initSignedLedger({ path: environment.SPARK_SPEND_LEDGER_PATH, hmacKey: deriveLedgerHmacKey(oldWords), entries: [] });
+    const generate = net.deps.generateWallet.getMockImplementation();
+    net.deps.generateWallet.mockImplementation(async () => {
+      // A running agent on the old seed pays while the new wallet is being made.
+      await createSpendLedger({ path: environment.SPARK_SPEND_LEDGER_PATH, budgetSats: 5_000, hmacKey: deriveLedgerHmacKey(oldWords), bound: true }).reserve(500, "spark_transfer");
+      return generate();
+    });
+    expect(await runRotate(opts(net, { execute: true }))).toBe(0);
+    const newWords = await words(environment.SPARK_SEED_PATH);
+    const status = await createSpendLedger({ path: environment.SPARK_SPEND_LEDGER_PATH, budgetSats: 5_000, hmacKey: deriveLedgerHmacKey(newWords), bound: true }).status();
+    expect(status.spentSats).toBe(500);
+  });
+
+  it("--resume refuses when .next isn't the wallet this rotation staged; nothing moves", async () => {
+    const net = fakeNet();
+    const { old } = await staged(net);
+    await saveEncryptedMnemonic({ mnemonic: generateMnemonic(wordlist), passphrase: PASS, path: nextPath(), allowOverwrite: true });
+    await expect(runResume(opts(net))).rejects.toThrow(/aren't the two wallets this rotation staged/);
+    expect(old.sats).toBe(5_000n);
+  });
+
+  it("a spending policy sealed during the interruption goes with the new seed", async () => {
+    const net = fakeNet();
+    const { oldWords } = await staged(net);
+    await saveEncryptedMnemonic({ mnemonic: oldWords, passphrase: PASS, path: environment.SPARK_SEED_PATH, policy: { dailyBudgetSats: 3_000 }, allowOverwrite: true });
+    await initSignedLedger({ path: environment.SPARK_SPEND_LEDGER_PATH, hmacKey: deriveLedgerHmacKey(oldWords) });
+    expect(await runResume(opts(net))).toBe(0);
+    expect((await loadSeedPayload({ passphrase: PASS, path: environment.SPARK_SEED_PATH })).policy).toEqual({ dailyBudgetSats: 3_000 });
+  });
+
+  it("a planted state file can't send the money back to a retired seed", async () => {
+    const net = fakeNet();
+    const { wallet: a } = await walletOnDisk(net, { sats: 5_000n });
+    expect(await runRotate(opts(net, { execute: true }))).toBe(0);
+    const bWords = await words(environment.SPARK_SEED_PATH);
+    const b = net.byMnemonic.get(bWords);
+    const [retired] = await retiredDirs();
+    await copyFile(join(retired, "seed.enc"), nextPath());
+    await writeFile(statePath(), JSON.stringify({ schema: "sparkbtcbot.rotation.v1", state: "staged", startedAt: new Date().toISOString(),
+      nextPath: join(retired, "seed.enc"), old: { identityPublicKey: b.key }, new: { identityPublicKey: a.key } }));
+    await expect(runResume(opts(net))).rejects.toThrow(/already retired/);
+    expect({ seed: await words(environment.SPARK_SEED_PATH), a: a.sats, b: b.sats }).toEqual({ seed: bWords, a: 0n, b: 5_000n });
+  });
+
+  it("a deposit lookup that fails is reported as unknown, and --check-old doesn't say nothing arrived", async () => {
+    const net = fakeNet();
+    const { wallet: old } = await walletOnDisk(net, { sats: 5_000n });
+    old.queryStaticDepositAddresses = async () => { throw Object.assign(new Error("14 UNAVAILABLE: no connection"), { code: 14 }); };
+    expect(await runRotate(opts(net))).toBe(0);
+    expect(report()).toMatch(/L1 deposits\s+couldn't be checked \(14\): run this again/);
+    expect(await runRotate(opts(net, { execute: true }))).toBe(0);
+    out = [];
+    expect(await runCheckOld(opts(net))).toBe(0);
+    expect(report()).not.toMatch(/Nothing has arrived/);
+    expect(report()).toMatch(/Tell the user what arrived/);
+  });
+
+  it("sats that become spendable after the plan move too", async () => {
+    const net = fakeNet();
+    const { wallet: old } = await walletOnDisk(net, { sats: 5_000n });
+    const send = old.transfer.getMockImplementation();
+    let arrived = false;
+    old.transfer.mockImplementation(async (a) => {
+      const r = await send(a);
+      if (!arrived) { arrived = true; old.sats += 2_000n; } // a payment lands during the sweep
+      return r;
+    });
+    expect(await runRotate(opts(net, { execute: true }))).toBe(0);
+    const fresh = net.byMnemonic.get(await words(environment.SPARK_SEED_PATH));
+    expect({ fresh: fresh.sats, old: old.sats }).toEqual({ fresh: 7_000n, old: 0n });
+    const [retired] = await retiredDirs();
+    expect(JSON.parse(await readFile(join(retired, "manifest.json"), "utf8")).sweptSats).toBe("7000");
   });
 });
 
