@@ -9,11 +9,11 @@
 //   node tests/helpers/agent-errors-doc.js --write
 // A new code gets a TODO in its hand-written cell, which the test refuses.
 import { readFile, writeFile } from "node:fs/promises";
-import { pathToFileURL } from "node:url";
+import { join, dirname } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { AGENT_ERRORS, STATUS_PROBLEMS } from "../../lib/agent-errors.js";
-import { DOC_PATH } from "./agent-class-listing.js";
 
-export { DOC_PATH };
+export const DOC_PATH = join(dirname(fileURLToPath(import.meta.url)), "../../skills/sparkbtcbot/references/agent-class.md");
 export const TODO = "TODO: say what this means";
 
 export const ERROR_TABLE_HEADER = "| Code | `retryable` | Meaning | Default `nextStep` |";

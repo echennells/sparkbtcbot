@@ -21,6 +21,8 @@ tests/
   unit/
     imports.test.js                 # SDK export sanity, SparkWallet method surface, ./agent's .d.ts named first and in the tarball
     agent-types-parity.test.js      # spark-agent.d.ts ↔ SparkAgent (members, @sideEffect/@dryRun tags, @throws codes, option keys, SDK type names) and lib/index.d.ts's error-code unions ↔ the registry; parses both under Node's type stripping
+    agent-class-parity.test.js      # agent-class.md's method list ↔ the shipped SparkAgent, both ways; the doc carries no copy of the class (it points at scripts/spark-agent.js)
+    references-size-ratchet.test.js # references/ stay under a total and a per-file byte cap (one in, one out)
     agent-class-errors-doc.test.js  # agent-class.md's error and status() tables ↔ lib/agent-errors.js, word for word (helpers/agent-errors-doc.js --write renders them; only the Meaning / Reported-when cells are hand-written)
     balance-shape.test.js           # regression: ownedBalance / availableToSendBalance
     encrypted-seed.test.js          # seed encrypt/decrypt round-trip, EEXIST, perms, NO_PASSPHRASE

@@ -44,10 +44,11 @@ describe("agent-class.md's error and status tables ↔ the registry", () => {
     expect((await md()).includes(`"${CHECK_FIRST_TAIL}"`)).toBe(true);
   });
 
-  it("the tables sit before the code listing, where an agent reading from the top finds them", async () => {
+  it("the tables sit near the top, before the pointer to the class source", async () => {
     const doc = await md();
-    const listing = doc.indexOf("```javascript\n");
-    expect(findTable(doc, ERROR_TABLE_HEADER).start).toBeLessThan(listing);
-    expect(findTable(doc, STATUS_TABLE_HEADER).start).toBeLessThan(listing);
+    const source = doc.indexOf("## The class source");
+    expect(source).toBeGreaterThan(0);
+    expect(findTable(doc, ERROR_TABLE_HEADER).start).toBeLessThan(source);
+    expect(findTable(doc, STATUS_TABLE_HEADER).start).toBeLessThan(source);
   });
 });

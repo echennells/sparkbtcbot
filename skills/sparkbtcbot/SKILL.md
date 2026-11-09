@@ -224,7 +224,7 @@ Load only what's needed for the user's task. Each reference is a self-contained 
 | `references/lightning.md` | Lightning interop — BOLT11 invoices, payments, fee estimation; the raw-vs-wrapper `payLightningInvoice` shape trap |
 | `references/tokens.md` | BTKN/LRC20 token transfers and balances |
 | `references/spark-invoices.md` | Spark native invoice format (sats and tokens), `fulfillSparkInvoice` |
-| `references/agent-class.md` | The `SparkAgent` wrapper (`import { SparkAgent } from "sparkbtcbot-skill/agent"`): every method, full listing |
+| `references/agent-class.md` | The `SparkAgent` wrapper (`import { SparkAgent } from "sparkbtcbot-skill/agent"`): every method, its errors and `status()`; source in `scripts/spark-agent.js` |
 | `references/l402.md` | L402 / LSAT paywalls — paying for HTTP APIs over Lightning |
 | `references/merchant-spending.md` | The shared payment policy for ALL merchant purchases — invoice-vs-quote guard, confirm-before-buy, bearer-secret deliverables, what actually bounds spend. Load alongside any merchant doc below |
 | `references/bitrefill.md` | Spending sats on real-world goods (gift cards, eSIMs, top-ups) via Bitrefill's agent MCP/CLI — Bitrefill-specific deltas on the shared policy (live-validated) |

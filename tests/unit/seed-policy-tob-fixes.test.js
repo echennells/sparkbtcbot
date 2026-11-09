@@ -140,11 +140,13 @@ describe("F-G: the ceremonies never take the passphrase from the environment", (
   }
 });
 
-describe("F-A: the reference class doc matches the shipped resolver", () => {
-  it("agent-class.md carries the seed-context wiring, not the pre-seal env-only version", async () => {
-    const doc = await readFile(fileURLToPath(new URL("../../skills/sparkbtcbot/references/agent-class.md", import.meta.url)), "utf8");
-    expect(doc).toMatch(/getLoadedSeedContext/);
-    expect(doc).toMatch(/seedFileIsSealed/);
-    expect(doc).toMatch(/spendLedgerFromEnv\(seedContext !== undefined/);
+// The doc's copy of the class that drifted here was removed (2026-11-09): the
+// shipped file is the only copy, so the wiring is checked there.
+describe("F-A: the shipped class carries the seed-context wiring", () => {
+  it("spark-agent.js resolves the budget from the seed, not the pre-seal env-only version", async () => {
+    const src = await readFile(fileURLToPath(new URL("../../skills/sparkbtcbot/scripts/spark-agent.js", import.meta.url)), "utf8");
+    expect(src).toMatch(/getLoadedSeedContext/);
+    expect(src).toMatch(/seedFileIsSealed/);
+    expect(src).toMatch(/spendLedgerFromEnv\(seedContext !== undefined/);
   });
 });
