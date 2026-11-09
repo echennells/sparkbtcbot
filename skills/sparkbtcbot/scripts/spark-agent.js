@@ -31,7 +31,7 @@ import {
 import { createSpendLedger } from "../../../lib/spend-ledger.js";
 import { readLimits, checkLimits, limitsPath } from "../../../lib/spending-limits.js";
 import { createL402HoldStore, l402HoldFileName } from "../../../lib/l402-holds.js";
-import { createTransferIdStore, invoiceDedupKey } from "../../../lib/transfer-ids.js";
+import { createTransferIdStore, invoiceDedupKey, SETTLE_GRACE_MS } from "../../../lib/transfer-ids.js";
 import { ensureWalletPrivacy, privacyPreferenceFromEnv } from "../../../lib/wallet-privacy.js";
 import { enableLeafVault } from "./leaf-vault.js";
 import { sparkWalletOptions } from "../../../lib/wallet-options.js";
@@ -3141,7 +3141,8 @@ export class SparkAgent {
       }
       if (resumed) return resumed;
       // null: that payment failed and the SSP returned its sats
-      // (USER_SWAP_RETURNED), so no money left — buying below is safe.
+      // (USER_SWAP_RETURNED), or no attempt of it ever reached the SDK, so no
+      // money left — buying below is safe.
     }
 
     let initialResponse;
@@ -3559,7 +3560,25 @@ export class SparkAgent {
       // If that first payment never happened, settling now is the real
       // purchase: don't make it for a pass the service has declared dead.
       const tokenExpiry = l402TokenExpiry(held.macaroon)?.expiresAt ?? null;
-      if (tokenExpiry !== null && tokenExpiry - Date.now() / 1000 < L402_MIN_TOKEN_LIFETIME_SECONDS) {
+      const tokenDead = tokenExpiry !== null && tokenExpiry - Date.now() / 1000 < L402_MIN_TOKEN_LIFETIME_SECONDS;
+      // No dedup entry for this invoice proves no attempt reached the SDK:
+      // the claim is written before the fee estimate, the entry after it.
+      // That holds while an entry would still be kept, until a day after the
+      // invoice expires (an hour's margin here). So nothing was paid, and a
+      // pass or invoice past use is no reason to block: the hold goes, and
+      // the call buys afresh under the normal checks. It used to block for
+      // good with "may have gone through" (review 2026-11-09, L402-7). An
+      // unreadable store, or an older invoice, keeps the block.
+      const secondsLeft = invoiceSecondsRemaining(held.invoice);
+      if (
+        (tokenDead || (secondsLeft !== null && secondsLeft < LIGHTNING_MIN_INVOICE_SECONDS)) &&
+        secondsLeft !== null && secondsLeft > -(SETTLE_GRACE_MS / 1000 - 3600) &&
+        (await this.#lnDedup.peek(held.invoice).catch(() => undefined)) === null
+      ) {
+        this.#l402Held.delete(key);
+        return null;
+      }
+      if (tokenDead) {
         throw block({
           reason: "L402_PASS_EXPIRED",
           settled: null,

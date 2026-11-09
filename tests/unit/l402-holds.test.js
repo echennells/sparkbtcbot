@@ -126,6 +126,36 @@ describe("L402 holds outlive the process", () => {
 });
 
 describe("the claim before paying (the semaphore)", () => {
+  // L402-7 (review 2026-11-09): a claim whose process died before any attempt
+  // reached the SDK was blocked for good once its invoice expired, as "may have
+  // gone through", though the dedup store showed no attempt.
+  const RAW = "lnbc20u1p4tzwuqpp5gf0dfe9rdvcw5gdepcsuwykxf85zznpfkl40dqyf6ypecmj48pxqsp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygsdp5wdcxzuntvf6xxcn0wss8getnwsazq6mwdamkugrswfjkjmtpvajsxqrrssfgmzf4e3aygc36mfrkgfj23fs5l3v4a0ztu34u5uu0ws9eycv4psq4msf75685vluz7kg7n3pvvzme375yjx63zjt2nxs9vgspgspvcp45esgz";
+  const expiredHourAgo = () => freshInvoice(RAW, Math.floor(Date.now() / 1000) - 7200); // a 3600 s invoice
+  it("a dead claim whose invoice expired, with no dedup entry: nothing was paid, so it is dropped and the call buys afresh", async () => {
+    await import("node:fs/promises").then((fs) => fs.mkdir(process.env.SPARK_L402_HOLDS_PATH, { recursive: true }));
+    await writeRecord({ state: "buying", pid: 2_147_483_646, updatedAt: Date.now(), invoice: expiredHourAgo() });
+    const b = processWith();
+    const seen = serve(challenge(), resp(200, { ok: true }));
+    expect(await b.agent.fetchL402(URL_, { maxAmountSats: 3000 })).toMatchObject({ paid: true, data: { ok: true } });
+    expect(seen).toHaveLength(2); // a fresh challenge, then the resource
+    expect(b.wallet.payLightningInvoice).toHaveBeenCalledTimes(1);
+    expect(b.wallet.payLightningInvoice.mock.calls[0][0].invoice).toBe(KNOWN_INVOICE);
+    expect(await holdFiles()).toEqual([]);
+  });
+
+  it("the same, but an attempt is on record for that invoice: still blocked, nothing paid", async () => {
+    await import("node:fs/promises").then((fs) => fs.mkdir(process.env.SPARK_L402_HOLDS_PATH, { recursive: true }));
+    const invoice = expiredHourAgo();
+    const { createTransferIdStore } = await import("../../lib/transfer-ids.js");
+    await createTransferIdStore({ dir: process.env.SPARK_LN_DEDUP_PATH }).idForInvoice(invoice, () => "0193f1a2-7b7c-7cc3-8a9e-2b1f0c3d4e5f");
+    await writeRecord({ state: "buying", pid: 2_147_483_646, updatedAt: Date.now(), invoice });
+    const b = processWith();
+    const seen = serve();
+    await expect(b.agent.fetchL402(URL_, { maxAmountSats: 3000 })).rejects.toMatchObject({ code: "PAYMENT_COMMITTED", reason: "L402_INVOICE_EXPIRED" });
+    expect(seen).toEqual([]);
+    expect(b.wallet.payLightningInvoice).not.toHaveBeenCalled();
+  });
+
   it("a process that died mid-purchase left its invoice: the next one settles that invoice", async () => {
     await import("node:fs/promises").then((fs) => fs.mkdir(process.env.SPARK_L402_HOLDS_PATH, { recursive: true }));
     await writeRecord({ state: "buying", pid: 2_147_483_646, updatedAt: Date.now() }); // no such process

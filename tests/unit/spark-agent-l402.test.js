@@ -722,6 +722,11 @@ describe("fetchL402 after payment: in-process recovery", () => {
     const { agent, pay } = mk();
     pay.mockRejectedValueOnce(Object.assign(new Error("outcome unknown"), { code: "PAYMENT_COMMITTED", settled: null }));
     await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }));
+    // The real attempt persisted its dedup id before the SDK call (payAndSettle
+    // is mocked here). Without one, nothing was sent, and an expired pass is
+    // simply dropped (L402-7).
+    const { createTransferIdStore } = await import("../../lib/transfer-ids.js");
+    await createTransferIdStore({ dir: process.env.SPARK_LN_DEDUP_PATH }).idForInvoice(inv, () => "0193f1a2-7b7c-7cc3-8a9e-2b1f0c3d4e5f");
 
     const later = Date.now() + 11 * 60_000;
     const clock = vi.spyOn(Date, "now").mockReturnValue(later);
