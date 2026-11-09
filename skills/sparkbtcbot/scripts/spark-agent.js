@@ -3702,9 +3702,6 @@ export class SparkAgent {
     return entry;
   }
 
-  // Save this process's copy, or remove the file once the copy is gone
-  // (delivered, proven unpaid, or the SSP returned the sats). A failed write
-  // keeps the copy in memory, which still guards this process, and warns.
   // Another process's purchase of this request, claimed on disk and live.
   async #otherProcessBuying(key) {
     const rec = await this.#l402Store.read(key).catch(() => null);
@@ -3742,6 +3739,10 @@ export class SparkAgent {
     return busy;
   }
 
+  // Save this process's copy, or remove the file once the copy is gone
+  // (delivered, proven unpaid, or the SSP returned the sats). A failed write
+  // keeps the copy in memory, which still guards this process, and warns.
+  // Another process's live claim is left alone.
   async #syncL402(key) {
     const entry = this.#l402Held.get(key);
     try {
