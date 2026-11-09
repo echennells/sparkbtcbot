@@ -128,9 +128,12 @@ try {
   await sleep(2_000);
   check("stale: INVOICE_EXPIRED before paying, nothing locked or spent", r.e?.code === "INVOICE_EXPIRED" && (await owned()) === ownedBefore6, { err: r.e?.message?.slice(0, 120) });
 
-  // S7: the budget counted each purchase once (ok, flaky, refuse x2, order = 5).
+  // S7: the budget counted each purchase once (ok, flaky, refuse x2, order = 5),
+  // each with its Lightning fee estimate (at most the 25-sat fee floor).
   const spend = await payer.spendStatus();
-  check("budget: five purchases counted once each", spend.spentSats === 5 * PRICE, { spentSats: spend.spentSats });
+  check("budget: five purchases counted once each, fee included",
+    spend.entries.length === 5 && spend.entries.every((e) => e.sats >= PRICE && e.sats <= PRICE + 25),
+    { spentSats: spend.spentSats, entries: spend.entries.map((e) => e.sats) });
 
   // S8: every invoice the service issued and was paid for reads paid at the shop.
   let paidCount = 0;
