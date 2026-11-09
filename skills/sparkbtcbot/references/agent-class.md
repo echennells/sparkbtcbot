@@ -4,7 +4,7 @@ Load when building an agent that wraps `SparkWallet` with a higher-level API for
 
 ## Methods at a glance
 
-The `SparkAgent` class exposes these (all `async` unless noted); full signatures are in `scripts/spark-agent.d.ts`, bodies in `scripts/spark-agent.js`.
+The `SparkAgent` class exposes these (all `async` unless noted); full signatures are in `scripts/spark-agent.d.ts`, bodies in `scripts/spark-agent.js`. For a method's exact behaviour (what it checks, what it throws when), open it there: search `scripts/spark-agent.js` for `async <name>(`.
 
 - **Identity & balance** — `getIdentity()`, `getBalance()` (returns normalized `{ sats, incomingSats, lockedSats, tokens }`: `incomingSats` has arrived and is being claimed, never "nothing arrived" (→ Receiving, below); each token has `balance` (owned) and `available` (sendable now), and neither proves a token send left (`getTokenTransactions()`); the raw `wallet.getBalance()` returns `{ satsBalance, tokenBalances }`; same name, different shape, not interchangeable), `status({ checkLightning })` (whether the agent can work right now, and what to do if not: → `status()`, below)
 - **Deposits** — `getDepositAddress()`, `listPendingDeposits()` (entries typed `static` / `single-use`), `claimDeposit(...)`; `getSingleUseDepositAddress()` refuses, because the operators currently refuse single-use claims
