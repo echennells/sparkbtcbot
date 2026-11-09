@@ -168,6 +168,53 @@ describe("sparkbtcbot rotate", () => {
     expect(await exists(`${environment.SPARK_SEED_PATH}.next`)).toBe(false);
   });
 
+  // ROT-1: a token that won't move used to throw out of the sweep after the
+  // sats had gone, so every --resume failed, seed.enc stayed on the leaked
+  // wallet, and the tokens after it never moved.
+  it("a token that can't move doesn't hold the rotation: the rest moves, it's reported, and --check-old --sweep retries it", async () => {
+    const net = fakeNet();
+    const { mnemonic: oldWords, wallet: old } = await walletOnDisk(net, { sats: 5_000n, tokens: { btkn1frozen: 3n, btkn1worth: 9n } });
+    const move = old.transferTokens.getMockImplementation();
+    let frozen = true;
+    old.transferTokens.mockImplementation(async (a) => {
+      if (frozen && a.tokenIdentifier === "btkn1frozen") throw new Error("token output is frozen");
+      return move(a);
+    });
+    expect(await runRotate(opts(net, { execute: true }))).toBe(0);
+
+    const newWords = (await loadSeedPayload({ passphrase: PASS, path: environment.SPARK_SEED_PATH })).mnemonic;
+    expect(newWords).not.toBe(oldWords);
+    const fresh = net.byMnemonic.get(newWords);
+    expect({ sats: fresh.sats, worth: fresh.tokens.get("btkn1worth"), frozenLeft: old.tokens.get("btkn1frozen") }).toEqual({ sats: 5_000n, worth: 9n, frozenLeft: 3n });
+    const [retired] = await retiredDirs();
+    const manifest = JSON.parse(await readFile(join(retired, "manifest.json"), "utf8"));
+    expect(manifest.sweptTokens).toEqual([{ tokenIdentifier: "btkn1worth", amount: "9", ticker: "TKN" }]);
+    expect(manifest.tokensLeftBehind).toEqual([{ tokenIdentifier: "btkn1frozen", amount: "3", ticker: "TKN", reason: "token output is frozen" }]);
+    expect(report()).toMatch(/Left behind in the old wallet: 3 TKN \(btkn1frozen…\): token output is frozen\. `rotate --check-old --sweep` tries again\./);
+
+    frozen = false;
+    out = [];
+    expect(await runCheckOld(opts(net, { sweepNow: true, makeAgent: async () => ({ claimDeposit: vi.fn() }) }))).toBe(0);
+    expect({ fresh: fresh.tokens.get("btkn1frozen"), old: old.tokens.get("btkn1frozen") }).toEqual({ fresh: 3n, old: 0n });
+  });
+
+  it("a token balance spread over more outputs than one transfer takes moves in several transfers", async () => {
+    const net = fakeNet();
+    const { wallet: old } = await walletOnDisk(net, { tokens: { btkn1dust: 10n } });
+    const move = old.transferTokens.getMockImplementation();
+    // The SDK's own local refusal when the amount needs more than 500 outputs; here, more than 4 units.
+    old.transferTokens.mockImplementation(async (a) => {
+      if (a.tokenAmount > 4n) throw new Error("Insufficient token amount");
+      return move(a);
+    });
+    expect(await runRotate(opts(net, { execute: true }))).toBe(0);
+    const fresh = net.byMnemonic.get((await loadSeedPayload({ passphrase: PASS, path: environment.SPARK_SEED_PATH })).mnemonic);
+    expect({ fresh: fresh.tokens.get("btkn1dust"), old: old.tokens.get("btkn1dust") }).toEqual({ fresh: 10n, old: 0n });
+    const sent = old.transferTokens.mock.calls.map((c) => c[0].tokenAmount);
+    expect(sent.filter((x) => x <= 4n).reduce((s, x) => s + x, 0n)).toBe(10n);
+    expect(report()).not.toMatch(/Left behind/);
+  });
+
   it("a sealed budget carries over: same policy in the new seed, the window's spends signed under the new key", async () => {
     const net = fakeNet();
     const policy = { dailyBudgetSats: 5_000 };

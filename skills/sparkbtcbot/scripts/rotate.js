@@ -116,20 +116,64 @@ export async function readHoldings(wallet, { depositAddress: wantDepositAddress 
   };
 }
 
+// One token's whole balance, in as many transfers as the SDK needs. A transfer
+// carries at most 500 of the token's outputs, and for a larger amount the SDK
+// refuses locally ("Insufficient token amount") before anything is sent, so
+// only that refusal halves the amount and tries again. Any other error stops
+// this token. Returns what moved, and the error if any is left.
+const TOKEN_TRANSFERS_MAX = 64;
+async function sendTokenBalance(from, toAddress, t) {
+  let remaining = t.amount;
+  let moved = 0n;
+  const ids = [];
+  try {
+    while (remaining > 0n && ids.length < TOKEN_TRANSFERS_MAX) {
+      let amount = remaining;
+      for (;;) {
+        try {
+          const r = await from.transferTokens({ tokenIdentifier: t.tokenIdentifier, tokenAmount: amount, receiverSparkAddress: toAddress });
+          ids.push(typeof r === "string" ? r : r?.id ?? null);
+          break;
+        } catch (err) {
+          if (!/insufficient token amount/i.test(String(err?.message ?? "")) || amount <= 1n) throw err;
+          amount /= 2n;
+        }
+      }
+      moved += amount;
+      remaining -= amount;
+    }
+    return { moved, ids, error: remaining > 0n ? new Error(`still ${remaining} left after ${TOKEN_TRANSFERS_MAX} transfers`) : null };
+  } catch (err) {
+    return { moved, ids, error: err };
+  }
+}
+
 // --- Move everything `from` holds to `to`'s own address, then wait until `to`
 // has claimed it. Raw SDK calls on purpose: see the header.
+// Each token is tried on its own. A token that can't move (more outputs than
+// transfers allow, a freeze) used to throw out of the whole sweep after the
+// sats had moved: every --resume failed the same way, seed.enc stayed on the
+// leaked wallet, and the tokens listed after it never moved (review
+// 2026-11-09, ROT-1). It is now left behind, reported, and retried by
+// --check-old --sweep; only the sats and the tokens that moved are checked.
 export async function sweep(from, to, holdings, { log = () => {}, pollMs = 2_000, timeoutMs = 120_000 } = {}) {
   const toAddress = await to.getSparkAddress();
   const before = BigInt((await to.getBalance()).satsBalance?.available ?? 0n);
-  const sent = { sats: null, tokens: [] };
+  const sent = { sats: null, tokens: [], leftBehind: [] };
   if (holdings.sats > 0n) {
     sent.sats = await from.transfer({ receiverSparkAddress: toAddress, amountSats: Number(holdings.sats) });
     log(`sent ${holdings.sats} sats to ${toAddress}`);
   }
   for (const t of holdings.tokens) {
-    const r = await from.transferTokens({ tokenIdentifier: t.tokenIdentifier, tokenAmount: t.amount, receiverSparkAddress: toAddress });
-    sent.tokens.push({ ...t, id: typeof r === "string" ? r : r?.id ?? null });
-    log(`sent ${t.amount} ${t.ticker} to ${toAddress}`);
+    const { moved, ids, error } = await sendTokenBalance(from, toAddress, t);
+    if (moved > 0n) {
+      sent.tokens.push({ ...t, amount: moved, ids });
+      log(`sent ${moved} ${t.ticker} to ${toAddress}${ids.length > 1 ? ` in ${ids.length} transfers` : ""}`);
+    }
+    if (error) {
+      sent.leftBehind.push({ ...t, amount: t.amount - moved, reason: String(error?.message ?? error).slice(0, 200) });
+      log(`couldn't send ${t.amount - moved} ${t.ticker} (${String(error?.message ?? error).slice(0, 120)}); it stays with the old wallet for --check-old --sweep`);
+    }
   }
   const want = before + holdings.sats;
   const deadline = Date.now() + timeoutMs;
@@ -137,7 +181,7 @@ export async function sweep(from, to, holdings, { log = () => {}, pollMs = 2_000
   for (;;) {
     const b = await to.getBalance();
     const got = BigInt(b.satsBalance?.available ?? 0n);
-    const tokensOk = holdings.tokens.every((t) => BigInt(b.tokenBalances?.get?.(t.tokenIdentifier)?.ownedBalance ?? 0n) >= t.amount);
+    const tokensOk = sent.tokens.every((t) => BigInt(b.tokenBalances?.get?.(t.tokenIdentifier)?.ownedBalance ?? 0n) >= t.amount);
     last = { got, tokensOk };
     if (got >= want && tokensOk) return { toAddress, sent, verified: true, balanceSats: got };
     if (Date.now() >= deadline) break;
@@ -193,6 +237,7 @@ export async function commitRotation({ seedPath, ledgerPath, vaultPath, state, s
     staticDepositAddress: oldHoldings.depositAddress,
     sweptSats: String(swept.sats),
     sweptTokens: swept.tokens.map((t) => ({ tokenIdentifier: t.tokenIdentifier, amount: String(t.amount), ticker: t.ticker })),
+    tokensLeftBehind: (swept.leftBehind ?? []).map((t) => ({ tokenIdentifier: t.tokenIdentifier, amount: String(t.amount), ticker: t.ticker, reason: t.reason })),
     successor: state.new,
   };
   await atomicWriteFile(join(state.retiredDir, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n", { mode: 0o600 });
@@ -288,7 +333,7 @@ async function finish({ seedPath, network, environment, state, sealedEntries, ne
   const vaultPath = environment.SPARK_LEAF_VAULT_PATH || defaultVaultPath();
   await commitRotation({
     seedPath, ledgerPath: environment.SPARK_SPEND_LEDGER_PATH || DEFAULT_SPEND_LEDGER_PATH, vaultPath,
-    state, sealedEntries, newMnemonic, oldHoldings: old, swept: { sats: old.sats, tokens: old.tokens },
+    state, sealedEntries, newMnemonic, oldHoldings: old, swept: { sats: old.sats, tokens: swept.sent.tokens, leftBehind: swept.sent.leftBehind },
   });
   if (environment.SPARK_LEAF_VAULT !== "off") {
     try {
@@ -298,7 +343,8 @@ async function finish({ seedPath, network, environment, state, sealedEntries, ne
       log(`the new wallet's backup failed (${err?.message ?? err}); the next SparkAgent boot writes it`);
     }
   }
-  out(`\nRotated. ${seedPath} is now the new wallet: ${swept.toAddress}, holding ${swept.balanceSats} sats.\nThe old seed is kept at ${join(state.retiredDir, "seed.enc")}.\n\n${AFTER}`);
+  const behind = swept.sent.leftBehind.map((t) => `Left behind in the old wallet: ${t.amount} ${t.ticker} (${t.tokenIdentifier.slice(0, 24)}…): ${t.reason}. \`rotate --check-old --sweep\` tries again.\n`).join("");
+  out(`\nRotated. ${seedPath} is now the new wallet: ${swept.toAddress}, holding ${swept.balanceSats} sats.\nThe old seed is kept at ${join(state.retiredDir, "seed.enc")}.\n${behind}\n${AFTER}`);
   return 0;
 }
 
@@ -370,7 +416,8 @@ export async function runCheckOld({ sweepNow = false, deps = defaultDeps, out = 
         if (h.sats > 0n || h.tokens.length) {
           try {
             const s = await sweep(wallet, current, h, { log });
-            out(`  Moved ${h.sats} sats${h.tokens.length ? ` and ${h.tokens.length} token balance(s)` : ""} to this wallet (${s.toAddress}).\n`);
+            out(`  Moved ${h.sats} sats${s.sent.tokens.length ? ` and ${s.sent.tokens.length} token balance(s)` : ""} to this wallet (${s.toAddress}).\n`);
+            for (const t of s.sent.leftBehind) out(`  Still in the old wallet: ${t.amount} ${t.ticker}: ${t.reason}.\n`);
           } catch (err) {
             out(`  The move didn't finish (${err?.message ?? err}); run --check-old --sweep again. It can only send to this wallet.\n`);
           }
