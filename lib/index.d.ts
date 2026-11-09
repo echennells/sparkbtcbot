@@ -799,6 +799,7 @@ export class PaymentCommittedError extends Error implements AgentError<"PAYMENT_
     | "L402_PASS_EXPIRED"
     | "L402_INVOICE_EXPIRED"
     | "L402_NO_PROOF"
+    | "L402_BOUGHT_ELSEWHERE"
     | "INVOICE_EXPIRED_AFTER_ATTEMPT"
     | "EARLIER_ATTEMPT_OPEN";
   /** fetchL402 with reason L402_PASS_REFUSED: the HTTP status that refused the pass. */

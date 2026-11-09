@@ -4,7 +4,7 @@
 // new SparkAgent over the same holds directory (tests/setup.js gives every
 // test its own).
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, writeFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SparkAgent } from "../../skills/sparkbtcbot/scripts/spark-agent.js";
@@ -136,17 +136,84 @@ describe("the claim before paying (the semaphore)", () => {
     expect(b.wallet.payLightningInvoice.mock.calls.map((c) => c[0].invoice)).toEqual([KNOWN_INVOICE]);
   });
 
-  it("another live process buying the same request: refused, nothing fetched or paid, its claim kept", async () => {
+  // Review 2026-11-09 (L402-2): the busy error said "call again: it finishes
+  // that purchase", which was false once the other process had delivered and
+  // removed its claim; the retry bought a second pass. fetchL402 now waits for
+  // the other purchase and says what happened.
+  describe("another live process buying the same request", () => {
+    const live = (extra = {}) => writeRecord({ state: "buying", pid: process.ppid, updatedAt: Date.now(), ...extra });
+    // The wait polls on setTimeout: step it, letting real file I/O run between polls.
+    const settle = async (promise, onTick = async () => {}) => {
+      let done = false;
+      let tick = 0;
+      const out = promise.then((value) => ({ value }), (error) => ({ error })).finally(() => { done = true; });
+      while (!done) {
+        await vi.runAllTimersAsync();
+        await onTick(++tick);
+        if (!done) await stat(tmpdir()); // let the real file reads between polls finish
+      }
+      return out;
+    };
+    beforeEach(async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout"] });
+      await import("node:fs/promises").then((fs) => fs.mkdir(process.env.SPARK_L402_HOLDS_PATH, { recursive: true }));
+    });
+    afterEach(() => vi.useRealTimers());
+
+    it("still buying after the wait: nothing fetched or paid, its claim kept, and a later call is called a second purchase", async () => {
+      await live();
+      const b = processWith();
+      const seen = serve();
+      const { error } = await settle(b.agent.fetchL402(URL_, { maxAmountSats: 3000 }));
+      expect(error).toMatchObject({ code: "CONCURRENT_PAYMENT_ATTEMPT", retryable: "check-first" });
+      expect(error.nextStep).toMatch(/still buying this resource.*second purchase/);
+      expect(seen).toEqual([]);
+      expect(b.wallet.payLightningInvoice).not.toHaveBeenCalled();
+      expect(await holdFiles()).toHaveLength(1);
+    });
+
+    it("it finishes and removes its claim while this call waits: nothing paid here, and calling again is a second purchase", async () => {
+      await live();
+      const b = processWith();
+      const seen = serve();
+      const { unlink } = await import("node:fs/promises");
+      const { error } = await settle(b.agent.fetchL402(URL_, { maxAmountSats: 3000 }), async (tick) => {
+        if (tick === 2) await unlink(holdFile());
+      });
+      expect(error).toMatchObject({ code: "CONCURRENT_PAYMENT_ATTEMPT", reason: "L402_BOUGHT_ELSEWHERE" });
+      expect(error.nextStep).toMatch(/Calling fetchL402 again is a second purchase/);
+      expect(seen).toEqual([]);
+      expect(b.wallet.payLightningInvoice).not.toHaveBeenCalled();
+    });
+
+    it("it ends with a hold while this call waits: calling again finishes that purchase", async () => {
+      await live();
+      const b = processWith();
+      serve();
+      const { error } = await settle(b.agent.fetchL402(URL_, { maxAmountSats: 3000 }), async (tick) => {
+        if (tick === 2) await writeRecord({ state: "held", pid: process.ppid, updatedAt: Date.now(), paid: false });
+      });
+      expect(error).toMatchObject({ code: "CONCURRENT_PAYMENT_ATTEMPT" });
+      expect(error.nextStep).toMatch(/finishes that held purchase/);
+      expect(b.wallet.payLightningInvoice).not.toHaveBeenCalled();
+    });
+  });
+
+  // Review 2026-11-09 (L402-3): a process finishing late removed the file
+  // without looking whose it was, deleting another process's fresh claim.
+  it("a process that finishes late doesn't delete another live process's fresh claim", async () => {
     await import("node:fs/promises").then((fs) => fs.mkdir(process.env.SPARK_L402_HOLDS_PATH, { recursive: true }));
-    await writeRecord({ state: "buying", pid: process.ppid, updatedAt: Date.now() });
-    const b = processWith();
-    const seen = serve();
-    const err = await b.agent.fetchL402(URL_, { maxAmountSats: 3000 }).catch((e) => e);
-    expect(err).toMatchObject({ code: "CONCURRENT_PAYMENT_ATTEMPT", retryable: "check-first" });
-    expect(err.nextStep).toMatch(/^Nothing was paid by this call\. Wait a minute/);
-    expect(seen).toEqual([]);
-    expect(b.wallet.payLightningInvoice).not.toHaveBeenCalled();
-    expect(await holdFiles()).toHaveLength(1);
+    const a = processWith();
+    let n = 0;
+    vi.stubGlobal("fetch", async () => {
+      n += 1;
+      if (n === 1) return challenge();
+      // Before this delivery returns, another process claims a new purchase of the same request.
+      await writeRecord({ state: "buying", pid: process.ppid, updatedAt: Date.now(), macaroon: "macB" });
+      return resp(200, { ok: true });
+    });
+    expect(await a.agent.fetchL402(URL_, { maxAmountSats: 3000 })).toMatchObject({ data: { ok: true } });
+    expect(JSON.parse(await readFile(holdFile(), "utf8"))).toMatchObject({ state: "buying", macaroon: "macB" });
   });
 
   it("a claim older than ten minutes is finished even if its pid is alive (pids get reused)", async () => {

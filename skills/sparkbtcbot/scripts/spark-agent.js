@@ -719,6 +719,25 @@ const L402_MAX_REDIRECTS = 5;
 function l402UrlAllowed(u) {
   return u.protocol === "https:" || ["localhost", "127.0.0.1", "::1", "[::1]"].includes(u.hostname);
 }
+// Header names are case-insensitive, and fetch joins two spellings of one
+// name into a single value: a caller's "authorization" next to the pass made
+// "<theirs>, L402 …", which the service refused after the payment (review
+// 2026-11-09, L402-5).
+function hasHeader(headers, name) {
+  const lower = name.toLowerCase();
+  return Object.keys(headers ?? {}).some((k) => k.toLowerCase() === lower);
+}
+function withoutHeader(headers, name) {
+  const lower = name.toLowerCase();
+  return Object.fromEntries(Object.entries(headers ?? {}).filter(([k]) => k.toLowerCase() !== lower));
+}
+// The JSON content type the challenge request sends, unless the caller set one.
+// The paid request used to go out without it, so fetch labelled the JSON body
+// text/plain and JSON servers answered 400/415/422 to the request that had
+// just been paid for (review 2026-11-09, L402-1).
+function l402Headers(headers) {
+  return hasHeader(headers, "content-type") ? { ...headers } : { "Content-Type": "application/json", ...headers };
+}
 
 // A redirect before paying: nothing was paid, and the same call gets the same
 // answer, so it says where the service pointed instead of "call again later".
@@ -749,7 +768,12 @@ async function l402RedirectRefused(method, url, res, httpMethod) {
 // with l402RedirectStop set, which delivery doesn't retry (the same request
 // gets the same redirect).
 async function presentL402Pass(url, { method, headers, reqBody, authorization }) {
-  const origin = new URL(url).origin;
+  const start = new URL(url);
+  const origin = start.origin;
+  // Plain http is the localhost testing exemption: it applies to a hop only
+  // when the URL given was itself local. From an https service, a hop to
+  // http://127.0.0.1 is not a test (review 2026-11-09, L402-4).
+  const httpAllowed = start.protocol !== "https:";
   let current = url;
   let verb = String(method).toUpperCase();
   let body = reqBody;
@@ -759,7 +783,7 @@ async function presentL402Pass(url, { method, headers, reqBody, authorization })
       method: verb,
       // Authorization last: a caller-supplied header must not clobber the
       // L402 proof we paid for (that would pay and then not present it).
-      headers: crossOrigin ? {} : { ...headers, Authorization: authorization },
+      headers: crossOrigin ? {} : { ...withoutHeader(l402Headers(headers), "authorization"), Authorization: authorization },
       body,
       redirect: "manual",
     });
@@ -771,7 +795,7 @@ async function presentL402Pass(url, { method, headers, reqBody, authorization })
     const stop = (why) => Object.assign(new Error(why), { l402RedirectStop: true, status: res.status, location: next?.href ?? raw ?? null });
     if (!next) throw stop(`a redirect (HTTP ${res.status}) with no usable Location`);
     if (hops + 1 >= L402_MAX_REDIRECTS) throw stop(`more than ${L402_MAX_REDIRECTS} redirects`);
-    if (!l402UrlAllowed(next)) throw stop(`a redirect to ${next.protocol}//${next.host}${next.pathname}, which is not https`);
+    if (next.protocol !== "https:" && !(httpAllowed && l402UrlAllowed(next))) throw stop(`a redirect to ${next.protocol}//${next.host}${next.pathname}, which is not https`);
     // 303, and a 301 or 302 answering a POST, become a GET without a body, as in fetch.
     if (res.status === 303 || ((res.status === 301 || res.status === 302) && verb === "POST")) {
       verb = "GET";
@@ -824,15 +848,25 @@ const pidAlive = (pid) => {
 };
 const l402BodyHash = (reqBody) => createHash("sha256").update(reqBody ?? "").digest("hex");
 function l402Busy(rec) {
-  return annotateError(
+  const err = annotateError(
     new Error(
       `L402: another process is buying ${rec.host ?? "this resource"}${rec.path ?? ""} right now${rec.pid ? ` (pid ${rec.pid})` : ""}. ` +
         `Nothing was paid by this call.`,
     ),
     "CONCURRENT_PAYMENT_ATTEMPT",
-    { nextStep: "Nothing was paid by this call. Wait a minute, then call fetchL402 again with the same URL and method: it finishes that purchase instead of buying another." },
+    { nextStep: "Nothing was paid by this call. Another process is still buying this resource: don't buy it another way. When it finishes, that process has the result, so a call made after that is a second purchase: check with whoever made that call before calling again." },
   );
+  Object.defineProperty(err, L402_BUSY, { value: rec });
+  return err;
 }
+const L402_BUSY = Symbol("l402Busy");
+// How long fetchL402 waits for another process's purchase of the same request
+// to finish before answering, counted in polls a second apart. Telling the
+// caller "call again: it finishes that purchase" was false once the other
+// process had delivered and removed its claim: the retry bought a second pass
+// (review 2026-11-09, L402-2). A purchase takes up to about 65 s.
+const L402_BUSY_POLLS = 90;
+const L402_BUSY_POLL_MS = 1_000;
 // A hold as its file stores it, and back. Never the preimage: a new process
 // reads it from Spark by the send's id.
 function l402RecordFromHold(key, entry) {
@@ -2999,7 +3033,13 @@ export class SparkAgent {
     // An earlier call, in this process or another, already paid, or may have
     // paid, for exactly this request: finish that purchase, don't make another.
     const key = l402RequestKey(method, url);
-    const held = await this.#heldFor(key);
+    let held;
+    try {
+      held = await this.#heldFor(key);
+    } catch (err) {
+      if (!err?.[L402_BUSY]) throw err;
+      throw await this.#afterOtherBuyer(key, err);
+    }
     if (held) {
       let resumed;
       try {
@@ -3016,7 +3056,7 @@ export class SparkAgent {
     try {
       initialResponse = await fetch(url, {
         method,
-        headers: { "Content-Type": "application/json", ...headers },
+        headers: l402Headers(headers),
         body: reqBody,
         redirect: "manual",
       });
@@ -3120,7 +3160,7 @@ export class SparkAgent {
       macaroon, invoice, invoiceHash: invoicePaymentHash(invoice) ?? undefined, amountSats, sendId: null,
       maxFeeSats: maxFee ?? undefined, maxAmountSats: maxAmt,
     });
-    if (!claimed) throw l402Busy((await this.#l402Store.read(key).catch(() => null)) ?? { host, path });
+    if (!claimed) throw await this.#afterOtherBuyer(key, l402Busy((await this.#l402Store.read(key).catch(() => null)) ?? { host, path }));
     try {
       return await this.#buyL402(url, key, { invoice, macaroon, amountSats, payOptions, host, path, method }, request);
     } finally {
@@ -3453,6 +3493,14 @@ export class SparkAgent {
         // it once the refusal lifts.
         if (String(err?.code ?? "").startsWith("SPEND_") || err?.code === "LIMIT_DENIED" || err?.code === "LIMITS_UNREADABLE") {
           if (err.code === "SPEND_BUDGET_EXCEEDED") annotateError(err, "SPEND_BUDGET_EXCEEDED", { nextStep: L402_BUDGET_STEP });
+          // The limits are checked before the store says whether the earlier
+          // attempt sent anything, so it may have paid: "Nothing was sent"
+          // alone hid that (review 2026-11-09, L402-6).
+          if (err.code === "LIMIT_DENIED" || err.code === "LIMITS_UNREADABLE") {
+            annotateError(err, err.code, {
+              nextStep: "Nothing new was sent, but an earlier attempt to buy this resource may already have paid: check getTransfers() before anything else, and don't buy it another way. Tell the user what the limit refused; fetchL402 for this URL settles that same purchase, without a new one, once the limit allows it.",
+            });
+          }
           throw err;
         }
         if (err?.code === "LIGHTNING_PAYMENT_FAILED") {
@@ -3642,11 +3690,48 @@ export class SparkAgent {
   // Save this process's copy, or remove the file once the copy is gone
   // (delivered, proven unpaid, or the SSP returned the sats). A failed write
   // keeps the copy in memory, which still guards this process, and warns.
+  // Another process's purchase of this request, claimed on disk and live.
+  async #otherProcessBuying(key) {
+    const rec = await this.#l402Store.read(key).catch(() => null);
+    return Boolean(rec && rec.state === "buying" && rec.pid !== process.pid && pidAlive(rec.pid) && Date.now() - rec.updatedAt < L402_BUYING_STALE_MS);
+  }
+
+  // Wait for another process's purchase of the same request, then return the
+  // error that says what happened. Its claim file gone: it bought and was
+  // done, so nothing was paid here and another call is a second purchase.
+  // Its file now a hold or a block: calling again finishes that purchase
+  // without paying. Still buying after the wait: the busy error.
+  async #afterOtherBuyer(key, busy) {
+    const rec = busy[L402_BUSY] ?? {};
+    for (let poll = 0; poll < L402_BUSY_POLLS; poll++) {
+      await new Promise((r) => setTimeout(r, L402_BUSY_POLL_MS));
+      if (await this.#otherProcessBuying(key)) continue;
+      const now = await this.#l402Store.read(key).catch(() => undefined);
+      const where = `${rec.host ?? "this resource"}${rec.path ?? ""}`;
+      if (now === null) {
+        return annotateError(
+          new Error(`L402: another process bought ${where} while this call waited, and its result went to that process. Nothing was paid by this call.`),
+          "CONCURRENT_PAYMENT_ATTEMPT",
+          {
+            reason: "L402_BOUGHT_ELSEWHERE",
+            nextStep: "Nothing was paid by this call, but another process just bought this resource. Calling fetchL402 again is a second purchase: do it only if the user wants it again, not to retry this call.",
+          },
+        );
+      }
+      return annotateError(
+        new Error(`L402: another process's purchase of ${where} ended without delivering it, and it is held. Nothing was paid by this call.`),
+        "CONCURRENT_PAYMENT_ATTEMPT",
+        { nextStep: "Nothing was paid by this call. Call fetchL402 again with the same URL and method: it finishes that held purchase instead of buying another." },
+      );
+    }
+    return busy;
+  }
+
   async #syncL402(key) {
     const entry = this.#l402Held.get(key);
     try {
       if (entry) await this.#l402Store.put(key, l402RecordFromHold(key, entry));
-      else await this.#l402Store.remove(key);
+      else if (!(await this.#otherProcessBuying(key))) await this.#l402Store.remove(key);
     } catch (err) {
       console.warn(`spark-agent: couldn't save an L402 hold (${err?.message ?? err}); it guards this process only.`);
     }

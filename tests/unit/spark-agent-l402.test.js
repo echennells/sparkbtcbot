@@ -1088,6 +1088,26 @@ describe("fetchL402 after payment: in-process recovery", () => {
       expect(pay).toHaveBeenCalledTimes(1);
     });
 
+    // Review 2026-11-09 (L402-4): the localhost exemption is for a URL given
+    // as local; from an https service, a hop to http://127.0.0.1 is not a test.
+    it("after paying, an https service's redirect to http://127.0.0.1 stops like any plain-http hop", async () => {
+      const inv = await invoice2000();
+      const calls = stubUrls([resp(402, { invoice: inv, macaroon: "mac1" }), redirect(302, "http://127.0.0.1:8080/x")]);
+      const { agent } = mk();
+      const { error } = await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }));
+      expect(error).toMatchObject({ code: "PAYMENT_COMMITTED", settled: true, location: "http://127.0.0.1:8080/x" });
+      expect(error.message).toMatch(/not https/);
+      expect(calls).toHaveLength(2);
+    });
+
+    it("a URL given as local http may still follow a local hop", async () => {
+      const inv = await invoice2000();
+      const calls = stubUrls([resp(402, { invoice: inv, macaroon: "mac1" }), redirect(302, "/paid/"), resp(200, { ok: true })]);
+      const { agent } = mk();
+      expect((await run(agent.fetchL402("http://127.0.0.1:9/paid", { maxAmountSats: 3000 }))).value).toMatchObject({ data: { ok: true } });
+      expect(calls[2].url).toBe("http://127.0.0.1:9/paid/");
+    });
+
     it("more than 5 redirects stop, with the pass held", async () => {
       const inv = await invoice2000();
       stubUrls([resp(402, { invoice: inv, macaroon: "mac1" }), ...Array.from({ length: 5 }, (_, i) => redirect(302, `/hop${i}`))]);
@@ -1096,6 +1116,63 @@ describe("fetchL402 after payment: in-process recovery", () => {
       expect(error).toMatchObject({ code: "PAYMENT_COMMITTED", settled: true });
       expect(error.message).toMatch(/more than 5 redirects/);
     });
+  });
+
+  // Review 2026-11-09 (L402-1, L402-5): the paid request dropped the JSON
+  // content type the challenge request sent, so JSON servers refused the body
+  // that had just been paid for; and a caller's lower-case "authorization"
+  // was joined with the pass instead of replaced.
+  describe("request headers", () => {
+    const stubCalls = (queue) => {
+      const calls = [];
+      vi.stubGlobal("fetch", async (url, opts) => { calls.push(opts); return queue.shift(); });
+      return calls;
+    };
+    const named = (headers, name) => Object.keys(headers).filter((k) => k.toLowerCase() === name);
+
+    it("the paid request carries the same JSON content type as the challenge request", async () => {
+      const inv = await invoice2000();
+      const calls = stubCalls([resp(402, { invoice: inv, macaroon: "mac1" }), resp(200, { ok: true })]);
+      const { agent } = mk();
+      await run(agent.fetchL402(URL_, { method: "POST", body: { order: 7 }, maxAmountSats: 3000 }));
+      expect(calls.map((o) => o.headers["Content-Type"])).toEqual(["application/json", "application/json"]);
+      expect(calls[1].body).toBe('{"order":7}');
+    });
+
+    it("a caller's own content type, in any case, is kept and not doubled", async () => {
+      const inv = await invoice2000();
+      const calls = stubCalls([resp(402, { invoice: inv, macaroon: "mac1" }), resp(200, { ok: true })]);
+      const { agent } = mk();
+      await run(agent.fetchL402(URL_, { method: "POST", headers: { "content-type": "application/vnd.api+json" }, body: { a: 1 }, maxAmountSats: 3000 }));
+      for (const o of calls) {
+        expect(named(o.headers, "content-type")).toEqual(["content-type"]);
+        expect(o.headers["content-type"]).toBe("application/vnd.api+json");
+      }
+    });
+
+    it("a caller's authorization header, in any case, is replaced by the pass, never joined with it", async () => {
+      const inv = await invoice2000();
+      const calls = stubCalls([resp(402, { invoice: inv, macaroon: "mac1" }), resp(200, { ok: true })]);
+      const { agent } = mk();
+      await run(agent.fetchL402(URL_, { headers: { authorization: "Bearer theirs" }, maxAmountSats: 3000 }));
+      expect(named(calls[1].headers, "authorization")).toEqual(["Authorization"]);
+      expect(calls[1].headers.Authorization).toBe("L402 mac1:abc123preimage");
+    });
+  });
+
+  // Review 2026-11-09 (L402-6): settling a purchase in doubt, refused by the
+  // user's limits, said only "Nothing was sent"; the earlier attempt may have paid.
+  it("a held purchase the limits refuse to settle says the earlier attempt may have paid", async () => {
+    const inv = await invoice2000();
+    stubFetch([resp(402, { invoice: inv, macaroon: "mac1" })]);
+    const { agent, pay } = mk();
+    pay.mockRejectedValueOnce(Object.assign(new Error("outcome unknown"), { code: "PAYMENT_COMMITTED", settled: null }));
+    await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }));
+    pay.mockRejectedValueOnce(Object.assign(new Error("SparkAgent.payAndSettle: refused by the user's spending limits (maxPaymentSats)"), { code: "LIMIT_DENIED", retryable: "no" }));
+    stubFetch([]);
+    const { error } = await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }));
+    expect(error).toMatchObject({ code: "LIMIT_DENIED" });
+    expect(error.nextStep).toMatch(/earlier attempt to buy this resource may already have paid: check getTransfers\(\)/);
   });
 
   // ToB review 2026-10-28 (F10): the hold was keyed on the raw string, so a

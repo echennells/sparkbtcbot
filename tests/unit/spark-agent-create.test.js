@@ -23,7 +23,10 @@ const spyInitialize = () => {
 describe("SparkAgent.create checks the recovery phrase before opening anything", () => {
   it("a string that isn't a BIP39 phrase is BAD_INPUT (mnemonic), never echoed, and the SDK is not called", async () => {
     const init = spyInitialize();
-    for (const bad of ["zebra apple not real words at all here ok fine done", "my-passphrase-by-mistake", "deadbeef", generateMnemonic(wordlist).replace(/\w+$/, "zoo zoo")]) {
+    // A fixed phrase, not a random one: a random phrase starting with a word
+    // like "create" matched the stack trace's "SparkAgent.create" and failed
+    // the no-echo check now and then.
+    for (const bad of ["zebra apple not real words at all here ok fine done", "my-passphrase-by-mistake", "deadbeef", "legal winner thank year wave sausage worth useful legal winner thank zoo zoo"]) {
       const err = await SparkAgent.create(bad, "REGTEST").catch((e) => e);
       expect(err).toMatchObject({ code: "BAD_INPUT", field: "mnemonic", retryable: "no" });
       expect(err.message).toMatch(/not a valid BIP39 recovery phrase \(its words are not shown here\)/);
