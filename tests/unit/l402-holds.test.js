@@ -154,11 +154,19 @@ describe("the claim before paying (the semaphore)", () => {
       }
       return out;
     };
+    // How many 1 s waits the call has started: the other process changes its
+    // file only once this call is waiting, not after a count of steps, which
+    // under load could land before the call had even looked.
+    let polls;
     beforeEach(async () => {
       vi.useFakeTimers({ toFake: ["setTimeout"] });
+      polls = 0;
+      const fake = globalThis.setTimeout;
+      vi.stubGlobal("setTimeout", (fn, ms, ...rest) => { if (ms === 1_000) polls += 1; return fake(fn, ms, ...rest); });
       await import("node:fs/promises").then((fs) => fs.mkdir(process.env.SPARK_L402_HOLDS_PATH, { recursive: true }));
     });
-    afterEach(() => vi.useRealTimers());
+    afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
+    const once = (fn) => { let ran = false; return async () => { if (polls >= 1 && !ran) { ran = true; await fn(); } }; };
 
     it("still buying after the wait: nothing fetched or paid, its claim kept, and a later call is called a second purchase", async () => {
       await live();
@@ -177,9 +185,7 @@ describe("the claim before paying (the semaphore)", () => {
       const b = processWith();
       const seen = serve();
       const { unlink } = await import("node:fs/promises");
-      const { error } = await settle(b.agent.fetchL402(URL_, { maxAmountSats: 3000 }), async (tick) => {
-        if (tick === 2) await unlink(holdFile());
-      });
+      const { error } = await settle(b.agent.fetchL402(URL_, { maxAmountSats: 3000 }), once(() => unlink(holdFile())));
       expect(error).toMatchObject({ code: "CONCURRENT_PAYMENT_ATTEMPT", reason: "L402_BOUGHT_ELSEWHERE" });
       expect(error.nextStep).toMatch(/Calling fetchL402 again is a second purchase/);
       expect(seen).toEqual([]);
@@ -190,9 +196,8 @@ describe("the claim before paying (the semaphore)", () => {
       await live();
       const b = processWith();
       serve();
-      const { error } = await settle(b.agent.fetchL402(URL_, { maxAmountSats: 3000 }), async (tick) => {
-        if (tick === 2) await writeRecord({ state: "held", pid: process.ppid, updatedAt: Date.now(), paid: false });
-      });
+      const { error } = await settle(b.agent.fetchL402(URL_, { maxAmountSats: 3000 }),
+        once(() => writeRecord({ state: "held", pid: process.ppid, updatedAt: Date.now(), paid: false })));
       expect(error).toMatchObject({ code: "CONCURRENT_PAYMENT_ATTEMPT" });
       expect(error.nextStep).toMatch(/finishes that held purchase/);
       expect(b.wallet.payLightningInvoice).not.toHaveBeenCalled();
