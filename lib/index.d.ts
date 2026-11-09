@@ -390,8 +390,15 @@ export interface SpendLedger {
     windowMs: number;
     entries: SpendLedgerEntry[];
   }>;
-  /** Throws (code SPEND_BUDGET_EXCEEDED) when the spend would bust the budget. */
+  /** Throws (code SPEND_BUDGET_EXCEEDED) when the spend would bust the budget. A check only: spend through reserve(). */
   assertCanSpend(sats: number | bigint, operation?: string, options?: { limitSats?: number | null }): Promise<SpendBudgetCheck>;
+  /**
+   * The spend gate: checks the budget and records the spend in one section
+   * under the ledger's lock file, so parallel processes can't both pass the
+   * same check. Throws SPEND_BUDGET_EXCEEDED like assertCanSpend; returns the
+   * entry for unrecord().
+   */
+  reserve(sats: number | bigint, operation?: string, options?: { limitSats?: number | null }): Promise<SpendLedgerEntry>;
   /** Append a spend and persist atomically; prunes aged-out entries. */
   record(sats: number | bigint, operation?: string): Promise<SpendLedgerEntry>;
   /** Best-effort refund for a send that provably never happened. */
@@ -403,7 +410,8 @@ export interface SpendLedger {
  * ledger file fails CLOSED (code SPEND_LEDGER_UNREADABLE); deleting it resets
  * the window, so an agent does that only when the user asks in their own
  * message. A seed-bound ledger is reset only with `sparkbtcbot reset-ledger`.
- * Single-agent-per-ledger; give concurrent agents separate paths.
+ * Each write holds `<path>.lock`, so processes and agents can share one ledger;
+ * spend through reserve(), not assertCanSpend() then record().
  */
 export function createSpendLedger(options?: {
   path?: string;

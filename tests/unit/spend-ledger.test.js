@@ -4,9 +4,12 @@
 // amount), and the persistence contract (two instances share state via disk).
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { randomBytes } from "node:crypto";
-import { mkdtemp, rm, writeFile, readFile, stat } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { mkdtemp, rm, writeFile, readFile, stat, utimes, access } from "node:fs/promises";
+import { tmpdir, hostname } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   createSpendLedger,
   checkSpendBudget,
@@ -206,4 +209,84 @@ describe("a negative or fractional entry is never a valid ledger entry", () => {
     const ledger = createSpendLedger({ path, budgetSats: 20_000, clock: () => T0 });
     await expect(ledger.assertCanSpend(1_000)).rejects.toThrow();
   });
+});
+
+// GATE-2 (review 2026-11-09): the check and the record were separate file
+// reads and writes, so parallel processes all passed the same check and their
+// appends clobbered each other. reserve() does both under `<ledger>.lock`.
+describe("reserve(): one spend gate across processes and ledger objects", () => {
+  const LEDGER_JS = fileURLToPath(new URL("../../lib/spend-ledger.js", import.meta.url));
+  const CHILD = `
+    const { createSpendLedger } = await import(process.argv[1]);
+    const ledger = createSpendLedger({ path: process.argv[2], budgetSats: 3000 });
+    const twoStep = process.argv[3] === "two-step";
+    try {
+      if (twoStep) { await ledger.assertCanSpend(1000, "x"); await ledger.record(1000, "x"); }
+      else await ledger.reserve(1000, "x");
+      console.log("sent");
+    } catch (err) { console.log(err.code); }`;
+  // Each child stands for one tool call paying 1,000 sats, all started at once.
+  const burst = (n, mode = "reserve") =>
+    Promise.all(Array.from({ length: n }, () =>
+      promisify(execFile)(process.execPath, ["--input-type=module", "-e", CHILD, LEDGER_JS, path, mode]).then((r) => r.stdout.trim())));
+  const spent = async () => JSON.parse(await readFile(path, "utf8")).entries.reduce((s, e) => s + e.sats, 0);
+
+  it("six processes paying 1,000 each under a 3,000 budget: exactly three go through, and the ledger holds 3,000", async () => {
+    for (let trial = 0; trial < 3; trial++) {
+      await rm(path, { force: true });
+      const results = await burst(6);
+      expect(results.filter((r) => r === "sent")).toHaveLength(3);
+      expect(results.filter((r) => r === "SPEND_BUDGET_EXCEEDED")).toHaveLength(3);
+      expect(await spent()).toBe(3_000);
+      await expect(access(`${path}.lock`)).rejects.toThrow();
+    }
+  }, 60_000);
+
+  it("two ledger objects on one file in one process share the gate", async () => {
+    const a = createSpendLedger({ path, budgetSats: 3_000 });
+    const b = createSpendLedger({ path, budgetSats: 3_000 });
+    const results = await Promise.allSettled([a, b, a, b, a, b].map((l) => l.reserve(1_000, "x")));
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(3);
+    expect(results.filter((r) => r.reason?.code === "SPEND_BUDGET_EXCEEDED")).toHaveLength(3);
+    expect(await spent()).toBe(3_000);
+  });
+
+  it("unrecord and record take the same lock: an undo can't erase a spend recorded meanwhile", async () => {
+    const a = createSpendLedger({ path, budgetSats: 10_000 });
+    const b = createSpendLedger({ path, budgetSats: 10_000 });
+    const first = await a.reserve(1_000, "failed-send");
+    await Promise.all([a.unrecord(first.id), ...Array.from({ length: 5 }, () => b.reserve(1_000, "real"))]);
+    expect(await spent()).toBe(5_000);
+  });
+
+  it("a lock left by a process that died, or one older than 10 s, is broken; a live holder is waited for", async () => {
+    const lock = `${path}.lock`;
+    const ledger = createSpendLedger({ path, budgetSats: 10_000 });
+    // A dead holder on this host.
+    const dead = (await promisify(execFile)(process.execPath, ["-e", "console.log(process.pid)"])).stdout.trim();
+    await writeFile(lock, JSON.stringify({ pid: Number(dead), host: hostname(), ts: Date.now(), token: "x" }));
+    await ledger.reserve(1_000, "x");
+    // An old lock whose holder can't be checked (another host).
+    await writeFile(lock, JSON.stringify({ pid: 1, host: "elsewhere", ts: 0, token: "y" }));
+    const old = new Date(Date.now() - 11_000);
+    await utimes(lock, old, old);
+    await ledger.reserve(1_000, "x");
+    // A live holder (the test runner's parent) with a fresh lock: wait until it lets go.
+    await writeFile(lock, JSON.stringify({ pid: process.ppid, host: hostname(), ts: Date.now(), token: "z" }));
+    let done = false;
+    const pending = ledger.reserve(1_000, "x").then(() => { done = true; });
+    await new Promise((r) => setTimeout(r, 300));
+    expect(done).toBe(false);
+    expect(JSON.parse(await readFile(lock, "utf8")).token).toBe("z");
+    await rm(lock);
+    await pending;
+    expect(await spent()).toBe(3_000);
+  });
+
+  // The harness can see the race: the two-call form still overruns.
+  it.skipIf(!process.env.SPARK_SHOW_LEDGER_RACE)("(demo) assertCanSpend then record from parallel processes overruns", async () => {
+    await rm(path, { force: true });
+    const results = await burst(6, "two-step");
+    expect(results.filter((r) => r === "sent").length).toBeGreaterThan(3);
+  }, 60_000);
 });
