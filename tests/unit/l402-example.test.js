@@ -72,4 +72,19 @@ describe("the L402 example pays only through fetchL402", () => {
   it("refuses to send a pass over plain http", async () => {
     await expect(fetchL402Cached(mk().agent, "http://ex4.example/a")).rejects.toThrow(/refusing to send an L402 pass over http:/);
   });
+  it("a redirect on the cached pass is handed back as the answer: not followed, nothing bought", async () => {
+    const { agent, wallet } = mk();
+    serve(challenge(), resp(200, { ok: true }));
+    await fetchL402Cached(agent, "https://ex9.example/a", { maxAmountSats: 3000 });
+    const inits = [];
+    vi.stubGlobal("fetch", async (_url, opts) => {
+      inits.push(opts);
+      return { status: 302, headers: { get: (h) => (h === "location" ? "https://elsewhere.example/a" : null) }, text: async () => "" };
+    });
+    expect(await fetchL402Cached(agent, "https://ex9.example/b", { maxAmountSats: 3000 }))
+      .toMatchObject({ paid: false, cached: true, status: 302, location: "https://elsewhere.example/a" });
+    expect(inits).toHaveLength(1);
+    expect(inits[0].redirect).toBe("manual");
+    expect(wallet.payLightningInvoice).toHaveBeenCalledTimes(1);
+  });
 });

@@ -74,6 +74,13 @@ describe("previewL402", () => {
     expect(await mkAgent().agent.previewL402("https://api.example/paid")).toMatchObject({ tokenExpiresAt: null });
   });
 
+  it("accepts plain http only for localhost, including IPv6 written as the URL parser writes it ([::1])", async () => {
+    vi.stubGlobal("fetch", async () => resp(200, { hello: "free" }));
+    const { agent } = mkAgent();
+    expect(await agent.previewL402("http://[::1]:8080/paid")).toEqual({ requiresPayment: false });
+    await expect(agent.previewL402("http://api.example/paid")).rejects.toMatchObject({ code: "BAD_INPUT", field: "url" });
+  });
+
   it("reports no payment required for a non-402 response", async () => {
     vi.stubGlobal("fetch", async () => resp(200, { hello: "free" }));
     const { agent } = mkAgent();
@@ -382,10 +389,13 @@ describe("fetchL402 after payment: in-process recovery", () => {
   it("an unexpected throw during the first delivery leaves the paid pass held", async () => {
     const inv = await invoice2000();
     const weird = { get status() { throw new TypeError("unexpected"); }, headers: { get: () => "" } };
-    stubFetch([resp(402, { invoice: inv, macaroon: "mac1" }), weird]);
+    stubFetch([resp(402, { invoice: inv, macaroon: "mac1" }), weird, weird, weird]);
     const { agent, pay } = mk();
     const { error } = await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }));
-    expect(error.message).toBe("unexpected");
+    // Read inside the redirect handling, the throw is a failed attempt: retried
+    // with the same pass, then a coded error with the pass held.
+    expect(error).toMatchObject({ code: "PAYMENT_COMMITTED", settled: true });
+    expect(error.message).toMatch(/after 3 attempts \(unexpected\)/);
     const seen = stubFetch([resp(200, { ok: true })]);
     const { value } = await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }));
     expect(value).toMatchObject({ paid: false, recovered: true, data: { ok: true } });
@@ -955,6 +965,137 @@ describe("fetchL402 after payment: in-process recovery", () => {
     await run(agent.fetchL402(URL_, { method: "POST", body: { q: 1 }, maxAmountSats: 3000 }));
     expect(seen[0].headers.Authorization).toBeUndefined();
     expect(pay).toHaveBeenCalledTimes(2);
+  });
+
+  // Redirects (2026-11-09). Before paying, none is followed: the paid
+  // challenge must come from the URL given. After paying, same-origin hops
+  // keep the pass, another https host gets no pass, no caller header and no
+  // body, and anything else stops with the pass held.
+  describe("redirects", () => {
+    const redirect = (status, location) => ({
+      status,
+      headers: { get: (h) => (String(h).toLowerCase() === "location" ? location : null) },
+      text: async () => "",
+    });
+    const stubUrls = (queue) => {
+      const calls = [];
+      vi.stubGlobal("fetch", async (url, opts) => {
+        calls.push({ url: String(url), opts });
+        const next = queue.shift();
+        if (next === undefined) throw new Error("unexpected extra fetch");
+        if (next instanceof Error) throw next;
+        return next;
+      });
+      return calls;
+    };
+
+    it("a redirect before paying is not followed: SERVICE_REDIRECTED ('no'), nothing paid", async () => {
+      const calls = stubUrls([redirect(307, "/v2/paid")]);
+      const { agent, pay } = mk();
+      const { error } = await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }));
+      expect(error).toMatchObject({ code: "SERVICE_REDIRECTED", retryable: "no", status: 307, location: "https://api.example/v2/paid" });
+      expect(error.message).toMatch(/Nothing was paid/);
+      expect(calls).toHaveLength(1);
+      expect(calls[0].opts.redirect).toBe("manual");
+      expect(pay).not.toHaveBeenCalled();
+    });
+
+    it("previewL402 reports a redirect instead of 'no payment required'", async () => {
+      stubUrls([redirect(302, "https://elsewhere.example/paid")]);
+      const { agent } = mk();
+      const { error } = await run(agent.previewL402(URL_));
+      expect(error).toMatchObject({ code: "SERVICE_REDIRECTED", status: 302, location: "https://elsewhere.example/paid" });
+    });
+
+    it("a POST redirected before paying says the service received it", async () => {
+      stubUrls([redirect(302, "/elsewhere")]);
+      const { agent } = mk();
+      const { error } = await run(agent.fetchL402(URL_, { method: "POST", body: { q: 1 }, maxAmountSats: 3000 }));
+      expect(error).toMatchObject({ code: "SERVICE_REDIRECTED", retryable: "no" });
+      expect(error.nextStep).toMatch(/received this request/);
+    });
+
+    it("after paying, a same-origin redirect is followed with the pass", async () => {
+      const inv = await invoice2000();
+      const calls = stubUrls([resp(402, { invoice: inv, macaroon: "mac1" }), redirect(302, "/paid/"), resp(200, { ok: true })]);
+      const { agent, pay } = mk();
+      const { value } = await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }));
+      expect(value).toMatchObject({ paid: true, status: 200, data: { ok: true } });
+      expect(calls.slice(1).map((c) => [c.url, auth(c.opts)])).toEqual([
+        [URL_, "L402 mac1:abc123preimage"],
+        ["https://api.example/paid/", "L402 mac1:abc123preimage"],
+      ]);
+      expect(pay).toHaveBeenCalledTimes(1);
+    });
+
+    it("a 303 after a paid POST becomes a GET without the body, still with the pass", async () => {
+      const inv = await invoice2000();
+      const calls = stubUrls([resp(402, { invoice: inv, macaroon: "mac1" }), redirect(303, "/orders/1"), resp(200, { order: 1 })]);
+      const { agent } = mk();
+      const { value } = await run(agent.fetchL402(URL_, { method: "POST", body: { item: 7 }, maxAmountSats: 3000 }));
+      expect(value).toMatchObject({ data: { order: 1 } });
+      expect(calls[2]).toMatchObject({ url: "https://api.example/orders/1", opts: { method: "GET", body: undefined } });
+      expect(auth(calls[2].opts)).toBe("L402 mac1:abc123preimage");
+    });
+
+    it("a redirect to another https host is followed without the pass, the caller's headers or a body", async () => {
+      const inv = await invoice2000();
+      const calls = stubUrls([resp(402, { invoice: inv, macaroon: "mac1" }), redirect(302, "https://cdn.example/f?sig=1"), resp(200, { file: true })]);
+      const { agent } = mk();
+      const { value } = await run(agent.fetchL402(URL_, { headers: { "X-Api-Key": "k" }, maxAmountSats: 3000 }));
+      expect(value).toMatchObject({ data: { file: true } });
+      expect(calls[1].opts.headers).toMatchObject({ "X-Api-Key": "k", Authorization: "L402 mac1:abc123preimage" });
+      expect(calls[2]).toMatchObject({ url: "https://cdn.example/f?sig=1", opts: { headers: {}, body: undefined } });
+    });
+
+    it("a redirect to plain http stops: PAYMENT_COMMITTED, the pass held, and the next call presents it without paying", async () => {
+      const inv = await invoice2000();
+      const calls = stubUrls([resp(402, { invoice: inv, macaroon: "mac1" }), redirect(302, "http://cdn.example/f")]);
+      const { agent, pay } = mk();
+      const { error } = await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }));
+      expect(error).toMatchObject({ code: "PAYMENT_COMMITTED", settled: true, status: 302, location: "http://cdn.example/f" });
+      expect(error.message).toMatch(/not https/);
+      expect(calls.map((c) => c.url)).not.toContain("http://cdn.example/f");
+
+      const next = stubUrls([resp(200, { ok: true })]);
+      expect((await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }))).value).toMatchObject({ paid: false, recovered: true, data: { ok: true } });
+      expect(next.map((c) => auth(c.opts))).toEqual(["L402 mac1:abc123preimage"]);
+      expect(pay).toHaveBeenCalledTimes(1);
+    });
+
+    it("a 307 to another host after a paid POST stops instead of sending the body there", async () => {
+      const inv = await invoice2000();
+      const calls = stubUrls([resp(402, { invoice: inv, macaroon: "mac1" }), redirect(307, "https://other.example/x")]);
+      const { agent } = mk();
+      const { error } = await run(agent.fetchL402(URL_, { method: "POST", body: { item: 7 }, maxAmountSats: 3000 }));
+      expect(error).toMatchObject({ code: "PAYMENT_COMMITTED", settled: true, location: "https://other.example/x" });
+      expect(error.message).toMatch(/another host/);
+      expect(calls).toHaveLength(2); // the challenge and the paid POST; nothing to other.example
+    });
+
+    it("a refusal from the host a redirect led to is a failed attempt, retried from the service's URL with the pass", async () => {
+      const inv = await invoice2000();
+      const calls = stubUrls([
+        resp(402, { invoice: inv, macaroon: "mac1" }),
+        redirect(302, "https://cdn.example/f?sig=old"), resp(403, {}),
+        redirect(302, "https://cdn.example/f?sig=new"), resp(200, { file: true }),
+      ]);
+      const { agent, pay } = mk();
+      const { value } = await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }));
+      expect(value).toMatchObject({ paid: true, data: { file: true } });
+      expect(calls[3]).toMatchObject({ url: URL_ });
+      expect(auth(calls[3].opts)).toBe("L402 mac1:abc123preimage");
+      expect(pay).toHaveBeenCalledTimes(1);
+    });
+
+    it("more than 5 redirects stop, with the pass held", async () => {
+      const inv = await invoice2000();
+      stubUrls([resp(402, { invoice: inv, macaroon: "mac1" }), ...Array.from({ length: 5 }, (_, i) => redirect(302, `/hop${i}`))]);
+      const { agent } = mk();
+      const { error } = await run(agent.fetchL402(URL_, { maxAmountSats: 3000 }));
+      expect(error).toMatchObject({ code: "PAYMENT_COMMITTED", settled: true });
+      expect(error.message).toMatch(/more than 5 redirects/);
+    });
   });
 
   // ToB review 2026-10-28 (F10): the hold was keyed on the raw string, so a

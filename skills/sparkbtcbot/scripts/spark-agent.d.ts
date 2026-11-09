@@ -911,6 +911,7 @@ export declare class SparkAgent {
    * @throws {AgentError} LIGHTNING_PAYMENT_FAILED
    * @throws {PaymentCommittedError} PAYMENT_COMMITTED
    * @throws {AgentError} AGENT_CLOSED
+   * @throws {AgentError} SERVICE_REDIRECTED
    */
   fetchL402(url: string, options?: FetchL402Options): Promise<L402Result>;
 
@@ -933,6 +934,7 @@ export declare class SparkAgent {
    * @throws {AgentError} BAD_INPUT
    * @throws {AgentError} SERVICE_UNAVAILABLE
    * @throws {AgentError} L402_CHALLENGE_INVALID
+   * @throws {AgentError} SERVICE_REDIRECTED
    */
   previewL402(url: string): Promise<L402Preview>;
 

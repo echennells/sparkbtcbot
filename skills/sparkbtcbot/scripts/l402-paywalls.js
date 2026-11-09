@@ -38,7 +38,14 @@ export async function fetchL402Cached(agent, url, options = {}) {
       // Authorization last, so a caller header cannot clobber the credential.
       headers: { "Content-Type": "application/json", ...headers, Authorization: cached },
       body: body ? JSON.stringify(body) : undefined,
+      // Not followed: fetch would forward the caller's headers, and a POST body,
+      // to wherever the service points. A redirect is handed back as the answer.
+      redirect: "manual",
     });
+    if (response.status >= 300 && response.status < 400) {
+      await response.text().catch(() => "");
+      return { paid: false, cached: true, status: response.status, location: response.headers.get("location") };
+    }
     if (response.status !== 402 && response.status !== 401) {
       const ct = response.headers.get("content-type") || "";
       const data = ct.includes("json") ? await response.json() : await response.text();

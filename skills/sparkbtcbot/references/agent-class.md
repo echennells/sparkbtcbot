@@ -70,6 +70,7 @@ Some errors carry facts too: `transferId` (`PAYMENT_ALREADY_SETTLED`: the paymen
 | `SPARK_REFUSED` | `no` | Spark answered a call that moves no money with a refusal. The withdrawal quote is `check-first` here too (a failed leaf swap reads as a refusal); only the SDK's own pre-send refusals there keep their code, such as `INSUFFICIENT_FUNDS`. | Spark refused the request, so the same call gets the same answer. Fix the input the message names, or tell the user. |
 | `SERVICE_UNAVAILABLE` | `yes` | The paid-content service couldn't be reached, before any payment. A POST or PATCH is `no`: the service may have received it. | Nothing was paid. Call again later; tell the user if it keeps failing. |
 | `SERVICE_RESPONSE_INVALID` | `no` | The service answered without a 402 challenge, in a form that can't be read, before any payment. | Nothing was paid. The service answered without a payment challenge, in a form that can't be read; check with the service before sending the request again. |
+| `SERVICE_REDIRECTED` | `no` | `fetchL402` or `previewL402` got a redirect before paying (`err.status`, `err.location`). No redirect is followed before paying: the challenge that is paid must come from the URL given. A redirect after paying is followed on the same origin with the pass, to another https host without it, and otherwise stops as `PAYMENT_COMMITTED` with the pass held. | Nothing was paid. The service redirected this request to err.location, and an L402 payment is made only to the URL given. Tell the user where it pointed; call again with that URL only if it is the same service over https and the user agrees. |
 | `PRICE_UNAVAILABLE` | `yes` | No fiat price source answered, or the sources disagree by more than the tolerance (3%). | Don't quote a fiat figure; call fetchBtcPrice() again later. |
 | `PRIVACY_NOT_APPLIED` | `yes` | The operators didn't record the privacy setting, so the wallet stays publicly readable until it works. | Nothing moved. Try again later (SparkAgent.create retries it each time the wallet opens); tell the user if it keeps failing, since balance and history stay public until it works. |
 | `STORAGE_ERROR` | `no` | A file a guard or a payment depends on can't be read or written (`err.osCode`). | Nothing was sent. Tell the user the path or permission the message names (err.osCode says what the system refused); fix it only on their say-so, and don't turn the guard off or move its file. |
@@ -758,8 +759,7 @@ function assertHttpsUrl(method, url) {
   } catch {
     throw badInput(new Error(`SparkAgent.${method}: invalid URL: ${url}`), "url");
   }
-  const local = parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1" || parsed.hostname === "::1";
-  if (parsed.protocol !== "https:" && !local) {
+  if (!l402UrlAllowed(parsed)) {
     throw badInput(
       new Error(
         `SparkAgent.${method}: refusing a paid request over ${parsed.protocol}// — an L402 exchange ` +
@@ -839,6 +839,92 @@ const L402_DELIVERY_BACKOFF_MS = 500;
 const L402_RETRY_STATUS = (status) => status >= 500 || [408, 409, 423, 425, 429].includes(status);
 const L402_REFUSED_STATUS = (status) => status === 401 || status === 402 || status === 403;
 const L402_REPEATABLE = new Set(["GET", "HEAD", "OPTIONS", "PUT", "DELETE"]);
+
+// Redirects on an L402 request. Every fetch here passes redirect "manual"
+// (Node then returns the 3xx and its Location) and decides itself:
+// - before paying, none is followed: the challenge that gets paid must come
+//   from the URL assertHttpsUrl checked. A hop could supply the invoice (over
+//   plain http anyone on the path could swap it), and a payment made off a hop
+//   to another host is refused at delivery: paid, nothing delivered.
+// - after paying, a hop on the same origin is followed with the pass, as fetch
+//   does (a trailing-slash redirect, a 303 after a POST); a hop to another
+//   https origin is followed with no pass, no caller header and no body (a
+//   signed download link); anything else stops, with the pass held.
+// Measured on Node 24 (2026-11-09): fetch's own following keeps Authorization
+// on same-origin hops and drops it on cross-origin ones, but forwards every
+// other caller header and re-sends a 307/308 body to the other origin.
+const L402_REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+const L402_MAX_REDIRECTS = 5;
+function l402UrlAllowed(u) {
+  return u.protocol === "https:" || ["localhost", "127.0.0.1", "::1", "[::1]"].includes(u.hostname);
+}
+
+// A redirect before paying: nothing was paid, and the same call gets the same
+// answer, so it says where the service pointed instead of "call again later".
+async function l402RedirectRefused(method, url, res, httpMethod) {
+  await res.text().catch(() => "");
+  const raw = res.headers.get("location");
+  let location = raw ?? null;
+  try { if (raw) location = new URL(raw, url).href; } catch { /* keep the raw value */ }
+  const { host, path } = l402Target(url);
+  let where = "an address it didn't give";
+  try { if (location) { const t = new URL(location); where = `${t.protocol}//${t.host}${t.pathname}`; } } catch { /* unparsable */ }
+  const posted = !L402_REPEATABLE.has(String(httpMethod).toUpperCase());
+  return annotateError(
+    new Error(
+      `SparkAgent.${method}: ${host}${path} redirected the request (HTTP ${res.status}) to ${where}. Nothing was paid: ` +
+      `an L402 payment is made only to the URL given, so a redirect is not followed before paying.`,
+    ),
+    "SERVICE_REDIRECTED",
+    {
+      status: res.status, location: location ?? undefined,
+      ...(posted ? { nextStep: "Nothing was paid, but the service received this request: check with it before sending it again. If err.location is the same service over https, call again with that URL only on the user's say-so." } : {}),
+    },
+  );
+}
+
+// Present a paid pass, following only the redirects allowed after paying (see
+// above). Returns { res, crossOrigin }; a hop it won't follow throws an Error
+// with l402RedirectStop set, which delivery doesn't retry (the same request
+// gets the same redirect).
+async function presentL402Pass(url, { method, headers, reqBody, authorization }) {
+  const origin = new URL(url).origin;
+  let current = url;
+  let verb = String(method).toUpperCase();
+  let body = reqBody;
+  let crossOrigin = false;
+  for (let hops = 0; ; hops++) {
+    const res = await fetch(current, {
+      method: verb,
+      // Authorization last: a caller-supplied header must not clobber the
+      // L402 proof we paid for (that would pay and then not present it).
+      headers: crossOrigin ? {} : { ...headers, Authorization: authorization },
+      body,
+      redirect: "manual",
+    });
+    if (!L402_REDIRECT_STATUSES.has(res.status)) return { res, crossOrigin };
+    await res.text().catch(() => "");
+    const raw = res.headers.get("location");
+    let next = null;
+    try { next = raw ? new URL(raw, current) : null; } catch { /* unusable */ }
+    const stop = (why) => Object.assign(new Error(why), { l402RedirectStop: true, status: res.status, location: next?.href ?? raw ?? null });
+    if (!next) throw stop(`a redirect (HTTP ${res.status}) with no usable Location`);
+    if (hops + 1 >= L402_MAX_REDIRECTS) throw stop(`more than ${L402_MAX_REDIRECTS} redirects`);
+    if (!l402UrlAllowed(next)) throw stop(`a redirect to ${next.protocol}//${next.host}${next.pathname}, which is not https`);
+    // 303, and a 301 or 302 answering a POST, become a GET without a body, as in fetch.
+    if (res.status === 303 || ((res.status === 301 || res.status === 302) && verb === "POST")) {
+      verb = "GET";
+      body = undefined;
+    }
+    if (next.origin !== origin) {
+      if (body !== undefined || (verb !== "GET" && verb !== "HEAD")) {
+        throw stop(`a redirect to ${next.host}${next.pathname} that would send the request and its body to another host`);
+      }
+      crossOrigin = true;
+    }
+    current = next.href;
+  }
+}
 // Unresolved L402 purchases held per agent (undelivered passes, payments in
 // doubt, blocks). Nothing held is ever dropped, since each may mean money has
 // left; past this many, fetchL402 refuses to start a new purchase.
@@ -3071,10 +3157,12 @@ export class SparkAgent {
         method,
         headers: { "Content-Type": "application/json", ...headers },
         body: reqBody,
+        redirect: "manual",
       });
     } catch (err) {
       throw serviceFetchFailed(err, method);
     }
+    if (L402_REDIRECT_STATUSES.has(initialResponse.status)) throw await l402RedirectRefused("fetchL402", url, initialResponse, method);
 
     if (initialResponse.status !== 402) {
       const ct = initialResponse.headers.get("content-type") || "";
@@ -3314,24 +3402,29 @@ export class SparkAgent {
     }
     let failure;
     let tried = 0;
+    let redirectStop = null;
     for (let attempt = 1; attempt <= attempts; attempt++) {
       tried = attempt;
       if (attempt > 1) await new Promise((r) => setTimeout(r, L402_DELIVERY_BACKOFF_MS * (attempt - 1)));
       let res;
+      let crossOrigin;
       try {
-        res = await fetch(url, {
-          method,
-          // Authorization last: a caller-supplied header must not clobber the
-          // L402 proof we paid for (that would pay and then not present it).
-          headers: { ...headers, "Authorization": `L402 ${pass.macaroon}:${pass.preimage}` },
-          body: reqBody,
-        });
+        ({ res, crossOrigin } = await presentL402Pass(url, {
+          method, headers, reqBody, authorization: `L402 ${pass.macaroon}:${pass.preimage}`,
+        }));
       } catch (err) {
+        if (err?.l402RedirectStop) {
+          redirectStop = err;
+          break;
+        }
         failure = err?.message ?? String(err);
         continue;
       }
-      if (L402_RETRY_STATUS(res.status)) {
-        failure = `HTTP ${res.status}`;
+      // A refusal from the host a redirect led to, which never saw the pass
+      // (an expired signed link), is a failed attempt: the service's own URL
+      // is asked again, with the pass.
+      if (L402_RETRY_STATUS(res.status) || (crossOrigin && L402_REFUSED_STATUS(res.status))) {
+        failure = `HTTP ${res.status}${crossOrigin ? " from the host a redirect led to" : ""}`;
         await res.text().catch(() => "");
         continue;
       }
@@ -3381,6 +3474,23 @@ export class SparkAgent {
       };
     }
     holdPass();
+    if (redirectStop) {
+      const e = new PaymentCommittedError(
+        `L402: paid ${pass.amountSats ?? "?"} sats for ${host}${path}, and the service answered with ${redirectStop.message}. ` +
+        `This agent doesn't follow that with the pass, so the resource was not delivered. The pass is kept: calling ` +
+        `fetchL402 again presents it without paying. Do NOT buy this resource another way.`,
+        {
+          settled: true, op: "l402",
+          invoiceHash: pass.invoiceHash ?? (pass.invoice ? invoicePaymentHash(pass.invoice) ?? undefined : undefined),
+          sendId: pass.sendId ?? undefined,
+          nextStep: `Paid, not delivered: the service redirected the paid request to err.location, which this agent won't follow with the pass. Tell the user, and take it up with the service; don't buy this resource another way. ${L402_MEMORY_NOTE}`,
+        },
+      );
+      e.paid = true;
+      e.status = redirectStop.status;
+      if (redirectStop.location) e.location = redirectStop.location;
+      throw e;
+    }
     const e = new PaymentCommittedError(
       `L402: paid ${pass.amountSats ?? "?"} sats for ${host}${path} but the resource was not delivered ` +
       `after ${tried} attempt${tried === 1 ? "" : "s"} (${failure}). The pass is kept. ` +
@@ -3693,10 +3803,11 @@ export class SparkAgent {
     assertHttpsUrl("previewL402", url);
     let response;
     try {
-      response = await fetch(url);
+      response = await fetch(url, { redirect: "manual" });
     } catch (err) {
       throw serviceFetchFailed(err, "GET");
     }
+    if (L402_REDIRECT_STATUSES.has(response.status)) throw await l402RedirectRefused("previewL402", url, response, "GET");
     if (response.status !== 402) return { requiresPayment: false };
 
     const { decode } = await import("light-bolt11-decoder");
