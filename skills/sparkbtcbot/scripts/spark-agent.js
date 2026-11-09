@@ -2319,88 +2319,107 @@ export class SparkAgent {
     if (result && !("encodedInvoice" in result) && "transferDirection" in result) {
       return { ...result, paymentPreimage: null, settled: true, sparkDirect: true, lastStatus: result.status ?? null, feeSats: 0 };
     }
-    let preimage = result.paymentPreimage ?? null;
-    let lastStatus = result.status ?? null;
-    let preimageRead = null;
-    for (let i = 0; !preimage && result.id && i < maxPolls; i++) {
-      await new Promise((r) => setTimeout(r, pollMs));
-      // A status read that fails says nothing about the payment, and the money
-      // may already be gone: keep polling. Thrown, it used to reach the caller
-      // as a raw error after paying (fetchL402 then bought a second time).
-      const status = await this.#wallet.getLightningSendRequest(result.id).catch(() => null);
-      lastStatus = status?.status ?? lastStatus;
-      if (status?.paymentPreimage) {
-        preimage = status.paymentPreimage;
-        preimageRead = status;
-      } else if (PAYEE_MAYBE_PAID_STATUSES.has(status?.status)) {
-        // After the Lightning leg succeeded: the payee may have the money. Not
-        // "failed" (that invites a fresh invoice) and not a silent timeout
-        // either. The dedup id is kept, so a retry of THIS invoice is refused.
-        throw new PaymentCommittedError(
-          `SparkAgent.payAndSettle: the payment ended in ${status.status}, after the Lightning payment ` +
-          `succeeded, so the payee may already have been paid. Do NOT pay again with a new invoice or method; ` +
-          `check agent.getTransfers(). Retrying THIS invoice through payLightningInvoice is deduped.`,
-          {
-            settled: null, op: "lightning_pay", sendId: result.id, invoiceHash: invoicePaymentHash(bolt11) ?? undefined,
-            nextStep: "The payee may have been paid: check getTransfers() or getLightningSendRequest(err.sendId); only ever re-call payLightningInvoice with this same invoice, never a new one.",
-          },
-        );
-      } else if (isTerminalLightningFailure(status?.status)) {
-        // Distinguishing a DEFINITIVE failure from a slow settle is what makes
-        // the never-retry-on-timeout rule safe: a failed-and-refunded payment
-        // that merely timed out would otherwise look pending forever, and the
-        // rule would forbid the retry that is actually correct.
-        // The payee was not paid, but only USER_SWAP_RETURNED says the sats
-        // are back; in the other statuses they can still be locked to the SSP
-        // (the SDK has no terminal-status logic of its own), so the error says
-        // which (lightningPaymentFailed).
-        // The dead transferId must not outlive the failure: kept, it makes a
-        // legitimate re-pay of the still-valid invoice replay the failure —
-        // ToB sharp-edges F5. Dropping it can't pay twice: while the sats are
-        // still locked, the operators refuse a re-pay under a fresh id
-        // ("preimage request already exists", reported as EARLIER_ATTEMPT_OPEN).
-        // Only this send's own id, and not while another attempt of the
-        // invoice is mid-send in this process: a stale poll must not delete
-        // the id a newer attempt is paying under.
-        if (this.#lnDedup && !this.#lnInFlight.get(invoiceDedupKey(bolt11))) {
-          await this.#lnDedup.forget(bolt11, sent.transferId);
-        }
-        throw lightningPaymentFailed(status.status, { sendId: result.id, invoiceHash: invoicePaymentHash(bolt11) ?? undefined });
-      }
-    }
-    // Proof means PROOF: a Lightning preimage settles THIS invoice only if
-    // sha256(preimage) equals the invoice's payment hash. A non-matching
-    // preimage is the replay shape — a transferId wrongly shared with a
-    // DIFFERENT payment makes the SDK hand back that payment's result as this
-    // one's "success" while this invoice was never paid (ToB sharp-edges F2).
-    // Undecodable invoices carry no hash to check; the raw result passes
-    // through as before.
-    if (preimage) {
-      const expected = invoicePaymentHash(bolt11);
-      if (expected) {
-        const got = createHash("sha256").update(Buffer.from(preimage, "hex")).digest("hex");
-        if (got !== expected) {
-          throw annotateError(
-            new Error(
-              `SparkAgent.payAndSettle: the returned preimage does NOT hash to this invoice's payment ` +
-              `hash (sha256(preimage) = ${got}, invoice = ${expected}) — refusing to report settled. ` +
-              `This is the signature of a transferId shared with a different payment: THIS invoice was ` +
-              `not paid. Check the transfer list, and never reuse one transferId across invoices.`,
-            ),
-            "PREIMAGE_MISMATCH",
-            { sendId: result.id, invoiceHash: expected },
+    // From here the payment has been sent. Nothing that goes wrong now may read
+    // as "nothing was sent": AGENT_CLOSED thrown by a poll after cleanup()
+    // escaped as is, fetchL402 took it for a refusal before paying, dropped its
+    // hold and bought again (review 2026-11-09, GATE-1).
+    try {
+      let preimage = result.paymentPreimage ?? null;
+      let lastStatus = result.status ?? null;
+      let preimageRead = null;
+      for (let i = 0; !preimage && result.id && i < maxPolls && !this.#closed; i++) {
+        await new Promise((r) => setTimeout(r, pollMs));
+        // Closed while waiting: stop, and return the payment as sent without
+        // proof (settled: false), which fetchL402 holds on its send id.
+        if (this.#closed) break;
+        // A status read that fails says nothing about the payment, and the money
+        // may already be gone: keep polling. Thrown, it used to reach the caller
+        // as a raw error after paying (fetchL402 then bought a second time).
+        const status = await Promise.resolve().then(() => this.#wallet.getLightningSendRequest(result.id)).catch(() => null);
+        lastStatus = status?.status ?? lastStatus;
+        if (status?.paymentPreimage) {
+          preimage = status.paymentPreimage;
+          preimageRead = status;
+        } else if (PAYEE_MAYBE_PAID_STATUSES.has(status?.status)) {
+          // After the Lightning leg succeeded: the payee may have the money. Not
+          // "failed" (that invites a fresh invoice) and not a silent timeout
+          // either. The dedup id is kept, so a retry of THIS invoice is refused.
+          throw new PaymentCommittedError(
+            `SparkAgent.payAndSettle: the payment ended in ${status.status}, after the Lightning payment ` +
+            `succeeded, so the payee may already have been paid. Do NOT pay again with a new invoice or method; ` +
+            `check agent.getTransfers(). Retrying THIS invoice through payLightningInvoice is deduped.`,
+            {
+              settled: null, op: "lightning_pay", sendId: result.id, invoiceHash: invoicePaymentHash(bolt11) ?? undefined,
+              nextStep: "The payee may have been paid: check getTransfers() or getLightningSendRequest(err.sendId); only ever re-call payLightningInvoice with this same invoice, never a new one.",
+            },
           );
+        } else if (isTerminalLightningFailure(status?.status)) {
+          // Distinguishing a DEFINITIVE failure from a slow settle is what makes
+          // the never-retry-on-timeout rule safe: a failed-and-refunded payment
+          // that merely timed out would otherwise look pending forever, and the
+          // rule would forbid the retry that is actually correct.
+          // The payee was not paid, but only USER_SWAP_RETURNED says the sats
+          // are back; in the other statuses they can still be locked to the SSP
+          // (the SDK has no terminal-status logic of its own), so the error says
+          // which (lightningPaymentFailed).
+          // The dead transferId must not outlive the failure: kept, it makes a
+          // legitimate re-pay of the still-valid invoice replay the failure —
+          // ToB sharp-edges F5. Dropping it can't pay twice: while the sats are
+          // still locked, the operators refuse a re-pay under a fresh id
+          // ("preimage request already exists", reported as EARLIER_ATTEMPT_OPEN).
+          // Only this send's own id, and not while another attempt of the
+          // invoice is mid-send in this process: a stale poll must not delete
+          // the id a newer attempt is paying under.
+          if (this.#lnDedup && !this.#lnInFlight.get(invoiceDedupKey(bolt11))) {
+            await this.#lnDedup.forget(bolt11, sent.transferId);
+          }
+          throw lightningPaymentFailed(status.status, { sendId: result.id, invoiceHash: invoicePaymentHash(bolt11) ?? undefined });
         }
       }
+      // Proof means PROOF: a Lightning preimage settles THIS invoice only if
+      // sha256(preimage) equals the invoice's payment hash. A non-matching
+      // preimage is the replay shape — a transferId wrongly shared with a
+      // DIFFERENT payment makes the SDK hand back that payment's result as this
+      // one's "success" while this invoice was never paid (ToB sharp-edges F2).
+      // Undecodable invoices carry no hash to check; the raw result passes
+      // through as before.
+      if (preimage) {
+        const expected = invoicePaymentHash(bolt11);
+        if (expected) {
+          const got = createHash("sha256").update(Buffer.from(preimage, "hex")).digest("hex");
+          if (got !== expected) {
+            throw annotateError(
+              new Error(
+                `SparkAgent.payAndSettle: the returned preimage does NOT hash to this invoice's payment ` +
+                `hash (sha256(preimage) = ${got}, invoice = ${expected}) — refusing to report settled. ` +
+                `This is the signature of a transferId shared with a different payment: THIS invoice was ` +
+                `not paid. Check the transfer list, and never reuse one transferId across invoices.`,
+              ),
+              "PREIMAGE_MISMATCH",
+              { sendId: result.id, invoiceHash: expected },
+            );
+          }
+        }
+      }
+      // What it cost, read once it has settled (#lightningFee): the SDK's
+      // first answer can say 0 before the payment has been priced. Not for
+      // fetchL402: it reports no fee, and its paid pass is waiting to be
+      // presented before the token expires.
+      const fee = sent.capSats === undefined || payOptions[LN_NO_FEE_READS]
+        ? {}
+        : await this.#lightningFee(result, { ...sent, settled: Boolean(preimage), pollMs, preimageRead });
+      return { ...result, paymentPreimage: preimage, settled: Boolean(preimage), lastStatus, ...fee };
+    } catch (err) {
+      if (err instanceof PaymentCommittedError || err?.code === "LIGHTNING_PAYMENT_FAILED" || err?.code === "PREIMAGE_MISMATCH") throw err;
+      throw new PaymentCommittedError(
+        `SparkAgent.payAndSettle: the payment was sent, then checking it failed (${String(err?.message ?? err).slice(0, 160)}). ` +
+        `It may have gone through. Do NOT pay again with a new invoice or method; check agent.getTransfers().`,
+        {
+          settled: null, op: "lightning_pay", sendId: result.id, invoiceHash: invoicePaymentHash(bolt11) ?? undefined, cause: err,
+          nextStep: "The payment was sent: check getTransfers() or getLightningSendRequest(err.sendId) before anything else; only ever re-call payLightningInvoice with this same invoice, never a new one.",
+        },
+      );
     }
-    // What it cost, read once it has settled (#lightningFee): the SDK's
-    // first answer can say 0 before the payment has been priced. Not for
-    // fetchL402: it reports no fee, and its paid pass is waiting to be
-    // presented before the token expires.
-    const fee = sent.capSats === undefined || payOptions[LN_NO_FEE_READS]
-      ? {}
-      : await this.#lightningFee(result, { ...sent, settled: Boolean(preimage), pollMs, preimageRead });
-    return { ...result, paymentPreimage: preimage, settled: Boolean(preimage), lastStatus, ...fee };
   }
 
   // --- Spark Invoices ---

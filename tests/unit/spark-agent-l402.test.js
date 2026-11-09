@@ -1118,6 +1118,45 @@ describe("fetchL402 after payment: in-process recovery", () => {
     });
   });
 
+  // Review 2026-11-09 (GATE-1): cleanup() while payAndSettle polled a sent
+  // payment threw AGENT_CLOSED out of the poll; fetchL402 took it for a
+  // refusal before paying, dropped the hold, and the next call bought again.
+  it("cleanup() while a sent payment is still pending: the purchase stays held, and the next process doesn't buy again", async () => {
+    const inv = await invoice2000();
+    const wallet = {
+      getSparkAddress: async () => "sp1from",
+      getLightningSendFeeEstimate: async () => 5,
+      payLightningInvoice: vi.fn(async () => ({ id: "send-1", status: "LIGHTNING_PAYMENT_INITIATED" })),
+      getLightningSendRequest: vi.fn(async () => ({ status: "LIGHTNING_PAYMENT_INITIATED" })),
+      cleanup: vi.fn(async () => {}),
+    };
+    const agent = new SparkAgent(wallet, "MAINNET");
+    stubFetch([resp(402, { invoice: inv, macaroon: "mac1" })]);
+    let done = false;
+    let closed = false;
+    const pending = agent.fetchL402(URL_, { maxAmountSats: 3000 }).then((value) => ({ value }), (error) => ({ error }));
+    pending.finally(() => { done = true; });
+    for (let i = 0; !done && i < 2_000; i++) {
+      await stat(tmpdir()); // real file I/O (the claim, the limits, the dedup store) needs real turns
+      await vi.advanceTimersByTimeAsync(2_000);
+      // The host shuts the agent down once the payment has gone out, mid-poll.
+      if (!closed && wallet.payLightningInvoice.mock.calls.length > 0) { closed = true; await agent.cleanup(); }
+    }
+    const { error } = await pending;
+    expect(closed).toBe(true);
+    expect(error).toMatchObject({ code: "PAYMENT_COMMITTED", sendId: "send-1" });
+    expect(wallet.payLightningInvoice).toHaveBeenCalledTimes(1);
+
+    // The next process: reads the held send by its id, no new challenge, no new payment.
+    const next = mk();
+    next.wallet.getLightningSendRequest = async (id) => (id === "send-1" ? { status: "LIGHTNING_PAYMENT_INITIATED" } : null);
+    stubFetch([]);
+    const again = await run(next.agent.fetchL402(URL_, { maxAmountSats: 3000 }));
+    expect(again.error).toMatchObject({ code: "PAYMENT_COMMITTED" });
+    expect(again.error.message).toMatch(/still pending/);
+    expect(next.pay).not.toHaveBeenCalled();
+  });
+
   // Review 2026-11-09 (L402-1, L402-5): the paid request dropped the JSON
   // content type the challenge request sent, so JSON servers refused the body
   // that had just been paid for; and a caller's lower-case "authorization"
