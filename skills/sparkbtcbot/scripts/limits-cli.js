@@ -17,7 +17,9 @@ import "dotenv/config";
 import { stdout, stderr, exit, env } from "node:process";
 import { pathToFileURL } from "node:url";
 import { realpathSync } from "node:fs";
-import { readLimits, writeLimits, limitsChanges, limitsPath, LIMIT_OPS } from "../../../lib/spending-limits.js";
+import { readFile } from "node:fs/promises";
+import { readLimits, writeLimits, limitsChanges, limitsPath, validateLimits, LIMIT_OPS } from "../../../lib/spending-limits.js";
+import { withFileLock } from "../../../lib/file-lock.js";
 import { seedFileIsSealed } from "../../../lib/encrypted-seed.js";
 
 const USAGE =
@@ -100,6 +102,18 @@ function describe(limits, path) {
   return lines.join("\n") + "\n";
 }
 
+// The rules an unreadable file still shows (one a newer version added, say,
+// dropped), so the comparison and the undo command name them. null if none.
+async function salvage(path) {
+  try {
+    const parsed = JSON.parse(await readFile(path, "utf8"));
+    const known = Object.fromEntries(["dailyBudgetSats", "maxPaymentSats", "allowedOps", "allowedRecipients"].filter((k) => k in parsed).map((k) => [k, parsed[k]]));
+    return validateLimits(known);
+  } catch {
+    return null;
+  }
+}
+
 export async function main(args = process.argv.slice(2)) {
   const [sub = "show", ...rest] = args;
   if (sub === "--help" || sub === "-h" || sub === "help") {
@@ -116,27 +130,46 @@ export async function main(args = process.argv.slice(2)) {
     if (sub !== "set" && sub !== "clear") throw usageError(`Unknown argument: ${sub}`);
     const changes = sub === "set" ? parseSet(rest) : null;
     if (sub === "clear" && rest.length) throw usageError(`Unknown argument: ${rest[0]}`);
-    // An unreadable file is replaced only by `clear` or a `set` that states
-    // every rule: merging into rules nobody can read would drop them silently.
-    let before;
-    try {
-      before = await readLimits(path);
-    } catch (err) {
-      if (sub === "set" && changes.size < 4) {
-        stderr.write(`${err.message}\nNothing changed. Ask the user to state all their limits again, then set them in one call: --daily-budget, --max-payment, --ops and --recipients (none/all/any to leave one off).\n`);
-        return exit(1);
+    // Read, change and write under the file's lock: two `set` calls at once
+    // each read the old file and wrote back only their own rule, and both
+    // reported success (review 2026-11-09, GATE-6).
+    const result = await withFileLock(path, { what: "The spending limits file", nothingDone: "nothing changed" }, async () => {
+      // An unreadable file is replaced only by `clear` or a `set` that states
+      // every rule: merging into rules nobody can read would drop them silently.
+      let before;
+      let unreadable = null;
+      try {
+        before = await readLimits(path);
+      } catch (err) {
+        if (sub === "set" && changes.size < 4) return { refused: err };
+        unreadable = err;
+        before = await salvage(path);
       }
-      before = null;
+      const next = { ...(before ?? {}) };
+      delete next.updatedAt;
+      if (sub === "clear") for (const k of Object.keys(next)) delete next[k];
+      else for (const [rule, value] of changes) if (value === undefined) delete next[rule]; else next[rule] = value;
+      return { before, unreadable, after: await writeLimits(next, path) };
+    });
+    if (result.refused) {
+      stderr.write(`${result.refused.message}\nNothing changed. Ask the user to state all their limits again, then set them in one call: --daily-budget, --max-payment, --ops and --recipients (none/all/any to leave one off).\n`);
+      return exit(1);
     }
-    const next = { ...(before ?? {}) };
-    delete next.updatedAt;
-    if (sub === "clear") for (const k of Object.keys(next)) delete next[k];
-    else for (const [rule, value] of changes) if (value === undefined) delete next[rule]; else next[rule] = value;
-    const after = await writeLimits(next, path);
+    const { before, unreadable, after } = result;
     stdout.write(describe(after, path));
+    // Replacing an unreadable file lifts a refusal of every payment: that
+    // loosens the limits whatever the new rules are. It used to say "Nothing
+    // changed." or "(tighter)" (review 2026-11-09, GATE-5).
+    if (unreadable) {
+      stdout.write(
+        `This REPLACED an unreadable limits file (${String(unreadable.message).slice(0, 160)}). Until now it refused every payment, so this LOOSENS the user's limits` +
+          `${before ? "; the rules it still showed are compared below" : ""}. Do it only because the user, told the file couldn't be read, stated these limits in their own message.\n`,
+      );
+    }
     const diff = limitsChanges(before, after);
     if (!diff.length) {
-      stdout.write("Nothing changed.\n");
+      if (!unreadable) stdout.write("Nothing changed.\n");
+      else stdout.write("Applies from the next payment; no restart needed.\n");
       return exit(0);
     }
     for (const d of diff) stdout.write(`Changed ${d.rule}: ${show(d.from)} -> ${show(d.to)} (${d.looser ? "LOOSER" : "tighter"})\n`);

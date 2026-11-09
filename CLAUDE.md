@@ -26,6 +26,7 @@ Teaches Claude Code how to give AI agents Bitcoin capabilities using the Spark L
 lib/
   agent-errors.js                     # error-code registry: every error carries code + retryable (yes/no/check-first) + nextStep
   atomic-file.js                      # the one atomic writer (temp+fsync+link/rename+dir-fsync)
+  file-lock.js                        # <file>.lock around a read-modify-write (spend ledger, limits): one writer across processes
   encrypted-seed.js                   # scrypt + AES-256-GCM seed file helper
   leaf-vault.js                       # SDK-free recovery-bundle persistence + shape validation
   fee-guards.js                       # fee/amount ceilings for sends, claims, withdrawals

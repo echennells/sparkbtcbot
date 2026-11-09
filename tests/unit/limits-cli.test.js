@@ -99,6 +99,36 @@ describe("sparkbtcbot limits", () => {
     expect(await exists()).toBe(false);
   });
 
+  // GATE-5 (review 2026-11-09): replacing an unreadable file said "Nothing
+  // changed." or "(tighter)", though it lifted a refusal of every payment.
+  it("replacing an unreadable file says it LOOSENS the limits, and compares the rules it still showed", async () => {
+    await writeFile(path, "{ not json");
+    let r = await limits("clear");
+    expect(r.stdout).toMatch(/REPLACED an unreadable limits file .*Until now it refused every payment, so this LOOSENS the user's limits\. Do it only because the user, told the file couldn't be read/);
+    expect(r.stdout).not.toMatch(/Nothing changed/);
+    // Valid rules plus one this version doesn't know: the known ones are compared, so the undo names them.
+    await writeFile(path, JSON.stringify({ dailyBudgetSats: 1000, maxPaymentSats: 500, allowedOps: ["spark_transfer"], perHourSats: 50 }));
+    r = await limits("set", "--daily-budget", "1000000", "--max-payment", "500000", "--ops", "all", "--recipients", "any");
+    expect(r.code).toBe(0);
+    expect(r.stdout).toMatch(/REPLACED an unreadable limits file .*the rules it still showed are compared below/);
+    expect(r.stdout).toMatch(/Changed dailyBudgetSats: 1000 sats -> 1000000 sats \(LOOSER\)/);
+    expect(r.stdout).toMatch(/put it back now: sparkbtcbot limits set .*--daily-budget 1000/);
+  });
+
+  // GATE-6 (review 2026-11-09): three `set` calls at once lost rules in 20 of 20 trials.
+  it("set calls run at once keep every rule", async () => {
+    for (let trial = 0; trial < 3; trial++) {
+      await rm(path, { force: true });
+      const rs = await Promise.all([
+        limits("set", "--daily-budget", "5000"),
+        limits("set", "--max-payment", "1000"),
+        limits("set", "--ops", "spark_transfer,lightning_pay"),
+      ]);
+      expect(rs.map((r) => r.code)).toEqual([0, 0, 0]);
+      expect(await onDisk()).toMatchObject({ dailyBudgetSats: 5000, maxPaymentSats: 1000, allowedOps: ["spark_transfer", "lightning_pay"] });
+    }
+  }, 60_000);
+
   // Eval 59 (2026-10-29) caught the docs saying "the tightest budget applies":
   // a sealed budget overrides SPARK_DAILY_BUDGET_SATS outright; the daily
   // limit here tightens whichever is in force.
