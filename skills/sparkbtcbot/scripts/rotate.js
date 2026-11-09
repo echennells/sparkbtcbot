@@ -254,9 +254,35 @@ const fmt = (h) => [
 
 function leftBehind(h) {
   const notes = [];
-  if (h.lockedSats > 0n || h.incomingSats > 0n) notes.push(`${h.lockedSats + h.incomingSats} sats locked or incoming stay with the old wallet until they settle`);
+  if (h.lockedSats > 0n) notes.push(`${h.lockedSats} sats locked: a send still in flight may yet take them, or they come back to the old wallet`);
+  if (h.incomingSats > 0n) notes.push(`${h.incomingSats} sats incoming stay with the old wallet until they settle`);
   if (h.pendingDeposits.length) notes.push(`${h.pendingDeposits.length} L1 deposit(s) waiting to be claimed stay at the old deposit address`);
   return notes;
+}
+
+// Payments made before a rotation show only in the old wallet's history, and
+// every check-first rule says getTransfers(), which reads the wallet the agent
+// opened: after a rotation it answered "not paid" for a payment that left
+// (review 2026-11-09, ROT-3). The plan, AFTER and --check-old say where to look.
+const HISTORY_NOTE =
+  "Payments made from this wallet stay in its own history: after the rotation, getTransfers()\n" +
+  "reads the new wallet and won't list them; `rotate --check-old` does. If an earlier payment\n" +
+  "ended in PAYMENT_COMMITTED (outcome unknown), check it before rotating.\n";
+
+// The retired wallet's latest sats transfers, newest first, for check-first.
+async function recentTransfers(wallet, limit = 10) {
+  try {
+    const { transfers = [] } = (await wallet.getTransfers(limit, 0)) ?? {};
+    return transfers.map((t) => {
+      const sent = t.transferDirection === "OUTGOING";
+      const sats = (sent ? t.valueSentByWallet : t.valueReceivedByWallet) || t.totalValue;
+      const peer = sent ? t.receivers?.[0]?.identityPublicKey ?? t.receiverIdentityPublicKey : t.senders?.[0]?.identityPublicKey ?? t.senderIdentityPublicKey;
+      const when = t.createdTime instanceof Date ? t.createdTime.toISOString().slice(0, 16).replace("T", " ") : "";
+      return `    ${when}  ${sent ? "sent" : "received"} ${sats} sats ${sent ? "to" : "from"} ${String(peer ?? "?").slice(0, 16)}…  ${t.type ?? ""} ${t.status ?? ""}  id ${t.id}`;
+    });
+  } catch (err) {
+    return [`    (its transfers couldn't be read: ${err?.code ?? err?.message ?? err})`];
+  }
 }
 
 const AFTER =
@@ -271,6 +297,9 @@ const AFTER =
   "    Its seed is kept for that: `sparkbtcbot rotate --check-old` looks for anything that\n" +
   "    arrives there, and `--check-old --sweep` moves it here. Run it when the user asks,\n" +
   "    or now and then while old addresses may still be used.\n" +
+  "  - Payments made before the rotation show only in the OLD wallet's history: getTransfers()\n" +
+  "    now reads this one. Before paying again for anything whose outcome was unknown, run\n" +
+  "    `sparkbtcbot rotate --check-old`, which lists the old wallet's recent transfers.\n" +
   "  - The spending limits are unchanged. A running agent process still holds the old\n" +
   "    wallet: restart it.\n";
 
@@ -298,6 +327,7 @@ export async function runRotate({ execute = false, deps = defaultDeps, out = (s)
     const old = await readHoldings(oldWallet, { depositAddress: true });
     out(`Rotation plan (${network}):\nThis wallet, to be retired:\n${fmt(old)}\nEverything spendable moves to a freshly generated wallet.\n`);
     for (const n of leftBehind(old)) out(`Left behind: ${n}; \`rotate --check-old\` picks them up later.\n`);
+    out(HISTORY_NOTE);
     if (!execute) {
       out("\nDry run: nothing moved, nothing written. Show the user this plan; run `sparkbtcbot rotate --execute` only on their yes.\n");
       return 0;
@@ -415,6 +445,10 @@ export async function runCheckOld({ sweepNow = false, deps = defaultDeps, out = 
         let h = await readHoldings(wallet);
         const has = h.sats > 0n || h.tokens.length || h.pendingDeposits.length || h.lockedSats > 0n || h.incomingSats > 0n;
         out(`Retired wallet ${dir}:\n${fmt(h)}\n`);
+        const recent = await recentTransfers(wallet);
+        out(recent.length
+          ? `  recent transfers, newest first (sats only; a payment made before the rotation shows here, not in getTransfers()):\n${recent.join("\n")}\n`
+          : "  no transfers\n");
         if (!has) continue;
         anything = true;
         if (!sweepNow) continue;

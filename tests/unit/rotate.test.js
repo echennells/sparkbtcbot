@@ -29,10 +29,12 @@ function fakeNet() {
   const make = (mnemonic, { sats = 0n, tokens = {} } = {}) => {
     const id = ++n;
     const address = `spark1fake${id}`;
+    const key = `02${String(id).padStart(4, "0")}${"0".repeat(60)}`; // distinct in the retired dir's 12-char prefix
     const w = {
-      id, address, sats, tokens: new Map(Object.entries(tokens)), deposits: [], failTransfer: null,
+      id, address, key, sats, tokens: new Map(Object.entries(tokens)), deposits: [], failTransfer: null, history: [],
       getSparkAddress: async () => address,
-      getIdentityPublicKey: async () => `02${String(id).padStart(4, "0")}${"0".repeat(60)}`, // distinct in the retired dir's 12-char prefix
+      getIdentityPublicKey: async () => key,
+      getTransfers: async (limit, offset) => ({ transfers: w.history.slice().reverse().slice(offset, offset + limit), offset }),
       getBalance: async () => ({
         satsBalance: { available: w.sats, owned: w.sats, incoming: 0n },
         tokenBalances: new Map([...w.tokens].map(([t, amt]) => [t, { availableToSendBalance: amt, ownedBalance: amt, tokenMetadata: { tokenTicker: "TKN" } }])),
@@ -45,7 +47,11 @@ function fakeNet() {
         const to = byAddress.get(receiverSparkAddress);
         w.sats -= BigInt(amountSats);
         to.sats += BigInt(amountSats);
-        return { id: `t${id}` };
+        const t = { id: `t${id}-${w.history.length}`, type: "TRANSFER", status: "TRANSFER_STATUS_COMPLETED", totalValue: amountSats,
+          createdTime: new Date(), senderIdentityPublicKey: key, receiverIdentityPublicKey: to.key };
+        w.history.push({ ...t, transferDirection: "OUTGOING", valueSentByWallet: amountSats, valueReceivedByWallet: 0 });
+        to.history.push({ ...t, transferDirection: "INCOMING", valueSentByWallet: 0, valueReceivedByWallet: amountSats });
+        return { id: t.id };
       }),
       transferTokens: vi.fn(async ({ tokenIdentifier, tokenAmount, receiverSparkAddress }) => {
         const to = byAddress.get(receiverSparkAddress);
@@ -315,6 +321,25 @@ describe("sparkbtcbot rotate --check-old", () => {
     expect(report()).toMatch(/Retired wallet .*0000-broken: couldn't open it/);
     expect(report()).toContain(`Retired wallet ${retired}:`);
     expect(report()).toMatch(/sats\s+400 spendable/);
+  });
+
+  // ROT-3: after a rotation getTransfers() reads the new wallet, so a payment
+  // made before it looked unpaid to the check-first rule.
+  it("a payment made before the rotation: the plan and the report say where it shows, and --check-old lists it", async () => {
+    const net = fakeNet();
+    const payee = net.make(generateMnemonic(wordlist));
+    const { wallet: old } = await walletOnDisk(net, { sats: 5_000n });
+    await old.transfer({ receiverSparkAddress: payee.address, amountSats: 1_200 });
+    expect(await runRotate(opts(net))).toBe(0);
+    expect(report()).toMatch(/after the rotation, getTransfers\(\)\s+reads the new wallet and won't list them; `rotate --check-old` does\. If an earlier payment\s+ended in PAYMENT_COMMITTED \(outcome unknown\), check it before rotating\./);
+    out = [];
+    expect(await runRotate(opts(net, { execute: true }))).toBe(0);
+    expect(report()).toMatch(/Payments made before the rotation show only in the OLD wallet's history/);
+    out = [];
+    expect(await runCheckOld(opts(net))).toBe(0);
+    expect(report()).toMatch(/recent transfers, newest first/);
+    expect(report()).toMatch(new RegExp(`sent 1200 sats to ${payee.key.slice(0, 16)}…`));
+    expect(report()).toMatch(/sent 3800 sats to/); // the sweep itself, newest
   });
 
   it("with nothing retired, says so", async () => {
