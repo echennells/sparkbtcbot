@@ -1455,10 +1455,10 @@ describe("fetchL402 settling a held payment counts the spend once", () => {
     vi.stubGlobal("fetch", async () => queue.shift());
 
     await expect(agent.fetchL402("https://api.example/paid", { maxAmountSats: 3000 })).rejects.toMatchObject({ code: "PAYMENT_COMMITTED" });
-    expect(await agent.spendStatus()).toMatchObject({ spentSats: 2000 });
+    expect(await agent.spendStatus()).toMatchObject({ spentSats: 2005 }); // 2,000 sats + the 5-sat fee estimate
     const r = await agent.fetchL402("https://api.example/paid", { maxAmountSats: 3000 });
     expect(r).toMatchObject({ recovered: true, data: { ok: true } });
-    expect(await agent.spendStatus()).toMatchObject({ spentSats: 2000 });
+    expect(await agent.spendStatus()).toMatchObject({ spentSats: 2005 }); // 2,000 sats + the 5-sat fee estimate
     expect(attempt).toBe(2);
   });
 
@@ -1496,7 +1496,7 @@ describe("fetchL402 settling a held payment counts the spend once", () => {
     expect(await agent.spendStatus()).toMatchObject({ spentSats: 0 });
     const r = await agent.fetchL402("https://api.example/paid", { maxAmountSats: 3000 });
     expect(r).toMatchObject({ paid: true, recovered: true, data: { ok: true } });
-    expect(await agent.spendStatus()).toMatchObject({ spentSats: 2000 });
+    expect(await agent.spendStatus()).toMatchObject({ spentSats: 2005 }); // 2,000 sats + the 5-sat fee estimate
     expect(wallet.payLightningInvoice).toHaveBeenCalledTimes(2);
   });
 
@@ -1515,10 +1515,10 @@ describe("fetchL402 settling a held payment counts the spend once", () => {
     expect(err).toMatchObject({ code: "PAYMENT_COMMITTED", paid: true, settled: null });
     expect(err.message).toMatch(/sent nothing, so this call paid its invoice/);
     expect(err.message).not.toMatch(/Nothing new was paid/);
-    expect(await agent.spendStatus()).toMatchObject({ spentSats: 2000 });
+    expect(await agent.spendStatus()).toMatchObject({ spentSats: 2005 }); // 2,000 sats + the 5-sat fee estimate
     const r = await agent.fetchL402("https://api.example/paid", { maxAmountSats: 3000 });
     expect(r).toMatchObject({ paid: false, recovered: true, data: { ok: true } });
-    expect(await agent.spendStatus()).toMatchObject({ spentSats: 2000 });
+    expect(await agent.spendStatus()).toMatchObject({ spentSats: 2005 }); // 2,000 sats + the 5-sat fee estimate
     expect(wallet.payLightningInvoice).toHaveBeenCalledTimes(3);
   });
 

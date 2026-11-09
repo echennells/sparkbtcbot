@@ -3,7 +3,7 @@
 // passes. With SPARK_DAILY_BUDGET_SATS set, SparkAgent must stop the loop at
 // the budget, across ALL sats paths sharing one ledger, and a malformed
 // budget must refuse to boot rather than be silently ignored.
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtemp, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -58,6 +58,7 @@ describe("SparkAgent spend budget (SPARK_DAILY_BUDGET_SATS)", () => {
 
   it("all sats paths share ONE budget (a lightning pay eats transfer budget)", async () => {
     const wallet = mkWallet();
+    delete process.env.SPARK_DAILY_BUDGET_SATS; // a dry run is budget-checked too: preview with none
     const agent = new SparkAgent(wallet, "MAINNET");
     // dryRun proves the sample invoice still decodes to 2,000 sats — guards
     // the constant so the budget assertion below can't silently weaken
@@ -65,10 +66,37 @@ describe("SparkAgent spend budget (SPARK_DAILY_BUDGET_SATS)", () => {
     expect(preview.amount).toBe("2000");
     process.env.SPARK_DAILY_BUDGET_SATS = "2500";
     const agent2 = new SparkAgent(wallet, "MAINNET");
-    await agent2.payLightningInvoice(INVOICE_2000_SATS, { maxAmountSats: 2000 });
-    await expect(agent2.transfer({ to: "sp1x", amount: 501 }))
+    await agent2.payLightningInvoice(INVOICE_2000_SATS, { maxAmountSats: 2000 }); // counts 2,000 + the 5-sat fee estimate
+    await expect(agent2.transfer({ to: "sp1x", amount: 496 }))
       .rejects.toMatchObject({ code: "SPEND_BUDGET_EXCEEDED" });
-    await agent2.transfer({ to: "sp1x", amount: 500 }); // the remainder fits
+    await agent2.transfer({ to: "sp1x", amount: 495 }); // the remainder fits
+  });
+
+  // GATE-3 (review 2026-11-09): the fee was left out, 25x the budget on 1-sat invoices.
+  it("a Lightning payment counts its fee estimate, or the fee cap when there is no estimate", async () => {
+    process.env.SPARK_DAILY_BUDGET_SATS = "100000";
+    const agent = new SparkAgent(mkWallet(), "MAINNET");
+    await agent.payLightningInvoice(INVOICE_2000_SATS, { maxAmountSats: 2000 });
+    expect((await agent.spendStatus()).spentSats).toBe(2_005);
+    const noEstimate = mkWallet();
+    noEstimate.getLightningSendFeeEstimate = async () => null;
+    await new SparkAgent(noEstimate, "MAINNET").payLightningInvoice(INVOICE_2000_SATS, { maxAmountSats: 2000, maxFeeSats: 40 });
+    expect((await agent.spendStatus()).spentSats).toBe(2_005 + 2_040);
+  });
+
+  // GATE-4 (review 2026-11-09): dry runs and the fee estimate came before the budget.
+  it("a dry run is refused by the budget like its send, before any fee estimate or quote", async () => {
+    process.env.SPARK_DAILY_BUDGET_SATS = "1000";
+    const wallet = mkWallet();
+    const agent = new SparkAgent(wallet, "MAINNET");
+    await agent.transfer({ to: "sp1x", amount: 1000 });
+    wallet.getLightningSendFeeEstimate = vi.fn(async () => 5);
+    wallet.getWithdrawalFeeQuote = vi.fn(async () => { throw new Error("no quote expected"); });
+    await expect(agent.transfer({ to: "sp1x", amount: 600, dryRun: true })).rejects.toMatchObject({ code: "SPEND_BUDGET_EXCEEDED" });
+    await expect(agent.payLightningInvoice(INVOICE_2000_SATS, { maxAmountSats: 2000, dryRun: true })).rejects.toMatchObject({ code: "SPEND_BUDGET_EXCEEDED" });
+    await expect(agent.withdraw({ to: "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq", amount: 30000, dryRun: true })).rejects.toMatchObject({ code: "SPEND_BUDGET_EXCEEDED" });
+    expect(wallet.getLightningSendFeeEstimate).not.toHaveBeenCalled();
+    expect(wallet.getWithdrawalFeeQuote).not.toHaveBeenCalled();
   });
 
   it("refunds a spend when the SDK proves nothing was sent (a pre-send check failed)", async () => {

@@ -1343,12 +1343,23 @@ export class SparkAgent {
     if (this.#closed) throw agentClosed(method);
     const limits = await readLimits();
     const verdict = checkLimits({ op, recipients, amountsSats }, limits, { matchRecipient: limitsRecipientMatch });
-    if (verdict.allow) return;
+    if (verdict.allow) return limits;
     throw annotateError(
       new Error(`SparkAgent.${method}: refused by the user's spending limits (${verdict.rule}): ${verdict.reason}. Nothing was sent.`),
       "LIMIT_DENIED",
       { rule: verdict.rule, op },
     );
+  }
+
+  // The daily budget, read only, for a call whose amount is known: a dry run
+  // is refused as its send would be, and before a fee estimate or quote runs.
+  // Dry runs used to pass, so the user approved a preview the send then
+  // refused (review 2026-11-09, GATE-4). The send checks again and records
+  // under the ledger's lock (#recordSpend), with its fee once that is known.
+  async #budgetAllows(op, amountsSats, limits) {
+    const { ledger, limitSats } = this.#activeLedger(limits);
+    if (!ledger) return;
+    await ledger.assertCanSpend(amountsSats.reduce((sum, n) => sum + Number(n), 0), op, { limitSats });
   }
 
   // The ledger a spend counts against, and the user's daily limit: a
@@ -1638,7 +1649,7 @@ export class SparkAgent {
     if (amount === undefined || amount === null) throw badInput(new Error("SparkAgent.transfer: `amount` (sats) is required."), "amount");
     await this.#assertAllowed(to);
     const sats = toSats(amount, "transfer"); // number|bigint -> safe-int Number (dry-run + live agree)
-    await this.#authorize("transfer", { op: "spark_transfer", recipients: [to], amountsSats: [sats] });
+    await this.#budgetAllows("spark_transfer", [sats], await this.#authorize("transfer", { op: "spark_transfer", recipients: [to], amountsSats: [sats] }));
     if (dryRun) {
       this.#assertSparkRecipient("transfer", to); // a Spark invoice is refused here, as the send refuses it
       return {
@@ -1988,7 +1999,7 @@ export class SparkAgent {
     }
     // The invoice's amount is what gets paid (a disagreeing amountSats is
     // refused below).
-    await this.#authorize("payLightningInvoice", { op: "lightning_pay", amountsSats: [invoiceAmt ?? amtSats] });
+    await this.#budgetAllows("lightning_pay", [invoiceAmt ?? amtSats], await this.#authorize("payLightningInvoice", { op: "lightning_pay", amountsSats: [invoiceAmt ?? amtSats] }));
     const est = await sparkRead(() => this.#wallet.getLightningSendFeeEstimate({
       encodedInvoice: bolt11,
       amountSats: amtSats,
@@ -2090,9 +2101,13 @@ export class SparkAgent {
     } else if (explicitTransferId !== undefined) {
       sdkTransferId = UUID.parse(explicitTransferId);
     }
-    // Budget counts the AMOUNT; routing fees are bounded separately by the cap
-    // above (≤0.5% + floor). An unreadable amount with a budget set fails
-    // closed inside the ledger. A deduped retry re-records here, so the budget
+    // Budget counts the amount AND the fee estimate (the cap when there is no
+    // estimate: the SDK holds the fee to it). The amount alone left the fee
+    // out of the daily total: up to 25 sats a payment under the fee floor,
+    // 25x the budget on 1-sat invoices (review 2026-11-09, GATE-3). Paid over
+    // Spark there is no fee, so that over-counts, the safe direction. An
+    // unreadable amount with a budget set fails closed inside the ledger.
+    // A deduped retry re-records here, so the budget
     // can OVERCOUNT one payment attempted twice — the safe direction for a
     // runaway-loop guardrail (see #recordSpend's crash trade-off).
     // A dedup id this attempt minted must not outlive an attempt that provably
@@ -2114,7 +2129,7 @@ export class SparkAgent {
     if (resuming && !resolved?.reused) resuming.fresh = true;
     let spend;
     try {
-      spend = resuming && resolved?.reused ? NO_SPEND : await this.#recordSpend(amt, "lightning_pay");
+      spend = resuming && resolved?.reused ? NO_SPEND : await this.#recordSpend(amt + (estimatedFee ?? cap), "lightning_pay");
     } catch (err) {
       await forgetIfMinted(); // the budget refused before the SDK was called
       leaveInFlight();
@@ -2525,11 +2540,9 @@ export class SparkAgent {
         throw badInput(new Error(`${head}: the amount must be a positive integer of sats, got ${e.amount}.`), "amount");
       }
     }
-    await this.#authorize("fulfillInvoice", {
-      op: "fulfill_spark_invoice",
-      recipients: entries.map((e) => e.to),
-      amountsSats: entries.filter((e) => e.type !== "tokens").map((e) => Number(e.amount)),
-    });
+    const satsAmounts = entries.filter((e) => e.type !== "tokens").map((e) => Number(e.amount));
+    const limitsNow = await this.#authorize("fulfillInvoice", { op: "fulfill_spark_invoice", recipients: entries.map((e) => e.to), amountsSats: satsAmounts });
+    if (satsAmounts.length) await this.#budgetAllows("fulfill_spark_invoice", satsAmounts, limitsNow);
     if (dryRun) {
       return {
         dryRun: true,
@@ -2877,7 +2890,7 @@ export class SparkAgent {
     }
     await this.#assertAllowed(to);
     const sats = toSats(amount, "withdraw"); // number|bigint -> safe-int Number (SDK rejects bigint)
-    await this.#authorize("withdraw", { op: "l1_withdraw", recipients: [to], amountsSats: [sats] });
+    await this.#budgetAllows("l1_withdraw", [sats], await this.#authorize("withdraw", { op: "l1_withdraw", recipients: [to], amountsSats: [sats] }));
     const quote = await withdrawalQuoteRead(() => this.#wallet.getWithdrawalFeeQuote({
       amountSats: sats,
       withdrawalAddress: to,

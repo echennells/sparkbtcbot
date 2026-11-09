@@ -170,7 +170,7 @@ describe("an unknown payment outcome stays counted against the budget", () => {
       code: "PAYMENT_COMMITTED", retryable: "check-first", settled: null, op: "lightning_pay",
       message: expect.stringMatching(/Retrying THIS invoice through payLightningInvoice is safe/),
     });
-    expect(await agent.spendStatus()).toMatchObject({ spentSats: 2000 });
+    expect(await agent.spendStatus()).toMatchObject({ spentSats: 2005 }); // 2,000 sats + the 5-sat fee estimate
     expect(await readdir(join(dir, "ln-dedup"))).toHaveLength(1);
     await expect(agent.payLightningInvoice(inv, { maxAmountSats: 3000 })).resolves.toMatchObject({ dedupReused: true });
     expect(ids).toHaveLength(2);
