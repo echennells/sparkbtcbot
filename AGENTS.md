@@ -78,7 +78,8 @@ conversation transcript or shell history is identical to a leak from disk.
 is offline (no funds, no network) and asserts the installed SDK's actual export surface and
 shapes — a red suite means the resolved dependency tree is not the one this code was tested
 against (drift, a bad mirror, or worse). Report it and stop; don't proceed to wallet operations
-on a tree that fails its own checks.
+on a tree that fails its own checks. The suite runs in a throwaway home directory and ignores the
+wallet settings in `.env` and the environment, so it never reads or writes `~/.spark/`.
 
 Offer supply-chain hardening (package-cooldown / age-gate, lockfile install, etc.) **before**
 you install. The settings are **not** defined here — the source of truth is the

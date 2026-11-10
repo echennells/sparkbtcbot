@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **`npm test` no longer touches the machine's wallet files.** Repository clones only: the tests aren't in the npm package. The test setup loaded the machine's `.env` and kept the dedup store, the limits file and the L402 holds in temporary directories, but not the spend ledger. On a machine whose `.env` set `SPARK_DAILY_BUDGET_SATS`, running the suite after an install, as AGENTS.md says to, recorded the tests' fake spends in the live `~/.spark/spend-ledger.json`: 144 entries, 199,891 of a 200,000-sat budget, so real payments were refused until the entries aged out. No money moved. Once that ledger filled, tests met the budget refusal instead of the error they expected, a different set on each run. Every tier now runs with a throwaway home directory, every `~/.spark` path inside it, and no wallet setting from the environment or `.env`; only test-only settings pass through. New tests pin that, replay the incident, and exercise the daily budget with real sats on REGTEST. **If a 0.10.0 test run filled your ledger:** an unsigned ledger (no sealed budget) is reset by deleting `~/.spark/spend-ledger.json`, on the user's say-so, which also forgets the real spends of the last 24 hours; left alone, the entries age out after 24 hours.
+
 ## 0.10.0 — 2026-11-10
 
 Built for the setup most users now have: a chat agent told "install sparkbtcbot for me", running in its own sandbox, with the chat as the user's only channel. That user can now set spending limits in chat (`sparkbtcbot limits`), move the wallet to a fresh seed after the recovery words leak (`sparkbtcbot rotate`), and ask whether the agent can work at all (`agent.status()`). Every error says what to do next (`code`, `retryable`, `nextStep`). spark-sdk moves to 0.15.0. The money paths went through two more review rounds; what they found is under Security and Fixed, and each code fix from the last round has a test that fails on the old code. The unit suite is at 1,025 tests, and the funded REGTEST tier makes real payments through `rotate` and the L402 paths.
