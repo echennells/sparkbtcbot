@@ -882,3 +882,15 @@ The misses:
 
 **63 of 64 pass on their latest run or re-grade.** Also fixed: the single-use refusal and `SINGLE_USE_DEPOSITS_UNAVAILABLE` now point to `createTrackedInvoice`, not `createLightningInvoice`.
 
+
+## Partial re-run after the `agent-class.md` cut (2026-11-10, Claude, with-skill only: 13, 43, 64)
+
+The three evals whose 11-09 answers leaned on the copy of `SparkAgent` that `agent-class.md` used to carry, re-run on `sdk-014` at 6d2ee60, after the copy was cut (05595ed) and the pointer to `scripts/spark-agent.js` added (b696ae7). Same setup as the 11-09 full run: one fresh answering agent per eval, on paper, with the shared brief; one separate grading agent. Answers ~402k tokens, grader ~74k.
+
+**All three pass every assertion:** 13 7/7, 43 4/4, 64 7/7.
+
+Two borderline calls, both decided as passes:
+- **43, assertion 1:** the helper rethrows the wrapper's `check-first` error instead of calling `getTransfers()` itself. It asks for the invoice once, so no fresh invoice can follow.
+- **64, assertion 1:** the helper branches on `err.code` for two codes, but only after `err.retryable` has decided whether to retry.
+
+So the cut didn't cost these answers. This run came after the 11-09 review fixes, so it also covers the reworded `PAYMENT_COMMITTED` next step.

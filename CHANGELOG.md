@@ -1,6 +1,38 @@
 # Changelog
 
-## Unreleased
+## 0.10.0 — 2026-11-10
+
+Built for the setup most users now have: a chat agent told "install sparkbtcbot for me", running in its own sandbox, with the chat as the user's only channel. That user can now set spending limits in chat (`sparkbtcbot limits`), move the wallet to a fresh seed after the recovery words leak (`sparkbtcbot rotate`), and ask whether the agent can work at all (`agent.status()`). Every error says what to do next (`code`, `retryable`, `nextStep`). spark-sdk moves to 0.15.0. The money paths went through two more review rounds; what they found is under Security and Fixed, and each code fix from the last round has a test that fails on the old code. The unit suite is at 1,025 tests, and the funded REGTEST tier makes real payments through `rotate` and the L402 paths.
+
+### Upgrading from 0.9
+
+- **Catch errors by `err.code`, and act on `err.retryable` and `err.nextStep`.** Existing codes keep their names. Two kinds changed: bad input is `BAD_INPUT` with the argument in `err.field` (some were raw `TypeError`s), and a file that can't be read or written is `STORAGE_ERROR` with the system's code in `err.osCode` (it was `err.code`: `ENOENT`, `EACCES`).
+- **The daily budget counts Lightning fees.** A Lightning payment counts its amount plus its fee estimate (the fee cap when there is no estimate), so the same budget is used up slightly sooner.
+- **A dry run can be refused by the budget.** `transfer`, `payLightningInvoice`, `fulfillInvoice` and `withdraw` check the amount against the budget before any network call, with `dryRun: true` too (`SPEND_BUDGET_EXCEEDED`).
+- **`payLightningInvoice` has new refusals, all with nothing sent:**
+  - `INVOICE_INVALID` for a Lightning invoice whose embedded Spark invoice doesn't fit it; `{ preferSpark: false }` pays it over Lightning.
+  - `TRANSFER_ID_CONFLICT` for an explicit `transferId` that already names another transfer.
+  - `BAD_INPUT` for an amountless invoice without `amountSats`.
+- **`LIGHTNING_PAYMENT_FAILED` is `check-first`** unless `err.fundsReturned` is true: the payee wasn't paid, but the sats may still be locked. Judge by `getBalance()`, not by the send's status.
+- **`fetchL402` follows no redirect before paying** (`SERVICE_REDIRECTED`, with `err.location`). After paying it follows one to the same origin with the pass, and one to another https host without it.
+- **`fetchL402` keeps unfinished purchases on disk** (`~/.spark/l402-holds/`, or `SPARK_L402_HOLDS_PATH`). The next call for that method and URL, in any process, finishes the purchase instead of buying again. An overlapping call joins the running one (`joined: true`). A second process waits up to 90 seconds, then throws `CONCURRENT_PAYMENT_ATTEMPT`.
+- **A `fetchL402` result with a non-2xx `status` is paid for.** A 403 blocks the URL like a 401, until `forgetL402` on the user's say-so. A 409, 423 or 425 is retried with the same pass and then held.
+- **After `cleanup()` the agent refuses every call** (`AGENT_CLOSED`). Open a new one with `SparkAgent.create`.
+- **`withdraw`'s `speed` is checked up front and is case-sensitive**, and `payAndSettle`'s `pollMs` and `maxPolls` must be whole numbers from 0.
+- **`~/.spark/` holds more than the seed:** `limits.json`, `l402-holds/`, `retired/` (seeds kept by `rotate`) and two lock files (`spend-ledger.json.lock`, `limits.json.lock`). Persist the directory, not single files.
+- **Using `createSpendLedger` yourself?** Spend through `ledger.reserve()`. `assertCanSpend()` then `record()` can be overrun by parallel processes.
+- **Additions:** `sparkbtcbot limits` and `rotate`, `agent.status()` and `agent.limits()`, `getBalance().incomingSats` and each token's `available`, type declarations for `sparkbtcbot-skill/agent`, and the `AGENT_ERRORS` registry.
+
+### Security
+
+**If you run 0.9.x, upgrade: there is no 0.9.2.** The failures below are in 0.9.1. None needs an attacker with access to the machine: a slow or misconfigured service, a parallel tool call, a crash or a restart is enough. The entries under Fixed give each one in full.
+
+- **`fetchL402` could pay more than once for one resource.** It happened when two calls overlapped, when a new process retried a purchase that was paid but not delivered, when the response body was cut off, when the paid request lost its JSON content type, and when the service answered a paid pass with 403, 409, 423 or 425.
+- **`fetchL402` followed redirects it shouldn't.** Before paying, the invoice could come from a host the URL check never saw. After paying, the caller's other headers and a POST body went to the host it was redirected to.
+- **The daily budget could be exceeded.** Tool calls running as parallel processes all passed the same check. A send that failed early could erase a real payment's entry. Lightning fees weren't counted.
+- **A payment refused before anything was sent could read as "may have been sent"**, stay counted against the budget, and be counted again on each retry (a Lightning invoice with an embedded Spark invoice that doesn't fit it).
+
+Two findings from the last review round are deferred, both rated informational: one needs a crash inside a window a few milliseconds wide, the other a failure the operators aren't known to produce.
 
 ### Changed
 
