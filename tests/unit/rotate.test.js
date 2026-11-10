@@ -33,13 +33,20 @@ function fakeNet() {
     const key = `02${String(id).padStart(4, "0")}${"0".repeat(60)}`; // distinct in the retired dir's 12-char prefix
     const w = {
       id, address, key, sats, tokens: new Map(Object.entries(tokens)), deposits: [], failTransfer: null, history: [],
+      // Sats held but not sendable yet; they become spendable after `unlockAfterReads` balance reads.
+      locked: 0n, unlockAfterReads: Infinity,
+      // With `staleAfterSend`, sats this wallet sent keep showing in its own balance as locked.
+      staleAfterSend: false, stale: 0n,
       getSparkAddress: async () => address,
       getIdentityPublicKey: async () => key,
       getTransfers: async (limit, offset) => ({ transfers: w.history.slice().reverse().slice(offset, offset + limit), offset }),
-      getBalance: async () => ({
-        satsBalance: { available: w.sats, owned: w.sats, incoming: 0n },
+      getBalance: async () => {
+        if (w.locked > 0n && --w.unlockAfterReads <= 0) { w.sats += w.locked; w.locked = 0n; }
+        return {
+        satsBalance: { available: w.sats, owned: w.sats + w.locked + w.stale, incoming: 0n },
         tokenBalances: new Map([...w.tokens].map(([t, amt]) => [t, { availableToSendBalance: amt, ownedBalance: amt, tokenMetadata: { tokenTicker: "TKN" } }])),
-      }),
+        };
+      },
       queryStaticDepositAddresses: async () => (w.deposits.length ? ["bc1pdeposit"] : []),
       getUtxosForDepositAddress: async () => w.deposits,
       getStaticDepositAddress: vi.fn(async () => `bc1pstatic${id}`),
@@ -48,6 +55,7 @@ function fakeNet() {
         const to = byAddress.get(receiverSparkAddress);
         w.sats -= BigInt(amountSats);
         to.sats += BigInt(amountSats);
+        if (w.staleAfterSend) w.stale = BigInt(amountSats);
         const t = { id: `t${id}-${w.history.length}`, type: "TRANSFER", status: "TRANSFER_STATUS_COMPLETED", totalValue: amountSats,
           createdTime: new Date(), senderIdentityPublicKey: key, receiverIdentityPublicKey: to.key };
         w.history.push({ ...t, transferDirection: "OUTGOING", valueSentByWallet: amountSats, valueReceivedByWallet: 0 });
@@ -88,7 +96,7 @@ beforeEach(async () => {
 });
 afterEach(() => rm(dir, { recursive: true, force: true }));
 
-const opts = (net, extra = {}) => ({ deps: net.deps, out: (s) => out.push(s), log: () => {}, environment, ...extra });
+const opts = (net, extra = {}) => ({ deps: net.deps, out: (s) => out.push(s), log: () => {}, environment, settleWaitMs: 1, ...extra });
 async function walletOnDisk(net, { sats = 0n, tokens, policy } = {}) {
   const mnemonic = generateMnemonic(wordlist);
   await saveEncryptedMnemonic({ mnemonic, passphrase: PASS, path: environment.SPARK_SEED_PATH, policy });
@@ -378,6 +386,25 @@ describe("sparkbtcbot rotate after an interruption", () => {
     expect(report()).toMatch(/Tell the user what arrived/);
   });
 
+  it("a rotation waits for sats locked at the sweep, and reports any it had to leave", async () => {
+    const net = fakeNet();
+    const { wallet: old } = await walletOnDisk(net, { sats: 4_744n });
+    Object.assign(old, { locked: 256n, unlockAfterReads: 6 });
+    expect(await runRotate(opts(net, { execute: true }))).toBe(0);
+    const fresh = net.byMnemonic.get(await words(environment.SPARK_SEED_PATH));
+    expect({ fresh: fresh.sats, old: old.sats + old.locked }).toEqual({ fresh: 5_000n, old: 0n });
+    expect(report()).not.toMatch(/Still in the old wallet/);
+    const [retired] = await retiredDirs();
+    expect(JSON.parse(await readFile(join(retired, "manifest.json"), "utf8")).sweptSats).toBe("5000");
+
+    // A lock that outlasts the wait: the rotation still completes, and says what stayed.
+    Object.assign(fresh, { locked: 300n });
+    out = [];
+    expect(await runRotate(opts(net, { execute: true }))).toBe(0);
+    expect(report()).toMatch(/Rotated\./);
+    expect(report()).toMatch(/Still in the old wallet: 300 sats \(300 locked\)\. They couldn't be sent yet; run `sparkbtcbot rotate --check-old --sweep` in a minute/);
+  });
+
   it("sats that become spendable after the plan move too", async () => {
     const net = fakeNet();
     const { wallet: old } = await walletOnDisk(net, { sats: 5_000n });
@@ -490,6 +517,61 @@ describe("sparkbtcbot rotate --check-old", () => {
     expect(report()).toMatch(/recent transfers, newest first/);
     expect(report()).toMatch(new RegExp(`sent 1200 sats to ${payee.key.slice(0, 16)}…`));
     expect(report()).toMatch(/sent 3800 sats to/); // the sweep itself, newest
+  });
+
+  // Funded REGTEST, 2026-11-10: a retired wallet's 500 sats read "244
+  // spendable, 256 locked" for a moment (a leaf being renewed as the wallet
+  // opened). The sweep moved 244, said "Moved 244 sats", and stopped.
+  it("--sweep keeps going while sats are locked: a lock that clears is swept in the same run", async () => {
+    const net = fakeNet();
+    const { wallet: old } = await walletOnDisk(net, { sats: 5_000n });
+    expect(await runRotate(opts(net, { execute: true }))).toBe(0);
+    const current = net.byMnemonic.get((await loadSeedPayload({ passphrase: PASS, path: environment.SPARK_SEED_PATH })).mnemonic);
+    Object.assign(old, { sats: 244n, locked: 256n, unlockAfterReads: 4 });
+    out = [];
+    expect(await runCheckOld(opts(net, { sweepNow: true }))).toBe(0);
+    expect(report()).toMatch(/sats\s+244 spendable, 256 locked/);
+    expect(report()).toMatch(/Moved 500 sats to this wallet/);
+    expect(report()).not.toMatch(/Still in the old wallet/);
+    expect({ old: old.sats + old.locked, current: current.sats }).toEqual({ old: 0n, current: 5_500n });
+  });
+
+  // Funded REGTEST, 2 runs of 10: after the freed leaf was sent and the new
+  // wallet had claimed it, the old wallet's balance kept showing those 256
+  // sats as locked, and the report said they were still there.
+  it("--sweep doesn't report sats it delivered as left behind, whatever the sender's balance still shows", async () => {
+    const net = fakeNet();
+    const { wallet: old } = await walletOnDisk(net, { sats: 5_000n });
+    expect(await runRotate(opts(net, { execute: true }))).toBe(0);
+    const current = net.byMnemonic.get((await loadSeedPayload({ passphrase: PASS, path: environment.SPARK_SEED_PATH })).mnemonic);
+    Object.assign(old, { sats: 244n, locked: 256n, unlockAfterReads: 4, staleAfterSend: true });
+    out = [];
+    expect(await runCheckOld(opts(net, { sweepNow: true }))).toBe(0);
+    expect(report()).toMatch(/Moved 500 sats to this wallet/);
+    expect(report()).not.toMatch(/Still in the old wallet/);
+    expect(current.sats).toBe(5_500n);
+  });
+
+  it("--sweep says what it couldn't move when the lock doesn't clear, and a later run moves it", async () => {
+    const net = fakeNet();
+    const { wallet: old } = await walletOnDisk(net, { sats: 5_000n });
+    expect(await runRotate(opts(net, { execute: true }))).toBe(0);
+    const current = net.byMnemonic.get((await loadSeedPayload({ passphrase: PASS, path: environment.SPARK_SEED_PATH })).mnemonic);
+    Object.assign(old, { sats: 244n, locked: 256n });
+    out = [];
+    expect(await runCheckOld(opts(net, { sweepNow: true }))).toBe(0);
+    expect(report()).toMatch(/Moved 244 sats to this wallet/);
+    expect(report()).toMatch(/Still in the old wallet: 256 sats \(256 locked\)\. They couldn't be sent yet; run --check-old --sweep again in a minute\./);
+    // Nothing spendable, only locked: it still waits, and says so.
+    out = [];
+    expect(await runCheckOld(opts(net, { sweepNow: true }))).toBe(0);
+    expect(report()).not.toMatch(/Moved/);
+    expect(report()).toMatch(/Still in the old wallet: 256 sats \(256 locked\)/);
+    old.unlockAfterReads = 2;
+    out = [];
+    expect(await runCheckOld(opts(net, { sweepNow: true }))).toBe(0);
+    expect(report()).toMatch(/Moved 256 sats to this wallet/);
+    expect(current.sats).toBe(5_500n);
   });
 
   it("with nothing retired, says so", async () => {

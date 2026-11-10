@@ -213,6 +213,64 @@ export async function sweep(from, to, holdings, { log = () => {}, pollMs = 2_000
   throw e;
 }
 
+// Sweep, then keep going until the old wallet is empty. Sats it holds but
+// can't send this instant (a leaf the SDK is renewing as the wallet opens, a
+// claim still landing) free up within seconds, and more can arrive meanwhile.
+// One sweep of one reading moved 244 of a retired wallet's 500 sats, with 256
+// locked for a moment, and reported "Moved 244 sats" as if that were all of it
+// (funded REGTEST, 2026-11-10). So: while anything is spendable, locked or
+// incoming, sweep what can move, or wait; give up after SETTLE_WAITS waits in
+// a row with nothing new to send. `left` is what still couldn't move.
+// The sender's own balance isn't proof of that: after a send the receiver has
+// claimed, it went on showing the sent sats as locked for 18 seconds and more
+// (funded REGTEST, 2 runs of 10, each time right after a locked leaf had
+// freed up and been sent). So locked sats count as left only up to what the
+// wallet held at the start and hasn't delivered since. The first sweep's
+// error is the caller's; a later one stops the loop and leaves the rest for
+// --check-old.
+const SETTLE_WAITS = 6;
+const SETTLE_SWEEPS = 10;
+const SETTLE_WAIT_MS = 3_000;
+const unsettled = (b) => b.sats > 0n || b.lockedSats > 0n || b.incomingSats > 0n;
+async function readSats(wallet) {
+  const sb = (await wallet.getBalance()).satsBalance ?? {};
+  const sats = BigInt(sb.available ?? 0n);
+  const owned = BigInt(sb.owned ?? sats);
+  return { sats, lockedSats: owned > sats ? owned - sats : 0n, incomingSats: BigInt(sb.incoming ?? 0n) };
+}
+export async function sweepAll(from, to, holdings, { log = () => {}, waitMs = SETTLE_WAIT_MS } = {}) {
+  const heldAtStart = holdings.sats + (holdings.lockedSats ?? 0n) + (holdings.incomingSats ?? 0n);
+  let swept = await sweep(from, to, holdings, { log });
+  let movedSats = holdings.sats;
+  const readLeft = async () => {
+    const b = await readSats(from);
+    const undelivered = heldAtStart > movedSats ? heldAtStart - movedSats : 0n;
+    return { ...b, lockedSats: b.lockedSats < undelivered ? b.lockedSats : undelivered };
+  };
+  let left = await readLeft();
+  for (let waits = 0, sweeps = 0; unsettled(left) && waits < SETTLE_WAITS && sweeps < SETTLE_SWEEPS;) {
+    try {
+      if (left.sats > 0n) {
+        swept = { ...swept, balanceSats: (await sweep(from, to, { sats: left.sats, tokens: [] }, { log })).balanceSats };
+        movedSats += left.sats;
+        sweeps++;
+        waits = 0;
+      } else {
+        await new Promise((r) => setTimeout(r, waitMs));
+        waits++;
+      }
+      left = await readLeft();
+    } catch (err) {
+      log(`the rest stays in the old wallet for --check-old --sweep (${err?.message ?? err})`);
+      break;
+    }
+  }
+  return { swept, movedSats, left };
+}
+const stillThere = (left) => (unsettled(left)
+  ? `${left.sats + left.lockedSats + left.incomingSats} sats (${[left.lockedSats > 0n && `${left.lockedSats} locked`, left.incomingSats > 0n && `${left.incomingSats} incoming`, left.sats > 0n && `${left.sats} spendable`].filter(Boolean).join(", ")})`
+  : null);
+
 // --- Stage 1 (before anything moves): both seeds on disk. The state file
 // goes first, exclusive: it is the lock against a second rotation, and it
 // lets --resume tell how far staging got. Written last, a crash after `.next`
@@ -379,7 +437,7 @@ const AFTER =
   "    wallet: restart it.\n";
 
 // --- The three runs. Each returns an exit code and writes its own report.
-export async function runRotate({ execute = false, deps = defaultDeps, out = (s) => stdout.write(s), log = (s) => stderr.write(`  ${s}\n`), environment = env } = {}) {
+export async function runRotate({ execute = false, deps = defaultDeps, out = (s) => stdout.write(s), log = (s) => stderr.write(`  ${s}\n`), environment = env, settleWaitMs = SETTLE_WAIT_MS } = {}) {
   const network = environment.SPARK_NETWORK || "MAINNET";
   const seedPath = environment.SPARK_SEED_PATH || DEFAULT_SEED_PATH;
   if (await exists(`${seedPath}.next`) || await exists(statePath(seedPath))) {
@@ -414,26 +472,26 @@ export async function runRotate({ execute = false, deps = defaultDeps, out = (s)
     log(`new wallet ${neu.address}`);
     const state = await stageSeeds({ seedPath, passphrase, oldPayload, newMnemonic: fresh.mnemonic, oldKey: old.identityPublicKey, newHoldings: neu });
     log(`old seed kept at ${join(state.retiredDir, "seed.enc")}; new seed staged at ${state.nextPath}`);
-    return await finish({ seedPath, network, environment, state, sealedEntries, passphrase, oldMnemonic: oldPayload.mnemonic, newMnemonic: fresh.mnemonic, oldWallet, newWallet: fresh.wallet, old, out, log });
+    return await finish({ seedPath, network, environment, state, sealedEntries, passphrase, oldMnemonic: oldPayload.mnemonic, newMnemonic: fresh.mnemonic, oldWallet, newWallet: fresh.wallet, old, out, log, settleWaitMs });
   } finally {
     await oldWallet.cleanup?.().catch?.(() => {});
     await fresh?.wallet.cleanup?.().catch?.(() => {});
   }
 }
 
-async function finish({ seedPath, network, environment, state, sealedEntries, passphrase, oldMnemonic, newMnemonic, oldWallet, newWallet, old, out, log }) {
+async function finish({ seedPath, network, environment, state, sealedEntries, passphrase, oldMnemonic, newMnemonic, oldWallet, newWallet, old, out, log, settleWaitMs }) {
   if (privacyPreferenceFromEnv(environment)) {
     try { await ensureWalletPrivacy(newWallet); log("privacy on for the new wallet"); }
     catch (err) { log(`privacy could not be turned on for the new wallet yet (${err?.message ?? err}); its next boot retries`); }
   }
   let swept;
   let movedSats;
+  let left;
   try {
-    // What the old wallet holds now, not at the plan: sats that became
-    // spendable since move too (review 2026-11-09, ROT-8).
+    // What the old wallet holds now, not at the plan, and then whatever
+    // becomes spendable while this runs (review 2026-11-09, ROT-8; sweepAll).
     const now = await readHoldings(oldWallet);
-    swept = await sweep(oldWallet, newWallet, now, { log });
-    movedSats = now.sats;
+    ({ swept, movedSats, left } = await sweepAll(oldWallet, newWallet, now, { log, waitMs: settleWaitMs }));
   } catch (err) {
     out(
       `\nThe sweep didn't finish: ${err?.message ?? err}\n` +
@@ -441,19 +499,6 @@ async function finish({ seedPath, network, environment, state, sealedEntries, pa
         "old wallet and waits for the new one to claim it. Nothing is lost, and nothing can be sent anywhere but the new wallet.\n",
     );
     return 1;
-  }
-  // And anything that became spendable during the sweep, twice at most. A
-  // failure here leaves it for --check-old: the rotation itself is done.
-  for (let round = 0; round < 2; round++) {
-    try {
-      const more = await readHoldings(oldWallet);
-      if (more.sats <= 0n) break;
-      swept = { ...swept, balanceSats: (await sweep(oldWallet, newWallet, { ...more, tokens: [] }, { log })).balanceSats };
-      movedSats += more.sats;
-    } catch (err) {
-      log(`sats that arrived during the sweep stay in the old wallet for --check-old (${err?.message ?? err})`);
-      break;
-    }
   }
   const vaultPath = environment.SPARK_LEAF_VAULT_PATH || defaultVaultPath();
   await commitRotation({
@@ -469,12 +514,13 @@ async function finish({ seedPath, network, environment, state, sealedEntries, pa
       log(`the new wallet's backup failed (${err?.message ?? err}); the next SparkAgent boot writes it`);
     }
   }
-  const behind = swept.sent.leftBehind.map((t) => `Left behind in the old wallet: ${t.amount} ${t.ticker} (${t.tokenIdentifier.slice(0, 24)}…): ${t.reason}. \`rotate --check-old --sweep\` tries again.\n`).join("");
+  const behind = swept.sent.leftBehind.map((t) => `Left behind in the old wallet: ${t.amount} ${t.ticker} (${t.tokenIdentifier.slice(0, 24)}…): ${t.reason}. \`rotate --check-old --sweep\` tries again.\n`).join("") +
+    (stillThere(left) ? `Still in the old wallet: ${stillThere(left)}. They couldn't be sent yet; run \`sparkbtcbot rotate --check-old --sweep\` in a minute to move them.\n` : "");
   out(`\nRotated. ${seedPath} is now the new wallet: ${swept.toAddress}, holding ${swept.balanceSats} sats.\nThe old seed is kept at ${join(state.retiredDir, "seed.enc")}.\n${behind}\n${AFTER}`);
   return 0;
 }
 
-export async function runResume({ deps = defaultDeps, out = (s) => stdout.write(s), log = (s) => stderr.write(`  ${s}\n`), environment = env } = {}) {
+export async function runResume({ deps = defaultDeps, out = (s) => stdout.write(s), log = (s) => stderr.write(`  ${s}\n`), environment = env, settleWaitMs = SETTLE_WAIT_MS } = {}) {
   const network = environment.SPARK_NETWORK || "MAINNET";
   const seedPath = environment.SPARK_SEED_PATH || DEFAULT_SEED_PATH;
   let state;
@@ -533,7 +579,7 @@ export async function runResume({ deps = defaultDeps, out = (s) => stdout.write(
     out(`Finishing the rotation (${network}). Still in the old wallet:\n${fmt(old)}\n`);
     return await finish({
       seedPath, network, environment, state: run, sealedEntries, passphrase, oldMnemonic: seedPayload.mnemonic, newMnemonic: newPayload.mnemonic,
-      oldWallet: seedWallet, newWallet, old, out, log,
+      oldWallet: seedWallet, newWallet, old, out, log, settleWaitMs,
     });
   } finally {
     await seedWallet.cleanup?.().catch?.(() => {});
@@ -577,7 +623,7 @@ async function completeCommit({ seedPath, network, environment, deps, passphrase
 
 // The retired wallets: open each, report what it holds, and with `sweep`
 // claim its deposits and move it all to the wallet in seed.enc.
-export async function runCheckOld({ sweepNow = false, deps = defaultDeps, out = (s) => stdout.write(s), log = (s) => stderr.write(`  ${s}\n`), environment = env, makeAgent } = {}) {
+export async function runCheckOld({ sweepNow = false, deps = defaultDeps, out = (s) => stdout.write(s), log = (s) => stderr.write(`  ${s}\n`), environment = env, makeAgent, settleWaitMs = SETTLE_WAIT_MS } = {}) {
   const network = environment.SPARK_NETWORK || "MAINNET";
   const seedPath = environment.SPARK_SEED_PATH || DEFAULT_SEED_PATH;
   // Every retired seed, manifest or not: a rotation cut off before its
@@ -641,11 +687,12 @@ export async function runCheckOld({ sweepNow = false, deps = defaultDeps, out = 
           }
           h = await readHoldings(wallet);
         }
-        if (h.sats > 0n || h.tokens.length) {
+        if (unsettled(h) || h.tokens.length) {
           try {
-            const s = await sweep(wallet, current, h, { log });
-            out(`  Moved ${h.sats} sats${s.sent.tokens.length ? ` and ${s.sent.tokens.length} token balance(s)` : ""} to this wallet (${s.toAddress}).\n`);
+            const { swept: s, movedSats, left } = await sweepAll(wallet, current, h, { log, waitMs: settleWaitMs });
+            if (movedSats > 0n || s.sent.tokens.length) out(`  Moved ${movedSats} sats${s.sent.tokens.length ? ` and ${s.sent.tokens.length} token balance(s)` : ""} to this wallet (${s.toAddress}).\n`);
             for (const t of s.sent.leftBehind) out(`  Still in the old wallet: ${t.amount} ${t.ticker}: ${t.reason}.\n`);
+            if (stillThere(left)) out(`  Still in the old wallet: ${stillThere(left)}. They couldn't be sent yet; run --check-old --sweep again in a minute.\n`);
           } catch (err) {
             out(`  The move didn't finish (${err?.message ?? err}); run --check-old --sweep again. It can only send to this wallet.\n`);
           }

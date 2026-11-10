@@ -3,6 +3,7 @@
 // holds the balance, the old seed is kept and empty; a late payment to the old
 // address is found and swept by --check-old --sweep. The sats go back to the
 // funded wallet at the end.
+import { appendFileSync } from "node:fs";
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { mkdtemp, rm, readdir, readFile, access } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -91,9 +92,30 @@ describeFunded("sparkbtcbot rotate (REGTEST, real wallets)", () => {
       if (!/sats\s+500 spendable/.test(out.join(""))) await new Promise((r) => setTimeout(r, 3_000));
     }
     expect(out.join("")).toMatch(/sats\s+500 spendable/);
-    out.length = 0;
-    expect(await check(true), out.join("")).toBe(0);
-    expect(out.join("")).toMatch(/Moved 500 sats to this wallet/);
+    // A leaf the SDK is renewing as the retired wallet opens can be locked for
+    // a moment (2026-11-10: "244 spendable, 256 locked"). The sweep waits for
+    // it; if it outlasts the wait, the report must say what stayed, and the
+    // next run moves it. Never a partial move reported as the whole.
+    let moved = 0n;
+    for (let i = 0; i < 4 && moved < LATE; i++) {
+      out.length = 0;
+      expect(await check(true), out.join("")).toBe(0);
+      const report = out.join("");
+      const m = report.match(/Moved (\d+) sats to this wallet/);
+      if (m) moved += BigInt(m[1]);
+      // On record whether this run met the lock at all: vitest shows a passing
+      // test's console output only on request, so SPARK_TEST_SWEEP_LOG names a file.
+      const line = `rotate --check-old --sweep, run ${i + 1}: ${report.match(/sats\s+.*/)?.[0] ?? "?"} -> moved ${m?.[1] ?? 0}${/Still in the old wallet/.test(report) ? ", some left and reported" : ""}`;
+      console.log(line);
+      if (process.env.SPARK_TEST_SWEEP_LOG) appendFileSync(process.env.SPARK_TEST_SWEEP_LOG, `${new Date().toISOString()} ${line}\n`);
+      if (moved < LATE) expect(report, report.slice(-700)).toMatch(/Still in the old wallet: \d+ sats \(/);
+      else expect(report.slice(-700)).not.toMatch(/Still in the old wallet/);
+    }
+    expect(moved).toBe(LATE);
+    // And the retired wallet, opened fresh, really is empty.
+    const { wallet: oldAgain } = await createTestWallet({ mnemonic: oldWords });
+    expect(await waitForSettled(oldAgain, 0n, { timeoutMs: 30_000 })).toEqual({ available: 0n, incoming: 0n });
+    expect((await oldAgain.getBalance()).satsBalance.owned).toBe(0n);
     const fresh = await loadSeedPayload({ passphrase: PASS, path: environment.SPARK_SEED_PATH });
     const { wallet: neu } = await createTestWallet({ mnemonic: fresh.mnemonic });
     expect(await waitForSettled(neu, AMOUNT + LATE, { timeoutMs: 60_000 })).toEqual({ available: AMOUNT + LATE, incoming: 0n });
