@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.10.1 — 2026-11-10
+
+Two fixes found on 0.10.0's first day: one in `rotate`, caught by the funded REGTEST tier, and one in the repository's test suite, reported from a machine with a live wallet. No API changes.
+
+**If you rotated a wallet, or ran `rotate --check-old --sweep`, on 0.10.0:** run `sparkbtcbot rotate --check-old` once. It shows whether a sweep left sats in a retired wallet, and `--check-old --sweep` moves them.
 
 ### Fixed
 
