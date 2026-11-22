@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.10.2 — 2026-11-22
+
+One dependency update, in the repository's test tooling. Nothing changed in what the npm package installs or runs: vite reaches this repository only through vitest, a development dependency, so `npm install sparkbtcbot-skill` never installed it. The published files differ from 0.10.1 only in the version number and this changelog.
+
+### Security
+
+- **vite 8.3.5 → 8.3.8, and rolldown 1.2.15 → 1.2.19, in the lockfile, for [GHSA-p4f5-76q4-ffq7](https://github.com/vitejs/vite/security/advisories/GHSA-p4f5-76q4-ffq7)** (critical, published 2026-11-10). A crafted request to a Vite dev server could read files outside its allow list and run code on the machine serving it. It needs a dev server exposed to the network (`--host` or `server.host`); this repository's tests start none (Node mode, no browser, UI or API server), so a clone wasn't reachable that way either. Updated so that a clone's `npm ci` installs no version with a known critical advisory. `npm audit` did not list this advisory when the fix went in; the advisory itself, on vite's GitHub repository, did.
+
 ## 0.10.1 — 2026-11-10
 
 Two fixes found on 0.10.0's first day: one in `rotate`, caught by the funded REGTEST tier, and one in the repository's test suite, reported from a machine with a live wallet. No API changes.
